@@ -11,7 +11,7 @@ from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter
 # Fix imports to work with both direct run and module run
 
 from src.logger import get_logger
-from src.controllers.camera.camera_controller import CameraController
+from src.controllers.camera_controller import CameraController
 
 logger = get_logger("camera_gui")
 
