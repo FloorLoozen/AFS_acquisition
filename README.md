@@ -1,4 +1,4 @@
-# AFS Tracking v3
+# AFS Tracking
 
 Automated tracking system for AFS using IDS cameras and MCL MicroDrive XY stage hardware.
 
@@ -25,7 +25,7 @@ Use the `--ignore-venv` flag to run without virtual environment checks.
 
 1. **Clone the repository**
 	```powershell
-	git clone <your-repo-url>
+	git clone https://github.com/FloorLoozen/AFS_tracking
 	cd AFS_tracking
 	```
 
@@ -39,6 +39,7 @@ Use the `--ignore-venv` flag to run without virtual environment checks.
 	```powershell
 	pip install --upgrade pip
 	pip install --force-reinstall -r requirements.txt
+	pip install pyueye
 	```
 
 4. **Run the application**
@@ -72,4 +73,6 @@ Use the `--ignore-venv` flag to run without virtual environment checks.
 - IDS uEye camera
 - MCL MicroDrive XY stage
 
-# Last Updated: September 10, 2025
+_Last updated: 2025-09-11_
+
+

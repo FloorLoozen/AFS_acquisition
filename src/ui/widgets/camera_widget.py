@@ -98,10 +98,6 @@ class CameraWidget(QGroupBox):
         self.mono_enabled = False
         self.auto_contrast = False
 
-        # FPS
-        self.last_frame_time = 0.0
-        self.fps = 0.0
-        
         # Status indicator
         self.status_indicator = StatusIndicator()
 
@@ -130,8 +126,8 @@ class CameraWidget(QGroupBox):
         
         # Left side: Camera control buttons
         button_layout = QHBoxLayout()
-        self.play_button = QPushButton("▶ Play"); self.play_button.clicked.connect(self.set_live_mode)
-        self.pause_button = QPushButton("⏸ Pause"); self.pause_button.clicked.connect(self.set_pause_mode)
+        self.play_button = QPushButton("▶️ Play"); self.play_button.clicked.connect(self.set_live_mode)
+        self.pause_button = QPushButton("⏸️ Pause"); self.pause_button.clicked.connect(self.set_pause_mode)
         self.reconnect_button = QPushButton("🔄 Reconnect"); self.reconnect_button.clicked.connect(self.reconnect_camera)
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
@@ -435,15 +431,7 @@ class CameraWidget(QGroupBox):
                             self.camera_error = str(e)
                     return
                     
-            # Calculate FPS
-            now = time.time()
-            if self.last_frame_time:
-                dt = max(now - self.last_frame_time, 1e-6)
-                self.fps = 1.0 / dt
-            self.last_frame_time = now
-
             frame = self.process_frame(frame)
-            cv2.putText(frame, f"{self.fps:.1f} FPS", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             self.display_frame(frame)
             
         except Exception as e:

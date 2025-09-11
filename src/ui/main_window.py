@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self.initialize_hardware)
 
     def init_ui(self):
-        self.setWindowTitle("AFS Tracking System v3")
+        self.setWindowTitle("AFS Tracking System")
         self.setGeometry(100, 100, 1280, 800)  # Default size if not maximized
         # Start application in maximized window
         self.showMaximized()
