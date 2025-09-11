@@ -2,25 +2,6 @@
 
 Automated tracking system for AFS using IDS cameras and MCL MicroDrive XY stage hardware.
 
-## Quick Start
-
-```
-
-
-# Create and activate virtual environment
-python -m venv .venv
-.\.venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application (make sure the environment is activated)
-python -m src.main
-
-```
-
-Use the `--ignore-venv` flag to run without virtual environment checks.
-
 ## Installation & Quick Start
 
 1. **Clone the repository**
@@ -48,6 +29,7 @@ Use the `--ignore-venv` flag to run without virtual environment checks.
 	```
 
 **Note:**
+- Use the `--ignore-venv` flag to run without virtual environment checks (e.g., `python -m src.main --ignore-venv`)
 - Always run commands from the project root directory (`AFS_tracking`).
 - Ensure your Python version is compatible with all dependencies (Python 3.10–3.12 recommended).
 - Hardware features require IDS uEye camera and MCL MicroDrive XY stage with appropriate drivers.

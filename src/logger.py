@@ -144,8 +144,8 @@ class AFSLogger:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = os.path.join(log_dir, f"afs_tracking_{timestamp}.log")
         
-        # Create console handler
-        console_handler = logging.StreamHandler()
+        # Create console handler with UTF-8 encoding
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(self.LEVELS.get(console_level.upper(), logging.INFO))
         
         # Temporarily disable repetitive filter until we resolve the initialization issue

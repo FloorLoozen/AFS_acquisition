@@ -62,11 +62,28 @@ class CameraWidget(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
 
+        logger.info("Initializing CameraWidget")
+        
+        # Check for camera module availability immediately
+        try:
+            # Try importing the module - don't need to use it yet
+            from pyueye import ueye
+            logger.info("pyueye module is available")
+            self.pyueye_available = True
+        except ImportError as e:
+            logger.warning(f"pyueye module import error: {e}")
+            logger.info("Will use test pattern mode instead")
+            self.pyueye_available = False
+        except Exception as e:
+            logger.warning(f"Error checking pyueye module: {e}")
+            logger.info("Will use test pattern mode instead")
+            self.pyueye_available = False
+
         # Camera state
         self.camera = None
         self.is_running = False
         self.is_live = False
-        self.use_test_pattern = False
+        self.use_test_pattern = not self.pyueye_available  # Auto set based on module availability
         self.test_frame_counter = 0
         self.camera_error = None
         
@@ -241,25 +258,30 @@ class CameraWidget(QGroupBox):
             camera_id (int): ID of the camera to connect to (default: 0)
         """
         if self.is_running:
+            logger.info("Camera already running, skipping connection")
             return
-            
+        
+        logger.info("Starting camera connection process")
         self.update_status("Initializing...")
+        
+        # If pyueye is not available, use test pattern mode
+        if not self.pyueye_available:
+            logger.info("Using test pattern mode (pyueye module not available)")
+            self._start_test_pattern_mode("Test Pattern Mode")
+            return
+        
+        # If pyueye is available, try to initialize the camera
         try:
+            logger.info("Attempting to connect to camera hardware")
             self.camera = CameraController(camera_id)
+            
             if not self.camera.initialize():
-                logger.error("Camera initialization failed")
-                # Handle failed initialization
-                self.camera = None
-                self.use_test_pattern = False
-                self.is_running = True
-                self.is_live = False
-                self.update_status("Camera not found")
-                self.update_button_states()
-                self.create_blank_frame()
-                self.update_timer.start()
+                logger.warning("Camera hardware initialization failed")
+                self._start_test_pattern_mode("Camera Init Failed - Test Pattern")
                 return
-                
+            
             # Camera initialized successfully
+            logger.info("Camera hardware initialized successfully")
             self.use_test_pattern = False
             self.is_running = True
             self.is_live = False
@@ -269,16 +291,20 @@ class CameraWidget(QGroupBox):
             self.set_live_mode()  # Auto start live view
             
         except Exception as e:
-            logger.error(f"Camera connect failed: {e}")
-            # Handle connection exception
-            self.camera = None
-            self.use_test_pattern = False
-            self.is_running = True
-            self.is_live = False
-            self.update_status("Camera not found")
-            self.update_button_states()
-            self.create_blank_frame()
-            self.update_timer.start()
+            logger.warning(f"Camera connection error: {e}")
+            self._start_test_pattern_mode(f"Camera Error - Test Pattern")
+    
+    def _start_test_pattern_mode(self, status_text):
+        """Helper method to start test pattern mode with the given status text"""
+        logger.info(f"Starting test pattern mode: {status_text}")
+        self.camera = None
+        self.use_test_pattern = True
+        self.is_running = True
+        self.is_live = False
+        self.update_status(status_text)
+        self.update_button_states()
+        self.update_timer.start()
+        self.set_live_mode()  # Auto start test pattern
 
     def stop_camera(self):
         if self.update_timer.isActive():
@@ -296,13 +322,25 @@ class CameraWidget(QGroupBox):
 
     def set_live_mode(self):
         if not self.is_running:
+            logger.warning("Cannot set live mode - camera not running")
+            return
+        
+        # Handle test pattern mode specifically
+        if self.use_test_pattern:
+            logger.info("Setting test pattern to live mode")
+            self.is_live = True
+            self.update_status("Test Pattern Active")
+            self.update_button_states()
             return
             
-        # If camera is not found, don't try to go to live mode
-        if not self.camera and not self.use_test_pattern:
+        # If camera is not found and not in test pattern mode
+        if not self.camera:
+            logger.warning("Cannot set live mode - no camera and not in test pattern mode")
             self.update_status("Camera not found")
             return
             
+        # Regular camera live mode
+        logger.info("Setting camera to live mode")
         self.is_live = True
         self.update_status("Live")
         self.update_button_states()
@@ -335,17 +373,40 @@ class CameraWidget(QGroupBox):
     def create_test_pattern(self, width=640, height=480):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Add a background pattern
-        frame[::10, ::10] = [32, 32, 32]  # Subtle dotted pattern
+        # Add a grid background pattern
+        for i in range(0, height, 50):
+            cv2.line(frame, (0, i), (width, i), (50, 50, 50), 1)
+        for i in range(0, width, 50):
+            cv2.line(frame, (i, 0), (i, height), (50, 50, 50), 1)
+        
+        # Add crosshairs at the center
+        center_x, center_y = width // 2, height // 2
+        cv2.line(frame, (center_x, 0), (center_x, height), (0, 255, 0), 1)
+        cv2.line(frame, (0, center_y), (width, center_y), (0, 255, 0), 1)
+        cv2.circle(frame, (center_x, center_y), 100, (0, 0, 255), 1)
         
         # Add moving elements for the test pattern
-        y_pos = (self.test_frame_counter * 5) % height
+        y_pos = (self.test_frame_counter * 2) % height
+        x_pos = (self.test_frame_counter * 3) % width
+        
+        # Moving horizontal line
         cv2.line(frame, (0, y_pos), (width, y_pos), (0, 0, 255), 2)
-        cv2.circle(frame, (width // 2, height // 2), 50 + (self.test_frame_counter % 60), (255, 0, 0), 2)
+        # Moving vertical line
+        cv2.line(frame, (x_pos, 0), (x_pos, height), (255, 0, 0), 2)
+        
+        # Pulsing circle
+        radius = 50 + 30 * np.sin(self.test_frame_counter / 30.0)
+        cv2.circle(frame, (width // 2, height // 2), int(radius), (0, 255, 255), 2)
         
         # Add text to indicate it's a test pattern
-        cv2.putText(frame, "TEST PATTERN", (width // 2 - 80, height - 20), 
+        cv2.putText(frame, "TEST PATTERN MODE", (width // 2 - 120, height - 50), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 140, 255), 2)
+        cv2.putText(frame, "No camera hardware detected", (width // 2 - 150, 40), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add frame counter
+        cv2.putText(frame, f"Frame: {self.test_frame_counter}", (20, height - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
         
         self.test_frame_counter += 1
         return frame

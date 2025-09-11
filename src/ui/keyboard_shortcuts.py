@@ -19,17 +19,21 @@ class KeyboardShortcutManager:
     def _setup_stage_shortcuts(self):
         try:
             self.stage_manager = StageManager.get_instance()
-            # Ctrl+Up/Down/Left/Right
+            # Ctrl+Up/Down/Left/Right as application-wide shortcuts
             self.up_shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Up), self.main_window)
+            self.up_shortcut.setContext(Qt.ApplicationShortcut)
             self.up_shortcut.activated.connect(self.move_stage_up)
 
             self.down_shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Down), self.main_window)
+            self.down_shortcut.setContext(Qt.ApplicationShortcut)
             self.down_shortcut.activated.connect(self.move_stage_down)
 
             self.left_shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Left), self.main_window)
+            self.left_shortcut.setContext(Qt.ApplicationShortcut)
             self.left_shortcut.activated.connect(self.move_stage_left)
 
             self.right_shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Right), self.main_window)
+            self.right_shortcut.setContext(Qt.ApplicationShortcut)
             self.right_shortcut.activated.connect(self.move_stage_right)
         except Exception as e:
             logger.error(f"Shortcut setup failed: {e}")

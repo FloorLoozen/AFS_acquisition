@@ -1,9 +1,11 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
     QMenuBar, QAction, QLabel, QMessageBox, QSizePolicy, 
-    QGroupBox, QPushButton, QSlider, QComboBox, QLineEdit, QFormLayout
+    QGroupBox, QPushButton, QSlider, QComboBox, QLineEdit, QFormLayout,
+    QApplication
 )
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QCursor
 
 
 # Use only absolute imports with src. prefix
@@ -37,12 +39,16 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle("AFS Tracking System")
         self.setGeometry(100, 100, 1280, 800)  # Default size if not maximized
+        
         # Start application in maximized window
         self.showMaximized()
 
         self._create_menu_bar()
         self._create_central_layout()
 
+        # Ensure normal cursor is set at startup
+        QApplication.restoreOverrideCursor()
+        
         self.statusBar().showMessage("Ready")
 
     def _create_menu_bar(self):
@@ -144,7 +150,27 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Camera Settings", "This feature will be implemented later.")
 
     def open_stage_controls(self):
-        QMessageBox.information(self, "XY Stage Controls", "This feature will be implemented later.")
+        # Open the XY Stage dialog
+        try:
+            # Always ensure normal cursor before opening the dialog
+            QApplication.restoreOverrideCursor()
+            
+            from src.ui.widgets.xy_stage_widget import XYStageWidget
+            
+            # Store reference to prevent garbage collection
+            self._stage_dialog = getattr(self, "_stage_dialog", None)
+            
+            if self._stage_dialog is None or not self._stage_dialog.isVisible():
+                # Create a new dialog instance
+                self._stage_dialog = XYStageWidget(self)
+                self._stage_dialog.show()
+            else:
+                # If dialog already exists, bring it to front
+                self._stage_dialog.activateWindow()
+                self._stage_dialog.raise_()
+        except Exception as e:
+            logger.error(f"Failed to open stage dialog: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to open stage controls: {e}")
     
     def open_resonance_finder(self):
         QMessageBox.information(self, "Resonance Finder", "This feature will be implemented later.")
@@ -172,29 +198,61 @@ class MainWindow(QMainWindow):
         # Update status bar
         self.statusBar().showMessage("Initializing hardware...")
         
-        # Initialize all hardware components in sequence
-        # The system will continue even if some components fail to initialize
-        self._initialize_camera()
-        self._initialize_xy_stage()
-        self._initialize_function_generator()
+        try:
+            # Initialize all hardware components in sequence
+            # The system will continue even if some components fail to initialize
+            self._initialize_camera()
+            self._initialize_xy_stage()
+            self._initialize_function_generator()
+        except Exception as e:
+            logger.error(f"Hardware initialization error: {e}")
+            self.statusBar().showMessage(f"Hardware initialization error: {str(e)}")
+        finally:
+            # Always ensure the cursor is restored to normal
+            QApplication.restoreOverrideCursor()
         
-        # Update status when complete after a short delay
+        # Update status after a short delay
         # This gives the user time to see the status message
         QTimer.singleShot(2000, lambda: self.statusBar().showMessage("Hardware initialization complete"))
     
     def _initialize_camera(self):
         """Initialize camera hardware."""
         logger.info("Initializing camera...")
-        # The camera widget will auto-initialize on creation
-        # We just need to make sure it's in live mode
-        if self.camera_widget and self.camera_widget.is_running:
-            self.camera_widget.set_live_mode()
-        else:
-            logger.warning("Camera widget initialization failed")
+        
+        # Show camera-specific waiting message
+        self.statusBar().showMessage("Initializing camera... Please wait")
+        
+        try:
+            # Camera widget should auto-initialize, just check its status
+            if self.camera_widget:
+                # Camera widget exists but may not be fully initialized yet
+                if hasattr(self.camera_widget, 'is_running') and self.camera_widget.is_running:
+                    # Camera is already running
+                    if hasattr(self.camera_widget, 'use_test_pattern') and self.camera_widget.use_test_pattern:
+                        # Camera is in test pattern mode
+                        logger.info("Camera initialized in test pattern mode")
+                        self.statusBar().showMessage("Camera running in test pattern mode")
+                    else:
+                        # Camera is running with actual hardware
+                        logger.info("Camera hardware initialized successfully")
+                        self.statusBar().showMessage("Camera hardware initialized")
+                else:
+                    # Camera widget exists but hasn't started running yet
+                    logger.info("Camera widget starting initialization process")
+                    self.statusBar().showMessage("Camera initializing")
+            else:
+                # Camera widget doesn't exist at all
+                logger.warning("Camera widget creation failed")
+                self.statusBar().showMessage("Camera initialization failed, using fallback")
+        finally:
+            # Ensure cursor is normal
+            QApplication.restoreOverrideCursor()
             
     def _initialize_xy_stage(self):
         """Initialize XY stage hardware."""
         logger.info("Initializing XY stage...")
+        self.statusBar().showMessage("Initializing XY stage...")
+        
         # Will be implemented later
         try:
             # Stage controller initialization
@@ -202,10 +260,15 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"XY stage initialization error: {e}")
             logger.info("Continuing with limited functionality")
+            self.statusBar().showMessage("XY stage initialization failed")
+        else:
+            self.statusBar().showMessage("XY stage initialization complete")
     
     def _initialize_function_generator(self):
         """Initialize function generator hardware."""
         logger.info("Initializing function generator...")
+        self.statusBar().showMessage("Initializing function generator...")
+        
         # Will be implemented later
         try:
             # Function generator initialization
@@ -213,3 +276,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Function generator initialization error: {e}")
             logger.info("Continuing with limited functionality")
+            self.statusBar().showMessage("Function generator initialization failed")
+        else:
+            self.statusBar().showMessage("Function generator initialization complete")
