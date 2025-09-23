@@ -11,6 +11,7 @@ from PyQt5.QtGui import QCursor
 # Use only absolute imports with src. prefix
 from src.logger import get_logger
 from src.ui.widgets.camera_widget import CameraWidget
+from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
 from src.ui.keyboard_shortcuts import KeyboardShortcutManager
 
 logger = get_logger("ui")
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         logger.info("Initializing main window")
         self.camera_widget = None
+        self.measurement_settings_widget = None
         self.init_ui()
         self.keyboard_shortcuts = KeyboardShortcutManager(self)
         
@@ -128,12 +130,8 @@ class MainWindow(QMainWindow):
         
     def _create_measurement_settings_widget(self):
         """Create the measurement settings widget (top-left)."""
-        group = QGroupBox("Measurement Settings")
-        # Just create an empty layout with no content for now
-        layout = QVBoxLayout(group)
-        layout.addStretch(1)
-        
-        return group
+        self.measurement_settings_widget = MeasurementSettingsWidget()
+        return self.measurement_settings_widget
         
     def _create_measurement_controls_widget(self):
         """Create the measurement controls widget (bottom-left)."""
@@ -186,6 +184,46 @@ class MainWindow(QMainWindow):
 
     def open_about(self):
         QMessageBox.information(self, "About", "AFS Tracking System v3\n\nAutomated tracking system for AFS using IDS cameras and MCL MicroDrive XY stage hardware.")
+    
+    def get_measurement_settings(self):
+        """Get the measurement settings widget instance."""
+        return self.measurement_settings_widget
+    
+    def get_measurements_save_path(self):
+        """Get the configured measurements save path."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_measurements_path()
+        return ""
+    
+    def get_lookup_table_save_path(self):
+        """Get the configured lookup table save path."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_lookup_table_path()
+        return ""
+    
+    def get_hdf5_filename(self):
+        """Get the configured HDF5 filename."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_filename()
+        return ""
+    
+    def get_full_hdf5_path(self):
+        """Get the complete path for the HDF5 measurement file."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_full_file_path()
+        return ""
+    
+    def get_sample_information(self):
+        """Get the sample information."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_sample_information()
+        return ""
+    
+    def get_measurement_notes(self):
+        """Get the measurement notes."""
+        if self.measurement_settings_widget:
+            return self.measurement_settings_widget.get_notes()
+        return ""
         
     def initialize_hardware(self):
         """

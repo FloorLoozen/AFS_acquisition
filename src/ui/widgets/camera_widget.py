@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QFrame, QSizePolicy, QGridLayout
+    QFrame, QSizePolicy, QGridLayout, QSlider
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter
@@ -114,6 +114,9 @@ class CameraWidget(QGroupBox):
         # Image processing toggles (keep for internal use)
         self.mono_enabled = False
         self.auto_contrast = False
+        self.auto_brightness = True  # Enable automatic brightness adjustment
+        self.target_brightness = 128  # Target average brightness (0-255)
+        self.brightness_adjustment_rate = 0.1  # How fast to adjust (0.0-1.0)
 
         # Status indicator
         self.status_indicator = StatusIndicator()
@@ -169,7 +172,6 @@ class CameraWidget(QGroupBox):
         main.addWidget(camera_frame)
 
         self.update_button_states()
-        self.create_placeholder()
 
     def update_button_states(self):
         self.play_button.setEnabled(self.is_running and not self.is_live and self.camera is not None)
@@ -360,10 +362,6 @@ class CameraWidget(QGroupBox):
         self.auto_contrast = not self.auto_contrast
         self.auto_contrast_button.setChecked(self.auto_contrast)
 
-    def create_placeholder(self, width=640, height=480):
-        img = np.ones((height, width, 3), dtype=np.uint8) * 64
-        self.display_frame(img)
-        
     def create_blank_frame(self, width=640, height=480):
         """Create a completely black frame for when camera is not found."""
         img = np.zeros((height, width, 3), dtype=np.uint8)
@@ -502,8 +500,46 @@ class CameraWidget(QGroupBox):
                 self.camera_error = str(e)
                 self.update_status("Error")
 
+    def calculate_auto_brightness_adjustment(self, frame):
+        """
+        Calculate automatic brightness adjustment based on image analysis.
+        
+        Args:
+            frame: Input image frame (BGR format)
+            
+        Returns:
+            float: Brightness adjustment value
+        """
+        # Convert to grayscale for brightness analysis
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate current average brightness
+        current_brightness = np.mean(gray)
+        
+        # Calculate how much adjustment is needed
+        brightness_difference = self.target_brightness - current_brightness
+        
+        # Apply adjustment rate to smooth the transition
+        adjustment = brightness_difference * self.brightness_adjustment_rate
+        
+        # Limit the adjustment to prevent over-correction
+        max_adjustment = 30  # Maximum brightness change per frame
+        adjustment = np.clip(adjustment, -max_adjustment, max_adjustment)
+        
+        return adjustment
+
     def process_frame(self, frame):
         img = frame.copy()
+        
+        # Apply automatic brightness adjustment
+        if self.auto_brightness:
+            brightness_adjustment = self.calculate_auto_brightness_adjustment(img)
+            if abs(brightness_adjustment) > 1:  # Only adjust if significant difference
+                # Convert to float for calculations to avoid overflow/underflow
+                img = img.astype(np.float32)
+                img = img + brightness_adjustment
+                # Clip values to valid range [0, 255] and convert back to uint8
+                img = np.clip(img, 0, 255).astype(np.uint8)
         
         # Apply mono or auto-contrast if set programmatically
         if self.mono_enabled:
