@@ -158,15 +158,15 @@ class MainWindow(QMainWindow):
         return self.measurement_settings_widget
     
     def get_measurements_save_path(self):
-        """Get the configured measurements save path."""
+        """Get the configured save path (compatibility method)."""
         if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_measurements_path()
+            return self.measurement_settings_widget.get_save_path()
         return ""
     
-    def get_lookup_table_save_path(self):
-        """Get the configured lookup table save path."""
+    def get_save_path(self):
+        """Get the configured save path."""
         if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_lookup_table_path()
+            return self.measurement_settings_widget.get_save_path()
         return ""
     
     def get_hdf5_filename(self):
@@ -238,10 +238,23 @@ class MainWindow(QMainWindow):
     
     def _handle_save_recording(self, file_path):
         """Handle save recording request."""
+        import os
+        import shutil
+        
         logger.info(f"Saving recording to: {file_path}")
         
         try:
-            # Recording is already saved when stopped
+            # Get the original recorded file path for potential renaming
+            if hasattr(self.acquisition_controls_widget, 'original_recording_path'):
+                actual_recorded_path = self.acquisition_controls_widget.original_recording_path
+                if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
+                    # Need to move/rename the file to the desired path
+                    shutil.move(actual_recorded_path, file_path)
+                    logger.info(f"Renamed recording from {actual_recorded_path} to {file_path}")
+                elif not os.path.exists(file_path):
+                    # File doesn't exist - this shouldn't happen in auto-save
+                    logger.warning(f"Expected recording file not found: {file_path}")
+            
             self.statusBar().showMessage(f"Recording saved: {file_path}")
             logger.info(f"Recording saved successfully: {file_path}")
             

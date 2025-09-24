@@ -24,11 +24,21 @@ class MeasurementSettingsWidget(QGroupBox):
         logger.info("Initializing MeasurementSettingsWidget")
         
         # Initialize paths
-        self.measurements_save_path = ""
-        self.lookup_table_save_path = ""
+        self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"  # Default save path
         self.default_filename = datetime.now().strftime("%Y%m%d")
         
+        # Create default directory if it doesn't exist
+        self._create_default_directory()
+        
         self._init_ui()
+
+    def _create_default_directory(self):
+        """Create the default save directory if it doesn't exist."""
+        try:
+            os.makedirs(self.save_path, exist_ok=True)
+            logger.info(f"Default save directory ensured: {self.save_path}")
+        except Exception as e:
+            logger.warning(f"Could not create default directory {self.save_path}: {e}")
 
     def _init_ui(self):
         """Initialize the user interface."""
@@ -60,11 +70,8 @@ class MeasurementSettingsWidget(QGroupBox):
         layout = QVBoxLayout(section)
         
         # Create all form rows
-        self._add_path_row(layout, "Measurements Save Path:", "measurements", 
-                          "Select folder to save measurements...", self._browse_measurements_path)
-        
-        self._add_path_row(layout, "Lookup Table Save Path:", "lookup", 
-                          "Select folder to save lookup tables...", self._browse_lookup_path)
+        self._add_path_row(layout, "Save Path:", "save", 
+                          "Select folder to save files...", self._browse_save_path)
         
         self._add_filename_row(layout)
         
@@ -84,6 +91,11 @@ class MeasurementSettingsWidget(QGroupBox):
         
         line_edit = QLineEdit()
         line_edit.setPlaceholderText(placeholder)
+        
+        # Set default value if it's the save path
+        if attr_name == "save":
+            line_edit.setText(self.save_path)
+        
         setattr(self, f"{attr_name}_path_edit", line_edit)
         
         browse_btn = QPushButton("Browse...")
@@ -137,23 +149,14 @@ class MeasurementSettingsWidget(QGroupBox):
         
         layout.addLayout(row_layout)
 
-    def _browse_measurements_path(self):
-        """Browse for measurements save path."""
-        path = self._browse_for_directory("Select Measurements Save Directory", 
-                                         self.measurements_path_edit.text())
+    def _browse_save_path(self):
+        """Browse for save path."""
+        path = self._browse_for_directory("Select Save Directory", 
+                                         self.save_path_edit.text())
         if path:
-            self.measurements_path_edit.setText(path)
-            self.measurements_save_path = path
-            logger.info(f"Measurements save path set to: {path}")
-
-    def _browse_lookup_path(self):
-        """Browse for lookup table save path."""
-        path = self._browse_for_directory("Select Lookup Table Save Directory", 
-                                         self.lookup_path_edit.text())
-        if path:
-            self.lookup_path_edit.setText(path)
-            self.lookup_table_save_path = path
-            logger.info(f"Lookup table save path set to: {path}")
+            self.save_path_edit.setText(path)
+            self.save_path = path
+            logger.info(f"Save path set to: {path}")
     
     def _browse_for_directory(self, title, current_path):
         """Common directory browsing functionality."""
@@ -161,13 +164,13 @@ class MeasurementSettingsWidget(QGroupBox):
         return QFileDialog.getExistingDirectory(self, title, start_path)
 
     # Getter methods
-    def get_measurements_path(self):
-        """Get the current measurements save path."""
-        return self.measurements_save_path
+    def get_save_path(self):
+        """Get the current save path."""
+        return self.save_path
 
-    def get_lookup_table_path(self):
-        """Get the current lookup table save path."""
-        return self.lookup_table_save_path
+    def get_measurements_path(self):
+        """Get the current save path (compatibility method)."""
+        return self.save_path
 
     def get_sample_information(self):
         """Get the sample information."""
@@ -184,24 +187,21 @@ class MeasurementSettingsWidget(QGroupBox):
 
     def get_full_file_path(self):
         """Get the complete path for the HDF5 file."""
-        if not self.measurements_save_path:
+        if not self.save_path:
             return ""
-        return os.path.join(self.measurements_save_path, self.get_filename())
+        return os.path.join(self.save_path, self.get_filename())
 
     # Setter methods
-    def set_measurements_path(self, path):
-        """Set the measurements save path."""
+    def set_save_path(self, path):
+        """Set the save path."""
         if path and os.path.isdir(path):
-            self.measurements_save_path = path
-            self.measurements_path_edit.setText(path)
-            logger.info(f"Measurements path set to: {path}")
+            self.save_path = path
+            self.save_path_edit.setText(path)
+            logger.info(f"Save path set to: {path}")
 
-    def set_lookup_table_path(self, path):
-        """Set the lookup table save path."""
-        if path and os.path.isdir(path):
-            self.lookup_table_save_path = path
-            self.lookup_path_edit.setText(path)
-            logger.info(f"Lookup table path set to: {path}")
+    def set_measurements_path(self, path):
+        """Set the save path (compatibility method)."""
+        self.set_save_path(path)
 
     def set_filename(self, filename):
         """Set the filename (without .hdf5 extension)."""
@@ -225,8 +225,8 @@ class MeasurementSettingsWidget(QGroupBox):
 
     # Utility methods
     def is_configured(self):
-        """Check if all required paths are configured."""
-        return bool(self.measurements_save_path and self.lookup_table_save_path)
+        """Check if save path is configured."""
+        return bool(self.save_path)
 
 
 # Example usage if this file is run directly
