@@ -10,9 +10,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 
-from src.logger import get_logger
+from src.utils.logger import get_logger
 from src.controllers.camera_controller import CameraController
-from src.ui.components.status_display import StatusDisplay
+from src.utils.status_display import StatusDisplay
 
 logger = get_logger("camera_gui")
 
@@ -24,21 +24,18 @@ class CameraWidget(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
 
-        logger.info("Initializing CameraWidget")
+        logger.info("Camera initialized")
         
         # Check for camera module availability immediately
         try:
             # Try importing the module - don't need to use it yet
             from pyueye import ueye
-            logger.info("pyueye module is available")
             self.pyueye_available = True
         except ImportError as e:
             logger.warning(f"pyueye module import error: {e}")
-            logger.info("Will use test pattern mode instead")
             self.pyueye_available = False
         except Exception as e:
             logger.warning(f"Error checking pyueye module: {e}")
-            logger.info("Will use test pattern mode instead")
             self.pyueye_available = False
 
         # Camera state
@@ -164,7 +161,7 @@ class CameraWidget(QGroupBox):
         
         if elapsed_time > 5.0:  # 5-second timeout (reduced from 10)
             # Give up after 5 seconds and fall back to test pattern
-            logger.info(f"Camera initialization timeout after {self.reconnection_attempts} attempts, using test pattern")
+            logger.info("Camera hardware not found - using test pattern")
             self.use_test_pattern = True
             self.camera = None
             self.is_running = True
@@ -191,7 +188,7 @@ class CameraWidget(QGroupBox):
                 if not self.update_timer.isActive():
                     self.update_timer.start()
                 self.set_live_mode()  # Auto start live view
-                logger.info(f"Camera connected successfully after {self.reconnection_attempts} attempts")
+                logger.info("Camera connected")
                 # Re-enable initialize button (text stays the same)
                 self.reconnect_button.setEnabled(True)
                 return
@@ -206,7 +203,7 @@ class CameraWidget(QGroupBox):
             QTimer.singleShot(300, self.try_reconnect)  # Faster retry
             
         except Exception as e:
-            logger.info(f"Camera initialization attempt {self.reconnection_attempts}: {e}")
+            # Silent retry - only log if it becomes a persistent issue
             if self.camera:
                 try:
                     self.camera.close()
@@ -217,7 +214,6 @@ class CameraWidget(QGroupBox):
         
     def reconnect_camera(self):
         """Attempt to initialize/reconnect the camera hardware."""
-        logger.info("Attempting to initialize camera hardware...")
         self.update_status("Initializing...")
         
         # Stop current camera operations
@@ -251,28 +247,24 @@ class CameraWidget(QGroupBox):
             camera_id (int): ID of the camera to connect to (default: 0)
         """
         if self.is_running:
-            logger.info("Camera already running, skipping connection")
             return
         
-        logger.info("Starting camera initialization")
         self.update_status("Initializing...")
         
         # If pyueye is not available, use test pattern mode immediately
         if not self.pyueye_available:
-            logger.info("pyueye module not available, using test pattern")
             self._start_test_pattern_mode("Test Pattern Mode")
             return
         
         # Quick hardware check - don't spend too much time on startup
         try:
-            logger.info("Quick camera hardware check...")
             self.update_status("Connecting...")
             self.camera = CameraController(camera_id)
             
             # Use a shorter timeout for initial connection
             if self.camera.initialize():
                 # Camera initialized successfully
-                logger.info("Camera hardware connected successfully")
+                logger.info("Camera connected")
                 self.use_test_pattern = False
                 self.is_running = True
                 self.is_live = False
@@ -283,7 +275,6 @@ class CameraWidget(QGroupBox):
                 return
             else:
                 # Hardware initialization failed, use test pattern
-                logger.info("Camera hardware not responding, using test pattern")
                 if self.camera:
                     try:
                         self.camera.close()
@@ -294,7 +285,6 @@ class CameraWidget(QGroupBox):
                 return
             
         except Exception as e:
-            logger.info(f"Camera hardware check failed: {e}")
             if self.camera:
                 try:
                     self.camera.close()
@@ -305,7 +295,6 @@ class CameraWidget(QGroupBox):
     
     def _start_test_pattern_mode(self, status_text):
         """Helper method to start test pattern mode with the given status text"""
-        logger.info(f"Starting test pattern mode: {status_text}")
         self.camera = None
         self.use_test_pattern = True
         self.is_running = True
@@ -336,7 +325,6 @@ class CameraWidget(QGroupBox):
         
         # Handle test pattern mode specifically
         if self.use_test_pattern:
-            logger.info("Setting test pattern to live mode")
             self.is_live = True
             self.update_status("Test Pattern Active")
             self.update_button_states()
@@ -349,7 +337,6 @@ class CameraWidget(QGroupBox):
             return
             
         # Regular camera live mode
-        logger.info("Setting camera to live mode")
         self.is_live = True
         self.update_status("Live")
         self.update_button_states()
@@ -468,11 +455,9 @@ class CameraWidget(QGroupBox):
                     if frame is None:
                         # Frame retrieval failed but no exception
                         self.warning_count += 1
-                        if self.warning_count == 1:  # Only log first occurrence
-                            logger.info("No frame available from camera")
                         # Don't return immediately, skip a few more attempts then switch to test pattern
                         if self.warning_count > 10:  # After 10 failed attempts (~330ms)
-                            logger.info("Too many failed frame attempts, switching to test pattern")
+                            logger.info("Camera hardware error - switching to test pattern")
                             self.use_test_pattern = True
                             self.update_status("Hardware Error - Test Pattern")
                             self.warning_count = 0
@@ -492,12 +477,11 @@ class CameraWidget(QGroupBox):
                     # Switch to test pattern after several errors instead of just logging
                     if self.warning_count >= 5:  # After 5 errors (~165ms)
                         if "closed camera" in error_msg or "camera not found" in error_msg:
-                            logger.info("Camera disconnected, switching to test pattern")
+                            logger.info("Camera disconnected")
                             self.use_test_pattern = True
                             self.update_status("Initialize")
                             self.camera_error = "Camera disconnected"
                         else:
-                            logger.info(f"Camera error, switching to test pattern: {e}")
                             self.use_test_pattern = True
                             self.update_status("Hardware Error - Test Pattern")
                             self.camera_error = str(e)

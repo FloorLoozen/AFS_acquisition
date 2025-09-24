@@ -4,12 +4,12 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QTimer
 
-from src.logger import get_logger
+from src.utils.logger import get_logger
 from src.ui.widgets.camera_widget import CameraWidget
 from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
 from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
 from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
-from src.ui.keyboard_shortcuts import KeyboardShortcutManager
+from src.utils.keyboard_shortcuts import KeyboardShortcutManager
 
 logger = get_logger("ui")
 
@@ -19,7 +19,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        logger.info("Initializing main window")
+        logger.info("AFS Tracking started")
         
         # Initialize widget references
         self.camera_widget = None
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
     
     def _handle_start_recording(self, file_path):
         """Handle start recording request."""
-        logger.info(f"Starting recording to: {file_path}")
+# Recording start logged by acquisition controls
         
         if not self.camera_widget or not self.camera_widget.is_running:
             self.acquisition_controls_widget.recording_failed(
@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
                 if success:
                     self.acquisition_controls_widget.recording_started_successfully()
                     self.statusBar().showMessage(f"Recording started: {file_path}")
-                    logger.info(f"Recording started successfully: {file_path}")
+# Success already logged by acquisition controls
                 else:
                     self.acquisition_controls_widget.recording_failed("Failed to start video recording in camera.")
             else:
@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
     
     def _handle_stop_recording(self):
         """Handle stop recording request."""
-        logger.info("Stopping recording")
+# Stop logged by acquisition controls
         
         try:
             if hasattr(self.camera_widget, 'stop_recording'):
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
                 if saved_path:
                     self.acquisition_controls_widget.recording_stopped_successfully(saved_path)
                     self.statusBar().showMessage(f"Recording stopped: {saved_path}")
-                    logger.info(f"Recording stopped successfully: {saved_path}")
+# Success already logged by acquisition controls
                 else:
                     self.acquisition_controls_widget.recording_failed("Failed to stop recording properly.")
             else:
@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
         import os
         import shutil
         
-        logger.info(f"Saving recording to: {file_path}")
+# Save result will be logged
         
         try:
             # Get the original recorded file path for potential renaming
@@ -250,13 +250,13 @@ class MainWindow(QMainWindow):
                 if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
                     # Need to move/rename the file to the desired path
                     shutil.move(actual_recorded_path, file_path)
-                    logger.info(f"Renamed recording from {actual_recorded_path} to {file_path}")
+# Rename handled silently
                 elif not os.path.exists(file_path):
                     # File doesn't exist - this shouldn't happen in auto-save
                     logger.warning(f"Expected recording file not found: {file_path}")
             
             self.statusBar().showMessage(f"Recording saved: {file_path}")
-            logger.info(f"Recording saved successfully: {file_path}")
+# Save logged by acquisition controls
             
             # Clear status after delay
             QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         
     def _initialize_hardware(self):
         """Initialize all hardware components at startup."""
-        logger.info("Initializing hardware components...")
+# Hardware initialization starts
         self.statusBar().showMessage("Initializing hardware...")
         
         try:
@@ -284,14 +284,14 @@ class MainWindow(QMainWindow):
     
     def _init_camera(self):
         """Initialize camera hardware."""
-        logger.info("Initializing camera...")
+# Camera initialization
         self.statusBar().showMessage("Initializing camera... Please wait")
         
         try:
             if self.camera_widget and hasattr(self.camera_widget, 'is_running'):
                 if self.camera_widget.is_running:
                     mode = "test pattern" if getattr(self.camera_widget, 'use_test_pattern', False) else "hardware"
-                    logger.info(f"Camera initialized in {mode} mode")
+# Camera mode info shown in status bar
                     self.statusBar().showMessage(f"Camera running in {mode} mode")
                 else:
                     logger.info("Camera widget starting initialization")
@@ -303,9 +303,17 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             
     def _init_xy_stage(self):
-        """Initialize XY stage hardware (placeholder)."""
-        logger.info("XY stage initialization - not implemented yet")
+        """Initialize XY stage hardware."""
+        try:
+            from src.controllers.stage_manager import StageManager
+            stage_manager = StageManager.get_instance()
+            if stage_manager.connect():
+                logger.info("XY stage connected")
+            else:
+                logger.warning("XY stage connection failed")
+        except Exception as e:
+            logger.warning(f"XY stage initialization failed: {e}")
     
     def _init_function_generator(self):
         """Initialize function generator hardware (placeholder).""" 
-        logger.info("Function generator initialization - not implemented yet")
+# Function generator initialization placeholder

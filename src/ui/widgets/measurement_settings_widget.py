@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QFileDialog, QFrame, QWidget
 )
 
-from src.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger("measurement_settings")
 
@@ -21,7 +21,7 @@ class MeasurementSettingsWidget(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("Measurement Settings", parent)
         
-        logger.info("Initializing MeasurementSettingsWidget")
+# Measurement settings initialized
         
         # Initialize paths
         self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"  # Default save path
@@ -36,7 +36,7 @@ class MeasurementSettingsWidget(QGroupBox):
         """Create the default save directory if it doesn't exist."""
         try:
             os.makedirs(self.save_path, exist_ok=True)
-            logger.info(f"Default save directory ensured: {self.save_path}")
+# Save directory ready
         except Exception as e:
             logger.warning(f"Could not create default directory {self.save_path}: {e}")
 

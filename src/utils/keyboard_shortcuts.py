@@ -2,8 +2,8 @@ from PyQt5.QtWidgets import QShortcut
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt
 
-from src.controllers.xy_stage.stage_manager import StageManager
-from src.logger import get_logger
+from src.controllers.stage_manager import StageManager
+from src.utils.logger import get_logger
 
 logger = get_logger("keyboard_shortcuts")
 

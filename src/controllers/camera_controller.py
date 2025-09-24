@@ -9,7 +9,7 @@ import numpy as np
 # Fix imports to work with both direct run and module run
 
 # Import our custom logger
-from src.logger import get_logger
+from src.utils.logger import get_logger
 
 # Get logger for this module
 logger = get_logger("camera")
@@ -62,7 +62,7 @@ class CameraController:
         Returns:
             bool: True if all steps succeeded, False otherwise
         """
-        logger.info(f"Initializing camera (ID: {self.camera_id})")
+# Camera initialization starting
         
         try:
             # Reset state if we're reinitializing
@@ -117,7 +117,7 @@ class CameraController:
                 self.close()  # Clean up
                 return False
     
-            logger.info(f"Camera connected successfully (ID: {self.camera_id})")
+# Connection logged by camera widget
             self._is_open = True
             return True
             
@@ -179,7 +179,7 @@ class CameraController:
         ret = ueye.is_ExitCamera(self.h_cam)
         if ret == ueye.IS_SUCCESS:
             self._is_disconnected = True
-            logger.info(f"Camera disconnected (ID: {self.h_cam.value})")
+# Disconnection logged by camera widget
         elif ret != 1:  # Only log if it's a real failure; code 1 means already closed
             logger.error(f"Disconnect failed (ID: {self.h_cam.value}, code: {ret})")
             
@@ -212,7 +212,7 @@ class CameraController:
             
         self._is_open = False
         self._is_disconnected = True
-        logger.info("Camera resources released")
+# Resources cleaned up
 
 
 # Example usage if this file is run directly

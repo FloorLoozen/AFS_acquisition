@@ -6,7 +6,7 @@ This module provides an interface to the XY stage hardware using MCL's MicroDriv
 import ctypes
 import time
 # Import logger from package
-from src.logger import get_logger
+from src.utils.logger import get_logger
 
 # Get logger for this module
 logger = get_logger("xy_stage")

@@ -11,8 +11,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal, QTimer
 
-from src.logger import get_logger
-from src.ui.components.status_display import StatusDisplay
+from src.utils.logger import get_logger
+from src.utils.status_display import StatusDisplay
 
 logger = get_logger("acquisition_controls")
 
@@ -28,7 +28,7 @@ class AcquisitionControlsWidget(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("Acquisition Controls", parent)
         
-        logger.info("Initializing AcquisitionControlsWidget")
+# Removed verbose initialization logging
         
         # Recording state
         self.is_recording = False
@@ -101,7 +101,7 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def start_recording(self):
         """Start recording measurement data and video."""
-        logger.info("Start recording button clicked")
+        logger.info("Recording started")
         
         # Check if measurement settings are configured
         if not self.measurement_settings_widget or not self.measurement_settings_widget.is_configured():
@@ -136,7 +136,7 @@ class AcquisitionControlsWidget(QGroupBox):
             # Update status
             self.status_display.set_status("Recording")
             
-            logger.info(f"Recording started - target path: {full_path}")
+# Target path logged in main window
             
         except Exception as e:
             logger.error(f"Error starting recording: {e}")
@@ -145,7 +145,7 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def stop_recording(self):
         """Stop recording measurement data and trigger automatic saving."""
-        logger.info("Stop recording button clicked")
+        logger.info("Recording stopped")
         
         try:
             # Emit signal to stop recording
@@ -165,7 +165,7 @@ class AcquisitionControlsWidget(QGroupBox):
             # Start automatic saving after 1 second
             self.auto_save_timer.start(1000)  # 1 second delay
             
-            logger.info("Recording stopped, automatic saving will start in 1 second")
+# Auto-saving will be logged when it happens
             
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
@@ -174,7 +174,7 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def save_recording(self):
         """Save the recorded measurement data."""
-        logger.info("Save recording button clicked")
+# Save action will be logged when completed
         
         if not self.current_recording_path:
             QMessageBox.warning(self, "No Recording", 
@@ -210,12 +210,12 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def recording_started_successfully(self):
         """Called when recording actually starts successfully in the camera."""
-        logger.info("Recording confirmed as started successfully")
+# Success already logged
         # Status is already set in start_recording, but we could update here if needed
 
     def recording_stopped_successfully(self, saved_path=None):
         """Called when recording stops successfully in the camera."""
-        logger.info(f"Recording confirmed as stopped successfully, path: {saved_path}")
+# Success already logged in main window
         if saved_path:
             self.current_recording_path = saved_path
             self.original_recording_path = saved_path  # Store for potential renaming
@@ -235,7 +235,7 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def _auto_save_recording(self):
         """Automatically save recording and update status."""
-        logger.info("Auto-saving recording")
+# Final save result will be logged
         
         if not self.current_recording_path:
             logger.warning("No recording path available for auto-save")
@@ -247,7 +247,7 @@ class AcquisitionControlsWidget(QGroupBox):
             
             # If the unique filename is different, we need to rename the file
             if final_save_path != self.current_recording_path:
-                logger.info(f"Renaming file to avoid conflict: {self.current_recording_path} -> {final_save_path}")
+                pass  # File rename logged in main window
             
             # Emit signal to save recording
             self.save_recording_requested.emit(final_save_path)
@@ -258,7 +258,7 @@ class AcquisitionControlsWidget(QGroupBox):
             # Clear status after 3 seconds
             self.status_clear_timer.start(3000)
             
-            logger.info(f"Auto-saved recording to: {final_save_path}")
+            logger.info(f"Saved: {os.path.basename(final_save_path)}")
             
         except Exception as e:
             logger.error(f"Error in auto-save: {e}")
@@ -278,7 +278,7 @@ class AcquisitionControlsWidget(QGroupBox):
             new_name = f"{name}_{counter}{ext}"
             new_path = os.path.join(dir_path, new_name)
             if not os.path.exists(new_path):
-                logger.info(f"File exists, using incremented name: {new_name}")
+# File increment handled silently
                 return new_path
             counter += 1
 

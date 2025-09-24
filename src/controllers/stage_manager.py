@@ -5,8 +5,8 @@ Provides global access to the XY stage controller.
 
 from typing import Optional, Tuple
 
-from src.controllers.xy_stage.xy_stage_controller import XYStageController
-from src.logger import get_logger
+from src.controllers.xy_stage_controller import XYStageController
+from src.utils.logger import get_logger
 
 # Get logger for this module
 logger = get_logger("stage_manager")
@@ -43,11 +43,11 @@ class StageManager:
         if self._is_connected and self._stage is not None:
             return True
         try:
-            logger.info("Connecting to XY stage via manager")
+            logger.info("XY stage connecting")
             self._stage = XYStageController()
             if self._stage.connect():
                 self._is_connected = True
-                logger.info("XY stage connected via manager")
+                logger.info("XY stage connected")
                 return True
             logger.error("Failed to connect to XY stage via manager")
             self._stage = None
@@ -64,7 +64,7 @@ class StageManager:
             self._stage.disconnect()
             self._stage = None
             self._is_connected = False
-            logger.info("XY stage disconnected via manager")
+            logger.info("XY stage disconnected")
         except Exception as e:
             logger.error(f"Error disconnecting from XY stage: {e}")
 

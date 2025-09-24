@@ -116,7 +116,7 @@ class AFSLogger:
         'CRITICAL': logging.CRITICAL
     }
     
-    def __init__(self, name="main", log_dir=None, console_level='DEBUG', file_level='DEBUG'):
+    def __init__(self, name="main", log_dir=None, console_level='INFO', file_level='DEBUG'):
         """
         Initialize the logger with the specified name and levels.
         

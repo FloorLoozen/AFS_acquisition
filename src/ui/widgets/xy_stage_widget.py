@@ -6,8 +6,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QCloseEvent, QCursor
 
-from src.logger import get_logger
-from src.controllers.xy_stage.stage_manager import StageManager
+from src.utils.logger import get_logger
+from src.controllers.stage_manager import StageManager
 
 logger = get_logger("xy_stage_gui")
 

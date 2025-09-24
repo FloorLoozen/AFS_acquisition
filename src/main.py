@@ -11,7 +11,7 @@ if project_root not in sys.path:
 # Now imports should work correctly
 
 from src.ui.main_window import MainWindow
-from src.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger("main")
 
