@@ -204,13 +204,24 @@ class MainWindow(QMainWindow):
         
         try:
             if hasattr(self.camera_widget, 'start_recording'):
-                success = self.camera_widget.start_recording(file_path)
+                # Gather metadata from measurement settings
+                metadata = {}
+                if self.measurement_settings_widget:
+                    metadata['sample_name'] = self.measurement_settings_widget.get_sample_information()
+                    metadata['measurement_notes'] = self.measurement_settings_widget.get_notes()
+                    metadata['save_path'] = self.measurement_settings_widget.get_save_path()
+                
+                # Add recording parameters
+                metadata['target_fps'] = 60.0
+                metadata['pixel_size_um'] = 0.1  # Placeholder - should come from calibration
+                
+                success = self.camera_widget.start_recording(file_path, metadata)
                 if success:
                     self.acquisition_controls_widget.recording_started_successfully()
-                    self.statusBar().showMessage(f"Recording started: {file_path}")
+                    self.statusBar().showMessage(f"HDF5 recording started: {file_path}")
 # Success already logged by acquisition controls
                 else:
-                    self.acquisition_controls_widget.recording_failed("Failed to start video recording in camera.")
+                    self.acquisition_controls_widget.recording_failed("Failed to start HDF5 recording in camera.")
             else:
                 self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
         except Exception as e:
@@ -226,10 +237,10 @@ class MainWindow(QMainWindow):
                 saved_path = self.camera_widget.stop_recording()
                 if saved_path:
                     self.acquisition_controls_widget.recording_stopped_successfully(saved_path)
-                    self.statusBar().showMessage(f"Recording stopped: {saved_path}")
+                    self.statusBar().showMessage(f"HDF5 recording stopped: {saved_path}")
 # Success already logged by acquisition controls
                 else:
-                    self.acquisition_controls_widget.recording_failed("Failed to stop recording properly.")
+                    self.acquisition_controls_widget.recording_failed("Failed to stop HDF5 recording properly.")
             else:
                 self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
         except Exception as e:
@@ -255,7 +266,7 @@ class MainWindow(QMainWindow):
                     # File doesn't exist - this shouldn't happen in auto-save
                     logger.warning(f"Expected recording file not found: {file_path}")
             
-            self.statusBar().showMessage(f"Recording saved: {file_path}")
+            self.statusBar().showMessage(f"HDF5 recording saved: {file_path}")
 # Save logged by acquisition controls
             
             # Clear status after delay

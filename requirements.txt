@@ -4,3 +4,5 @@ opencv-python
 # pyueye==4.1.0  # Not available for Python 3.13, install manually
 PyQt5
 python-dateutil
+h5py
+matplotlib

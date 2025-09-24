@@ -13,6 +13,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from src.utils.logger import get_logger
 from src.controllers.camera_controller import CameraController
 from src.utils.status_display import StatusDisplay
+from src.utils.hdf5_video_recorder import HDF5VideoRecorder
 
 logger = get_logger("camera_gui")
 
@@ -61,7 +62,7 @@ class CameraWidget(QGroupBox):
         
         # Video recording state
         self.is_recording = False
-        self.video_writer = None
+        self.hdf5_recorder = None
         self.recording_path = ""
         self.recording_start_time = None
         self.recorded_frames = 0
@@ -570,12 +571,13 @@ class CameraWidget(QGroupBox):
             
         self.display_label.setPixmap(pix)
 
-    def start_recording(self, file_path):
+    def start_recording(self, file_path, metadata=None):
         """
-        Start recording video to the specified file path.
+        Start recording video to the specified HDF5 file path.
         
         Args:
             file_path (str): Full path where the video should be saved (with .hdf5 extension)
+            metadata (dict): Optional metadata to include in the recording
             
         Returns:
             bool: True if recording started successfully, False otherwise
@@ -589,46 +591,74 @@ class CameraWidget(QGroupBox):
             return False
         
         try:
-            # Convert .hdf5 path to .avi for video recording (more compatible than mp4)
-            video_path = file_path.replace('.hdf5', '.avi')
+            # Ensure file path has .hdf5 extension
+            if not file_path.lower().endswith('.hdf5'):
+                file_path = file_path + '.hdf5'
             
             # Ensure directory exists
-            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # Set up video writer
-            # Use XVID codec with AVI container for maximum compatibility
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            fps = 30  # Target FPS
-            frame_size = (640, 480)  # Standard frame size
+            # Determine frame shape from current camera or test pattern
+            if self.use_test_pattern:
+                frame_shape = (480, 640, 3)  # Test pattern dimensions
+            else:
+                # Get frame shape from camera (convert ctypes to int)
+                if self.camera:
+                    height = int(self.camera.height)
+                    width = int(self.camera.width)
+                    frame_shape = (height, width, 3)
+                else:
+                    frame_shape = (480, 640, 3)
             
-            self.video_writer = cv2.VideoWriter(video_path, fourcc, fps, frame_size)
+            # Create HDF5 recorder
+            self.hdf5_recorder = HDF5VideoRecorder(
+                file_path=file_path,
+                frame_shape=frame_shape,
+                fps=60.0,  # Set to 60 Hz as requested
+                compression='lzf'  # Fast compression for random access
+            )
             
-            if not self.video_writer.isOpened():
-                logger.error("Failed to open video writer")
+            # Start recording with metadata
+            recording_metadata = {
+                'recording_mode': 'test_pattern' if self.use_test_pattern else 'camera',
+                'camera_id': getattr(self.camera, 'camera_id', 0) if self.camera else 0,
+                'operator': os.getenv('USERNAME', 'Unknown'),
+                'system_name': 'AFS_tracking'
+            }
+            
+            # Add user-provided metadata
+            if metadata:
+                recording_metadata.update(metadata)
+            
+            if not self.hdf5_recorder.start_recording(recording_metadata):
+                logger.error("Failed to start HDF5 recording")
                 return False
             
             # Set recording state
             self.is_recording = True
-            self.recording_path = video_path
+            self.recording_path = file_path
             self.recording_start_time = datetime.now()
             self.recorded_frames = 0
             
-            logger.info(f"Started recording video to: {video_path}")
+            logger.info(f"Started HDF5 recording to: {file_path}")
             return True
             
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
+            if self.hdf5_recorder:
+                try:
+                    self.hdf5_recorder.stop_recording()
+                except:
+                    pass
+                self.hdf5_recorder = None
             return False
 
     def stop_recording(self):
         """
-        Stop recording video and close the file.
+        Stop recording video and close the HDF5 file.
         
         Returns:
-            str: Path to the saved video file, or None if recording failed
+            str: Path to the saved HDF5 file, or None if recording failed
         """
         if not self.is_recording:
             logger.warning("No recording in progress")
@@ -638,14 +668,16 @@ class CameraWidget(QGroupBox):
             # Stop recording
             self.is_recording = False
             
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
+            if self.hdf5_recorder:
+                success = self.hdf5_recorder.stop_recording()
+                if not success:
+                    logger.warning("HDF5 recorder reported failure during stop")
+                self.hdf5_recorder = None
             
             # Calculate recording duration
             if self.recording_start_time:
                 duration = datetime.now() - self.recording_start_time
-                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
+                logger.info(f"HDF5 recording stopped. Duration: {duration.total_seconds():.1f}s, "
                            f"Frames: {self.recorded_frames}, Path: {self.recording_path}")
             
             saved_path = self.recording_path
@@ -656,30 +688,35 @@ class CameraWidget(QGroupBox):
             return saved_path
             
         except Exception as e:
-            logger.error(f"Error stopping recording: {e}")
+            logger.error(f"Error stopping HDF5 recording: {e}")
             return None
 
     def _record_frame(self, frame):
         """
-        Record a frame to the video file if recording is active.
+        Record a frame to the HDF5 file if recording is active.
         
         Args:
             frame: The frame to record (BGR format)
         """
-        if not self.is_recording or not self.video_writer:
+        if not self.is_recording or not self.hdf5_recorder:
             return
         
         try:
-            # Ensure frame is the correct size
-            if frame.shape[:2] != (480, 640):  # (height, width)
-                frame = cv2.resize(frame, (640, 480))
+            # Ensure frame is the correct size for the recorder
+            expected_shape = self.hdf5_recorder.frame_shape
+            if frame.shape != expected_shape:
+                # Resize frame to match expected shape
+                target_height, target_width = expected_shape[:2]
+                frame = cv2.resize(frame, (target_width, target_height))
             
-            # Write frame to video
-            self.video_writer.write(frame)
-            self.recorded_frames += 1
+            # Record frame to HDF5
+            if self.hdf5_recorder.record_frame(frame):
+                self.recorded_frames += 1
+            else:
+                logger.warning(f"Failed to record frame {self.recorded_frames}")
             
         except Exception as e:
-            logger.error(f"Error recording frame: {e}")
+            logger.error(f"Error recording frame to HDF5: {e}")
 
     # Basic keyboard shortcuts for tests
     def keyPressEvent(self, event):
