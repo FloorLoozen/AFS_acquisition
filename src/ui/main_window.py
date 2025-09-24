@@ -12,6 +12,8 @@ from PyQt5.QtGui import QCursor
 from src.logger import get_logger
 from src.ui.widgets.camera_widget import CameraWidget
 from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
+from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
+from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
 from src.ui.keyboard_shortcuts import KeyboardShortcutManager
 
 logger = get_logger("ui")
@@ -32,6 +34,8 @@ class MainWindow(QMainWindow):
         logger.info("Initializing main window")
         self.camera_widget = None
         self.measurement_settings_widget = None
+        self.acquisition_controls_widget = None
+        self.measurement_controls_widget = None
         self.init_ui()
         self.keyboard_shortcuts = KeyboardShortcutManager(self)
         
@@ -96,35 +100,40 @@ class MainWindow(QMainWindow):
     def _create_central_layout(self):
         """
         Create the main window layout with a 2-column grid:
-        - Left column (60%): Control panels split into two rows
+        - Left column (45%): Control panels split into three rows
           - Top row: Measurement settings
-          - Bottom row: Control buttons
-        - Right column (40%): Camera view spanning both rows
+          - Middle row: Acquisition controls  
+          - Bottom row: Measurement controls
+        - Right column (55%): Camera view spanning all three rows
         """
         central = QWidget(self)
         main_layout = QGridLayout(central)
         main_layout.setContentsMargins(6, 6, 6, 6)
         
-        # Left column - split into two rows
+        # Left column - split into three rows
         measurement_settings = self._create_measurement_settings_widget()
         main_layout.addWidget(measurement_settings, 0, 0)
         
-        measurement_controls = self._create_measurement_controls_widget()
-        main_layout.addWidget(measurement_controls, 1, 0)
+        acquisition_controls = self._create_acquisition_controls_widget()
+        main_layout.addWidget(acquisition_controls, 1, 0)
         
-        # Right column - Camera widget spanning both rows
+        measurement_controls = self._create_measurement_controls_widget()
+        main_layout.addWidget(measurement_controls, 2, 0)
+        
+        # Right column - Camera widget spanning all three rows
         self.camera_widget = CameraWidget()
         self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.camera_widget.setMinimumWidth(400)
-        main_layout.addWidget(self.camera_widget, 0, 1, 2, 1)  # Span 2 rows
+        main_layout.addWidget(self.camera_widget, 0, 1, 3, 1)  # Span 3 rows
         
-        # Set column stretch factors to 60:40
-        main_layout.setColumnStretch(0, 3)  # Control column (60%)
-        main_layout.setColumnStretch(1, 2)  # Camera column (40%)
+        # Set column stretch factors to 45:55 - balanced layout with slightly larger camera
+        main_layout.setColumnStretch(0, 45)  # Control column (45%)
+        main_layout.setColumnStretch(1, 55)  # Camera column (55%)
         
         # Set row stretch factors
         main_layout.setRowStretch(0, 1)  # Measurement settings
-        main_layout.setRowStretch(1, 1)  # Measurement controls
+        main_layout.setRowStretch(1, 1)  # Acquisition controls
+        main_layout.setRowStretch(2, 1)  # Measurement controls
         
         self.setCentralWidget(central)
         
@@ -133,15 +142,25 @@ class MainWindow(QMainWindow):
         self.measurement_settings_widget = MeasurementSettingsWidget()
         return self.measurement_settings_widget
         
+    def _create_acquisition_controls_widget(self):
+        """Create the acquisition controls widget (middle-left)."""
+        self.acquisition_controls_widget = AcquisitionControlsWidget()
+        
+        # Connect the acquisition controls to the measurement settings
+        if self.measurement_settings_widget:
+            self.acquisition_controls_widget.set_measurement_settings_widget(self.measurement_settings_widget)
+        
+        # Connect signals from acquisition controls to camera widget
+        self.acquisition_controls_widget.start_recording_requested.connect(self.handle_start_recording)
+        self.acquisition_controls_widget.stop_recording_requested.connect(self.handle_stop_recording)
+        self.acquisition_controls_widget.save_recording_requested.connect(self.handle_save_recording)
+        
+        return self.acquisition_controls_widget
+    
     def _create_measurement_controls_widget(self):
         """Create the measurement controls widget (bottom-left)."""
-        group = QGroupBox("Measurement Controls")
-        layout = QVBoxLayout(group)
-        
-        # Just an empty layout for now
-        layout.addStretch(1)
-        
-        return group
+        self.measurement_controls_widget = MeasurementControlsWidget()
+        return self.measurement_controls_widget
 
     # Menu handlers
     def open_camera_settings(self):
@@ -224,6 +243,80 @@ class MainWindow(QMainWindow):
         if self.measurement_settings_widget:
             return self.measurement_settings_widget.get_notes()
         return ""
+    
+    def handle_start_recording(self, file_path):
+        """Handle start recording request from measurement controls."""
+        logger.info(f"Starting recording to: {file_path}")
+        
+        # Check if camera is available and running
+        if not self.camera_widget or not self.camera_widget.is_running:
+            self.acquisition_controls_widget.recording_failed("Camera is not running. Please ensure camera is connected and running.")
+            return
+        
+        try:
+            # Start video recording in camera widget
+            if hasattr(self.camera_widget, 'start_recording'):
+                success = self.camera_widget.start_recording(file_path)
+                if success:
+                    self.acquisition_controls_widget.recording_started_successfully()
+                    self.statusBar().showMessage(f"Recording started: {file_path}")
+                    logger.info(f"Recording started successfully: {file_path}")
+                else:
+                    self.acquisition_controls_widget.recording_failed("Failed to start video recording in camera.")
+            else:
+                self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
+                
+        except Exception as e:
+            logger.error(f"Error starting recording: {e}")
+            self.acquisition_controls_widget.recording_failed(f"Error starting recording: {str(e)}")
+    
+    def handle_stop_recording(self):
+        """Handle stop recording request from measurement controls."""
+        logger.info("Stopping recording")
+        
+        try:
+            # Stop video recording in camera widget
+            if hasattr(self.camera_widget, 'stop_recording'):
+                saved_path = self.camera_widget.stop_recording()
+                if saved_path:
+                    self.acquisition_controls_widget.recording_stopped_successfully(saved_path)
+                    self.statusBar().showMessage(f"Recording stopped: {saved_path}")
+                    logger.info(f"Recording stopped successfully: {saved_path}")
+                else:
+                    self.acquisition_controls_widget.recording_failed("Failed to stop recording properly.")
+            else:
+                self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
+                
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}")
+            self.acquisition_controls_widget.recording_failed(f"Error stopping recording: {str(e)}")
+    
+    def handle_save_recording(self, file_path):
+        """Handle save recording request from measurement controls."""
+        logger.info(f"Saving recording to: {file_path}")
+        
+        try:
+            # For now, the recording is already saved when stopped
+            # In the future, this could handle additional metadata saving, HDF5 creation, etc.
+            
+            # Update status
+            self.statusBar().showMessage(f"Recording saved: {file_path}")
+            logger.info(f"Recording saved successfully: {file_path}")
+            
+            # Clear the acquisition controls status after a delay
+            QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+            
+        except Exception as e:
+            logger.error(f"Error saving recording: {e}")
+            self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
+            
+    def start_measurement(self):
+        """Legacy method - replaced by measurement controls widget."""
+        pass
+    
+    def stop_measurement(self):
+        """Legacy method - replaced by measurement controls widget."""
+        pass
         
     def initialize_hardware(self):
         """

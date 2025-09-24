@@ -1,6 +1,8 @@
 import time
 import numpy as np
 import cv2
+import os
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QFrame, QSizePolicy, QGridLayout, QSlider
@@ -99,6 +101,13 @@ class CameraWidget(QGroupBox):
         # Display + timers
         self.display_label = QLabel()
         self.display_label.setAlignment(Qt.AlignCenter)
+        
+        # Video recording state
+        self.is_recording = False
+        self.video_writer = None
+        self.recording_path = ""
+        self.recording_start_time = None
+        self.recorded_frames = 0
         
         # Maximize camera view - set size policy to strongly expand in both directions
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -491,6 +500,10 @@ class CameraWidget(QGroupBox):
                     return
                     
             frame = self.process_frame(frame)
+            
+            # Record frame if recording is active
+            self._record_frame(frame)
+            
             self.display_frame(frame)
             
         except Exception as e:
@@ -567,6 +580,117 @@ class CameraWidget(QGroupBox):
                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
         self.display_label.setPixmap(pix)
+
+    def start_recording(self, file_path):
+        """
+        Start recording video to the specified file path.
+        
+        Args:
+            file_path (str): Full path where the video should be saved (with .hdf5 extension)
+            
+        Returns:
+            bool: True if recording started successfully, False otherwise
+        """
+        if self.is_recording:
+            logger.warning("Recording already in progress")
+            return False
+        
+        if not self.is_running or not self.is_live:
+            logger.warning("Cannot start recording - camera not in live mode")
+            return False
+        
+        try:
+            # Convert .hdf5 path to .avi for video recording (more compatible than mp4)
+            video_path = file_path.replace('.hdf5', '.avi')
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            
+            # Set up video writer
+            # Use XVID codec with AVI container for maximum compatibility
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            fps = 30  # Target FPS
+            frame_size = (640, 480)  # Standard frame size
+            
+            self.video_writer = cv2.VideoWriter(video_path, fourcc, fps, frame_size)
+            
+            if not self.video_writer.isOpened():
+                logger.error("Failed to open video writer")
+                return False
+            
+            # Set recording state
+            self.is_recording = True
+            self.recording_path = video_path
+            self.recording_start_time = datetime.now()
+            self.recorded_frames = 0
+            
+            logger.info(f"Started recording video to: {video_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start recording: {e}")
+            if self.video_writer:
+                self.video_writer.release()
+                self.video_writer = None
+            return False
+
+    def stop_recording(self):
+        """
+        Stop recording video and close the file.
+        
+        Returns:
+            str: Path to the saved video file, or None if recording failed
+        """
+        if not self.is_recording:
+            logger.warning("No recording in progress")
+            return None
+        
+        try:
+            # Stop recording
+            self.is_recording = False
+            
+            if self.video_writer:
+                self.video_writer.release()
+                self.video_writer = None
+            
+            # Calculate recording duration
+            if self.recording_start_time:
+                duration = datetime.now() - self.recording_start_time
+                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
+                           f"Frames: {self.recorded_frames}, Path: {self.recording_path}")
+            
+            saved_path = self.recording_path
+            self.recording_path = ""
+            self.recording_start_time = None
+            self.recorded_frames = 0
+            
+            return saved_path
+            
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}")
+            return None
+
+    def _record_frame(self, frame):
+        """
+        Record a frame to the video file if recording is active.
+        
+        Args:
+            frame: The frame to record (BGR format)
+        """
+        if not self.is_recording or not self.video_writer:
+            return
+        
+        try:
+            # Ensure frame is the correct size
+            if frame.shape[:2] != (480, 640):  # (height, width)
+                frame = cv2.resize(frame, (640, 480))
+            
+            # Write frame to video
+            self.video_writer.write(frame)
+            self.recorded_frames += 1
+            
+        except Exception as e:
+            logger.error(f"Error recording frame: {e}")
 
     # Basic keyboard shortcuts for tests
     def keyPressEvent(self, event):
