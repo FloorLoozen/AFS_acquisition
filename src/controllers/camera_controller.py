@@ -1,88 +1,183 @@
 """
-Camera controller module for the AFS Tracking System.
-Provides access to the IDS camera using pyueye.
+High-performance camera controller module with multi-threaded video acquisition.
+Provides background frame capture with queuing to reduce lag and increase frame rates.
 """
 
-from pyueye import ueye
+import threading
+import time
+import queue
 import numpy as np
+from typing import Optional, Tuple, Any, Dict
+from dataclasses import dataclass
+from datetime import datetime
 
-# Fix imports to work with both direct run and module run
-
-# Import our custom logger
 from src.utils.logger import get_logger
 
-# Get logger for this module
+# Try to import pyueye, fall back gracefully
+try:
+    from pyueye import ueye
+    import ctypes
+    PYUEYE_AVAILABLE = True
+except ImportError:
+    PYUEYE_AVAILABLE = False
+    ueye = None
+    ctypes = None
+
 logger = get_logger("camera")
+
+
+@dataclass
+class FrameData:
+    """Container for frame data with metadata."""
+    frame: np.ndarray
+    timestamp: float
+    frame_number: int
+    camera_id: int
 
 
 class CameraController:
     """
-    Controller for IDS cameras using the uEye API.
-    Handles camera initialization, frame capture, and cleanup.
+    High-performance camera controller with background frame capture.
+    
+    Features:
+    - Background thread for continuous frame capture
+    - Thread-safe queue for frame buffering
+    - Configurable frame dropping to maintain real-time performance
+    - Statistics tracking (FPS, dropped frames, etc.)
+    - Test pattern mode when no camera hardware is available
     """
-    def __init__(self, camera_id=0):
+    
+    def __init__(self, camera_id: int = 0, max_queue_size: int = 10):
         """
-        Initialize a camera controller.
+        Initialize the threaded camera controller.
         
         Args:
-            camera_id (int): ID of the camera to connect to
+            camera_id: ID of the camera to connect to
+            max_queue_size: Maximum number of frames to buffer in queue
         """
-        self.h_cam = ueye.HIDS(camera_id)
-        self.mem_ptr = ueye.c_mem_p()
-        self.mem_id = ueye.int()
+        self.camera_id = camera_id
+        self.max_queue_size = max_queue_size
+        
+        # Camera hardware interface
+        self.h_cam = None
+        self.mem_ptr = None
+        self.mem_id = None
         self.width = 0
         self.height = 0
-        self.bits_per_pixel = 24  # BGR8 = 3 bytes
-        self._is_open = False
-        self._is_disconnected = False
-        self.camera_id = camera_id
+        self.bits_per_pixel = 24  # BGR8
         
+        # Thread control
+        self.capture_thread: Optional[threading.Thread] = None
+        self.running = False
+        self.thread_lock = threading.Lock()
+        
+        # Frame queue (thread-safe)
+        self.frame_queue: queue.Queue[FrameData] = queue.Queue(maxsize=max_queue_size)
+        
+        # Statistics
+        self.stats_lock = threading.Lock()
+        self.frame_count = 0
+        self.dropped_frames = 0  # Frames dropped due to full queue during capture
+        self.discarded_frames = 0  # Frames discarded during get_latest_frame (normal for real-time)
+        self.last_fps_time = time.time()
+        self.last_fps_count = 0
+        self.current_fps = 0.0
+        
+        # State flags
+        self.is_initialized = False
+        self.use_test_pattern = False  # Always try hardware first
+        self.test_frame_counter = 0
+        
+        # Error tracking
+        self.last_error = None
+        self.consecutive_errors = 0
+        
+        logger.debug(f"CameraController created (ID: {camera_id}, queue_size: {max_queue_size})")
+    
     @property
-    def is_open(self):
+    def is_running(self) -> bool:
+        """Check if capture thread is running."""
+        with self.thread_lock:
+            return self.running
+    
+    @property
+    def frame_shape(self) -> Tuple[int, int, int]:
+        """Get the frame dimensions (height, width, channels)."""
+        if self.use_test_pattern:
+            return (480, 640, 3)
+        return (int(self.height), int(self.width), 3)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get current capture statistics."""
+        with self.stats_lock:
+            return {
+                'fps': self.current_fps,
+                'total_frames': self.frame_count,
+                'dropped_frames': self.dropped_frames,  # Capture drops (bad)
+                'discarded_frames': self.discarded_frames,  # Display drops (normal for real-time)
+                'queue_size': self.frame_queue.qsize(),
+                'max_queue_size': self.max_queue_size,
+                'capture_drop_rate': self.dropped_frames / max(1, self.frame_count) * 100,
+                'display_drop_rate': self.discarded_frames / max(1, self.frame_count) * 100,
+                'use_test_pattern': self.use_test_pattern,
+                'consecutive_errors': self.consecutive_errors
+            }
+    
+    def initialize(self) -> bool:
         """
-        Check if the camera is currently open and ready for use.
+        Initialize camera hardware or test pattern mode.
         
         Returns:
-            bool: True if camera is open, False otherwise
+            True if initialization successful, False otherwise
         """
-        return self._is_open and not self._is_disconnected
-
-    def initialize(self):
-        """
-        Initialize the camera connection and setup memory for frame capture.
+        if self.is_initialized:
+            logger.warning("Camera already initialized")
+            return True
         
-        Performs these steps:
-        1. Initialize physical camera connection
-        2. Get sensor info and dimensions
-        3. Set color mode to BGR8 (8-bit per channel)
-        4. Allocate memory for image data
-        5. Set active memory region
-        6. Start video capture
+        # Always try hardware first if pyueye is available
+        if PYUEYE_AVAILABLE:
+            if self._initialize_hardware():
+                self.use_test_pattern = False
+                self.is_initialized = True
+                logger.info(f"Camera hardware initialized (ID: {self.camera_id})")
+                return True
+            else:
+                logger.warning("Hardware initialization failed, falling back to test pattern")
+                self.use_test_pattern = True
+        else:
+            logger.info("pyueye not available, using test pattern mode")
+            self.use_test_pattern = True
         
-        Returns:
-            bool: True if all steps succeeded, False otherwise
-        """
-# Camera initialization starting
+        # Fall back to test pattern mode
+        self.is_initialized = True
+        logger.info("Using test pattern mode")
+        return True
+    
+    def _initialize_hardware(self) -> bool:
+        """Initialize camera hardware. Returns True if successful."""
+        if not PYUEYE_AVAILABLE:
+            return False
         
         try:
-            # Reset state if we're reinitializing
-            if self._is_disconnected:
-                self._is_disconnected = False
-                
+            # Create camera handle
+            self.h_cam = ueye.HIDS(self.camera_id)
+            self.mem_ptr = ueye.c_mem_p()
+            self.mem_id = ueye.int()
+            
             # Initialize camera
             ret = ueye.is_InitCamera(self.h_cam, None)
             if ret != ueye.IS_SUCCESS:
                 logger.error(f"InitCamera failed: {ret}")
                 return False
-    
+            
             # Get sensor info
             sensor_info = ueye.SENSORINFO()
             ret = ueye.is_GetSensorInfo(self.h_cam, sensor_info)
             if ret != ueye.IS_SUCCESS:
                 logger.error("GetSensorInfo failed")
-                self.close()  # Clean up
+                self._cleanup_hardware()
                 return False
-    
+            
             self.width = sensor_info.nMaxWidth
             self.height = sensor_info.nMaxHeight
             
@@ -90,157 +185,398 @@ class CameraController:
             ret = ueye.is_SetColorMode(self.h_cam, ueye.IS_CM_BGR8_PACKED)
             if ret != ueye.IS_SUCCESS:
                 logger.error(f"SetColorMode failed: {ret}")
-                self.close()  # Clean up
+                self._cleanup_hardware()
                 return False
-    
-            # Allocate memory for image data
+            
+            # Allocate memory
             ret = ueye.is_AllocImageMem(
                 self.h_cam, self.width, self.height,
                 self.bits_per_pixel, self.mem_ptr, self.mem_id
             )
             if ret != ueye.IS_SUCCESS:
                 logger.error(f"AllocImageMem failed: {ret}")
-                self.close()  # Clean up
+                self._cleanup_hardware()
                 return False
-    
+            
             # Set active memory
             ret = ueye.is_SetImageMem(self.h_cam, self.mem_ptr, self.mem_id)
             if ret != ueye.IS_SUCCESS:
                 logger.error(f"SetImageMem failed: {ret}")
-                self.close()  # Clean up
+                self._cleanup_hardware()
                 return False
-    
-            # Start capturing video
-            ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_WAIT)
+            
+            # Optimize camera settings for maximum frame rate
+            try:
+                # Set pixel clock to maximum for best performance
+                pixel_clock_range = (ueye.c_uint * 3)()
+                ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_GET_RANGE, pixel_clock_range, 12)
+                if ret == ueye.IS_SUCCESS:
+                    max_pixel_clock = pixel_clock_range[1]  # Maximum value
+                    ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_SET, max_pixel_clock, 4)
+                    if ret == ueye.IS_SUCCESS:
+                        logger.debug(f"Set pixel clock to maximum: {max_pixel_clock} MHz")
+                
+                # Try to get and set maximum frame rate
+                fps_ptr = ueye.DOUBLE()
+                ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
+                if ret == ueye.IS_SUCCESS:
+                    logger.debug(f"Current camera frame rate: {fps_ptr.value:.1f} FPS")
+            except Exception as e:
+                logger.debug(f"Frame rate optimization failed: {e}")
+            
+            # Start continuous capture
+            ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_DONT_WAIT)
             if ret != ueye.IS_SUCCESS:
                 logger.error(f"CaptureVideo failed: {ret}")
-                self.close()  # Clean up
+                self._cleanup_hardware()
                 return False
-    
-# Connection logged by camera widget
-            self._is_open = True
+            
+            logger.debug("Camera hardware fully initialized and capturing")
             return True
             
         except Exception as e:
-            logger.error(f"Camera initialization error: {e}")
-            self.close()  # Clean up on any exception
+            logger.error(f"Hardware initialization error: {e}")
+            self._cleanup_hardware()
             return False
-
-    def get_frame(self):
+    
+    def start_capture(self) -> bool:
         """
-        Capture a single frame from the camera.
+        Start background frame capture thread.
         
         Returns:
-            numpy.ndarray: BGR image array or None if capture failed
+            True if capture started successfully, False otherwise
         """
-        # Quick check for camera state before attempting capture
-        if not self.is_open:
-            # Don't log warnings for closed cameras, handled by the widget
-            return None
+        if not self.is_initialized:
+            logger.error("Camera not initialized")
+            return False
+        
+        with self.thread_lock:
+            if self.running:
+                logger.warning("Capture already running")
+                return True
             
+            # Clear any old frames from queue
+            while not self.frame_queue.empty():
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    break
+            
+            # Reset statistics
+            current_time = time.time()
+            with self.stats_lock:
+                self.frame_count = 0
+                self.dropped_frames = 0
+                self.discarded_frames = 0
+                self.last_fps_time = current_time
+                self.last_fps_count = 0
+                self.current_fps = 0.0
+                self.consecutive_errors = 0
+            
+            # Start capture thread
+            self.running = True
+            self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self.capture_thread.start()
+            
+            logger.info("Background capture started")
+            return True
+    
+    def stop_capture(self) -> None:
+        """Stop background frame capture thread."""
+        with self.thread_lock:
+            if not self.running:
+                return
+            
+            self.running = False
+        
+        # Wait for thread to finish (with timeout)
+        if self.capture_thread and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=2.0)
+            if self.capture_thread.is_alive():
+                logger.warning("Capture thread did not stop cleanly")
+        
+        logger.info("Background capture stopped")
+    
+    def get_latest_frame(self, timeout: float = 0.1) -> Optional[FrameData]:
+        """
+        Get the most recent frame from the queue.
+        
+        Args:
+            timeout: Maximum time to wait for a frame (seconds)
+            
+        Returns:
+            FrameData object or None if no frame available
+        """
         try:
-            # Capture a single frame from the camera
+            # Get the most recent frame (may discard older frames)
+            latest_frame = None
+            frames_discarded = 0
+            
+            # Keep getting frames until queue is empty, keeping only the latest
+            while True:
+                try:
+                    frame_data = self.frame_queue.get(timeout=timeout if latest_frame is None else 0.0)
+                    if latest_frame is not None:
+                        frames_discarded += 1
+                    latest_frame = frame_data
+                except queue.Empty:
+                    break
+            
+            # Update statistics for discarded frames (this is normal for real-time display)
+            if frames_discarded > 0:
+                with self.stats_lock:
+                    self.discarded_frames += frames_discarded
+            
+            return latest_frame
+            
+        except queue.Empty:
+            return None
+    
+    def get_frame(self, timeout: float = 0.1) -> Optional[np.ndarray]:
+        """
+        Get the latest frame as a numpy array (for compatibility).
+        
+        Args:
+            timeout: Maximum time to wait for a frame (seconds)
+            
+        Returns:
+            Frame as numpy array or None if no frame available
+        """
+        frame_data = self.get_latest_frame(timeout)
+        return frame_data.frame if frame_data else None
+    
+    def _capture_loop(self) -> None:
+        """Main capture loop running in background thread."""
+        logger.debug(f"Capture loop started (test_pattern: {self.use_test_pattern})")
+        
+        # Dynamic target FPS based on mode
+        target_fps = 30.0 if self.use_test_pattern else 120.0  # Higher FPS for real cameras
+        target_interval = 1.0 / target_fps
+        last_capture_time = 0
+        
+        while self.running:
+            try:
+                current_time = time.time()
+                
+                # Rate limiting - only for test pattern mode
+                if self.use_test_pattern:
+                    time_since_last = current_time - last_capture_time
+                    if time_since_last < target_interval:
+                        time.sleep(target_interval - time_since_last)
+                        current_time = time.time()
+                
+                # Capture frame
+                frame = self._capture_single_frame()
+                if frame is not None:
+                    # Create frame data
+                    with self.stats_lock:
+                        frame_data = FrameData(
+                            frame=frame,
+                            timestamp=current_time,
+                            frame_number=self.frame_count,
+                            camera_id=self.camera_id
+                        )
+                        current_frame_number = self.frame_count
+                        self.frame_count += 1
+                        self.consecutive_errors = 0
+                    
+                    # Try to add to queue (non-blocking)
+                    try:
+                        self.frame_queue.put(frame_data, block=False)
+                        
+                        # Update FPS statistics
+                        with self.stats_lock:
+                            # Calculate FPS every second
+                            if current_time - self.last_fps_time >= 1.0:
+                                frames_this_second = self.frame_count - self.last_fps_count
+                                elapsed_time = current_time - self.last_fps_time
+                                self.current_fps = frames_this_second / elapsed_time
+                                self.last_fps_time = current_time
+                                self.last_fps_count = self.frame_count
+                        
+                    except queue.Full:
+                        # Queue is full, drop this frame (true capture drop)
+                        with self.stats_lock:
+                            self.dropped_frames += 1
+                
+                else:
+                    # Frame capture failed - don't count as captured or dropped
+                    with self.stats_lock:
+                        self.consecutive_errors += 1
+                    
+                    # If too many consecutive errors, add a small delay
+                    if self.consecutive_errors > 10:
+                        time.sleep(0.01)  # 10ms delay
+                
+                last_capture_time = current_time
+                
+            except Exception as e:
+                logger.error(f"Error in capture loop: {e}")
+                with self.stats_lock:
+                    self.consecutive_errors += 1
+                time.sleep(0.01)  # Brief delay on error
+        
+        logger.debug("Capture loop ended")
+    
+    def _capture_single_frame(self) -> Optional[np.ndarray]:
+        """Capture a single frame from camera or generate test pattern."""
+        if self.use_test_pattern:
+            return self._generate_test_pattern()
+        else:
+            return self._capture_hardware_frame()
+    
+    def _capture_hardware_frame(self) -> Optional[np.ndarray]:
+        """Capture frame from camera hardware."""
+        if not PYUEYE_AVAILABLE or not self.h_cam:
+            return None
+        
+        try:
+            # Use blocking capture with very short timeout for better frame rates
             ret = ueye.is_FreezeVideo(self.h_cam, ueye.IS_WAIT)
             if ret != ueye.IS_SUCCESS:
-                # No need to log every frame failure, it's too verbose
-                # Only mark camera as closed if we get a critical error
-                if ret in [ueye.IS_INVALID_CAMERA_HANDLE, ueye.IS_NO_SUCCESS]:
-                    self._is_open = False
+                if ret == ueye.IS_TIMED_OUT:
+                    # Timeout is normal, just return None
+                    return None
+                elif ret in [ueye.IS_INVALID_CAMERA_HANDLE, ueye.IS_NO_SUCCESS]:
+                    # Camera disconnected, switch to test pattern
+                    if not self.use_test_pattern:
+                        logger.warning("Camera disconnected, switching to test pattern")
+                        self.use_test_pattern = True
                 return None
-    
+            
+            # Get frame data
             height = int(self.height)
             width = int(self.width)
             channels = int(self.bits_per_pixel / 8)
-    
+            
             array = ueye.get_data(
                 self.mem_ptr, width, height,
-                self.bits_per_pixel, width * channels, copy=True  # Use copy=True for safer memory handling
+                self.bits_per_pixel, width * channels, copy=True
             )
-    
+            
             frame = np.frombuffer(array, dtype=np.uint8)
             return frame.reshape((height, width, channels))
             
         except Exception as e:
-            # Mark camera as closed if we get an exception during capture
-            self._is_open = False
             return None
-
-    def disconnect(self):
-        """
-        Disconnect from the camera.
+    
+    def _generate_test_pattern(self) -> np.ndarray:
+        """Generate test pattern frame."""
+        import cv2  # Import here to avoid dependency when not needed
         
-        Returns:
-            None
-        """
-        # Be silent if not open to avoid 'already closed' noise
-        if not self._is_open or self._is_disconnected:
-            return None
-            
-        ret = ueye.is_ExitCamera(self.h_cam)
-        if ret == ueye.IS_SUCCESS:
-            self._is_disconnected = True
-# Disconnection logged by camera widget
-        elif ret != 1:  # Only log if it's a real failure; code 1 means already closed
-            logger.error(f"Disconnect failed (ID: {self.h_cam.value}, code: {ret})")
-            
-        self._is_open = False
-        return None
-
-    def close(self):
-        """
-        Close the camera connection and clean up resources.
-        This is a more thorough cleanup than disconnect().
-        """
-        # Best-effort teardown; suppress extra logs
-        if self._is_disconnected:
+        width, height = 640, 480
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Grid pattern
+        for i in range(0, height, 50):
+            cv2.line(frame, (0, i), (width, i), (50, 50, 50), 1)
+        for i in range(0, width, 50):
+            cv2.line(frame, (i, 0), (i, height), (50, 50, 50), 1)
+        
+        # Animated elements
+        t = self.test_frame_counter / 60.0  # Time in seconds at 60 FPS
+        
+        # Moving crosshair
+        center_x = int(width // 2 + 100 * np.sin(t))
+        center_y = int(height // 2 + 50 * np.cos(t * 1.3))
+        cv2.line(frame, (center_x, 0), (center_x, height), (0, 255, 0), 2)
+        cv2.line(frame, (0, center_y), (width, center_y), (0, 255, 0), 2)
+        
+        # Pulsing circle
+        radius = int(30 + 20 * np.sin(t * 3))
+        cv2.circle(frame, (width // 2, height // 2), radius, (0, 0, 255), 2)
+        
+        # Frame counter
+        cv2.putText(frame, f"Frame: {self.test_frame_counter}", (20, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # FPS indicator
+        cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (20, height - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        self.test_frame_counter += 1
+        return frame
+    
+    def _cleanup_hardware(self) -> None:
+        """Clean up camera hardware resources."""
+        if not PYUEYE_AVAILABLE:
             return
-            
+        
         try:
-            ueye.is_StopLiveVideo(self.h_cam, ueye.IS_FORCE_VIDEO_STOP)
+            if self.h_cam:
+                ueye.is_StopLiveVideo(self.h_cam, ueye.IS_FORCE_VIDEO_STOP)
+                ueye.is_FreeImageMem(self.h_cam, self.mem_ptr, self.mem_id)
+                ueye.is_ExitCamera(self.h_cam)
         except Exception as e:
-            logger.debug(f"Error stopping live video: {e}")
-            
-        try:
-            ueye.is_FreeImageMem(self.h_cam, self.mem_ptr, self.mem_id)
-        except Exception as e:
-            logger.debug(f"Error freeing image memory: {e}")
-            
-        try:
-            ueye.is_ExitCamera(self.h_cam)
-        except Exception as e:
-            logger.debug(f"Error exiting camera: {e}")
-            
-        self._is_open = False
-        self._is_disconnected = True
-# Resources cleaned up
+            logger.debug(f"Error during hardware cleanup: {e}")
+        
+        self.h_cam = None
+        self.mem_ptr = None
+        self.mem_id = None
+    
+    def close(self) -> None:
+        """Close camera and clean up all resources."""
+        logger.debug("Closing camera controller")
+        
+        # Stop capture thread
+        self.stop_capture()
+        
+        # Clean up hardware
+        self._cleanup_hardware()
+        
+        # Clear queue
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        self.is_initialized = False
+        logger.info("Camera controller closed")
 
 
-# Example usage if this file is run directly
+# Example usage
 if __name__ == "__main__":
     import cv2
     
-    # Initialize camera
-    camera = CameraController()
+    # Create camera controller
+    camera = CameraController(camera_id=0, max_queue_size=5)
+    
     if not camera.initialize():
         logger.error("Failed to initialize camera")
         exit(1)
     
+    if not camera.start_capture():
+        logger.error("Failed to start capture")
+        exit(1)
+    
     try:
-        # Capture frames until 'q' is pressed
         logger.info("Press 'q' to exit")
+        frame_count = 0
+        
         while True:
-            frame = camera.get_frame()
-            if frame is not None:
-                cv2.imshow("Camera Feed", frame)
+            # Get latest frame
+            frame_data = camera.get_latest_frame(timeout=0.1)
             
-            # Exit on 'q' key press
-            if cv2.waitKey(50) & 0xFF == ord('q'):
+            if frame_data:
+                frame_count += 1
+                
+                # Display frame
+                cv2.imshow("Camera Feed", frame_data.frame)
+                
+                # Print statistics every 60 frames
+                if frame_count % 60 == 0:
+                    stats = camera.get_statistics()
+                    print(f"FPS: {stats['fps']:.1f}, Dropped: {stats['dropped_frames']}, "
+                          f"Queue: {stats['queue_size']}/{stats['max_queue_size']}")
+            
+            # Exit on 'q' key
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     
-    except Exception as e:
-        logger.error(f"Camera error: {str(e)}")
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
     
     finally:
-        # Always disconnect when done
         camera.close()
         cv2.destroyAllWindows()

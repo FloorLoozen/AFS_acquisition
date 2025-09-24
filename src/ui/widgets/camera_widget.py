@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 
 from src.utils.logger import get_logger
-from src.controllers.camera_controller import CameraController
+from src.controllers.camera_controller import CameraController, FrameData
 from src.utils.status_display import StatusDisplay
 from src.utils.hdf5_video_recorder import HDF5VideoRecorder
 
@@ -27,25 +27,15 @@ class CameraWidget(QGroupBox):
 
         logger.info("Camera initialized")
         
-        # Check for camera module availability immediately
-        try:
-            # Try importing the module - don't need to use it yet
-            from pyueye import ueye
-            self.pyueye_available = True
-        except ImportError as e:
-            logger.warning(f"pyueye module import error: {e}")
-            self.pyueye_available = False
-        except Exception as e:
-            logger.warning(f"Error checking pyueye module: {e}")
-            self.pyueye_available = False
-
-        # Camera state
-        self.camera = None
+        # Camera state - using high-performance controller
+        self.camera: CameraController = None
         self.is_running = False
         self.is_live = False
-        self.use_test_pattern = not self.pyueye_available  # Auto set based on module availability
-        self.test_frame_counter = 0
         self.camera_error = None
+        
+        # Frame data
+        self.current_frame_data: FrameData = None
+        self.last_frame_timestamp = 0
         
         # Warning suppression to prevent log spam
         self.last_warning_time = 0
@@ -74,9 +64,10 @@ class CameraWidget(QGroupBox):
         # Set the widget to strongly prefer expanding
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        # Display update timer (higher frequency for smooth display)
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(33)  # ~30 FPS instead of ~67 FPS for better performance
+        self.update_timer.setInterval(16)  # ~60 FPS display refresh for smooth playback
         
         # Image processing toggles (keep for internal use)
         self.mono_enabled = False
@@ -176,31 +167,34 @@ class CameraWidget(QGroupBox):
             self.reconnect_button.setEnabled(True)
             return
             
-        # Try to connect
+        # Try to connect using high-performance controller
         try:
-            self.camera = CameraController(0)  # Try default camera ID
+            self.camera = CameraController(camera_id=0, max_queue_size=10)
             if self.camera.initialize():
-                # Success!
-                self.use_test_pattern = False
-                self.is_running = True
-                self.is_live = False
-                self.update_status("Connected")
-                self.update_button_states()
-                if not self.update_timer.isActive():
-                    self.update_timer.start()
-                self.set_live_mode()  # Auto start live view
-                logger.info("Camera connected")
-                # Re-enable initialize button (text stays the same)
-                self.reconnect_button.setEnabled(True)
-                return
-                
-            # If initialization failed, clean up and try again in 300ms
-            if self.camera:
-                try:
+                if self.camera.start_capture():
+                    # Success!
+                    self.is_running = True
+                    self.is_live = False
+                    self.update_status("Connected")
+                    self.update_button_states()
+                    if not self.update_timer.isActive():
+                        self.update_timer.start()
+                    self.set_live_mode()  # Auto start live view
+                    logger.info("Camera connected")
+                    # Re-enable initialize button (text stays the same)
+                    self.reconnect_button.setEnabled(True)
+                    return
+                else:
+                    # Start capture failed
+                    if self.camera:
+                        self.camera.close()
+                        self.camera = None
+            else:
+                # Initialization failed
+                if self.camera:
                     self.camera.close()
-                except:
-                    pass
-                self.camera = None
+                    self.camera = None
+            
             QTimer.singleShot(300, self.try_reconnect)  # Faster retry
             
         except Exception as e:
@@ -252,40 +246,41 @@ class CameraWidget(QGroupBox):
         
         self.update_status("Initializing...")
         
-        # If pyueye is not available, use test pattern mode immediately
-        if not self.pyueye_available:
-            self._start_test_pattern_mode("Test Pattern Mode")
-            return
-        
-        # Quick hardware check - don't spend too much time on startup
+        # Create high-performance camera controller
         try:
             self.update_status("Connecting...")
-            self.camera = CameraController(camera_id)
+            self.camera = CameraController(camera_id=camera_id, max_queue_size=10)
             
-            # Use a shorter timeout for initial connection
+            # Initialize and start capture
             if self.camera.initialize():
-                # Camera initialized successfully
-                logger.info("Camera connected")
-                self.use_test_pattern = False
-                self.is_running = True
-                self.is_live = False
-                self.update_status("Connected")
-                self.update_button_states()
-                self.update_timer.start()
-                self.set_live_mode()  # Auto start live view
-                return
-            else:
-                # Hardware initialization failed, use test pattern
-                if self.camera:
-                    try:
+                if self.camera.start_capture():
+                    # Camera started successfully
+                    logger.info("Camera connected")
+                    self.is_running = True
+                    self.is_live = False
+                    self.update_status("Connected")
+                    self.update_button_states()
+                    self.update_timer.start()
+                    self.set_live_mode()  # Auto start live view
+                    return
+                else:
+                    # Start capture failed
+                    logger.warning("Failed to start camera capture")
+                    if self.camera:
                         self.camera.close()
-                    except:
-                        pass
+                        self.camera = None
+            else:
+                # Hardware initialization failed
+                logger.warning("Camera hardware initialization failed")
+                if self.camera:
+                    self.camera.close()
                     self.camera = None
-                self._start_test_pattern_mode("Hardware Not Found - Test Pattern")
-                return
+            
+            # Fall through to test pattern mode
+            self._start_test_pattern_mode("Hardware Not Found - Test Pattern")
             
         except Exception as e:
+            logger.warning(f"Camera initialization error: {e}")
             if self.camera:
                 try:
                     self.camera.close()
@@ -296,14 +291,28 @@ class CameraWidget(QGroupBox):
     
     def _start_test_pattern_mode(self, status_text):
         """Helper method to start test pattern mode with the given status text"""
-        self.camera = None
-        self.use_test_pattern = True
-        self.is_running = True
-        self.is_live = False
-        self.update_status(status_text)
-        self.update_button_states()
-        self.update_timer.start()
-        self.set_live_mode()  # Auto start test pattern
+        try:
+            # Create camera controller in test pattern mode
+            self.camera = CameraController(camera_id=0, max_queue_size=5)
+            if self.camera.initialize() and self.camera.start_capture():
+                self.is_running = True
+                self.is_live = False
+                self.update_status(status_text)
+                self.update_button_states()
+                self.update_timer.start()
+                self.set_live_mode()  # Auto start test pattern
+            else:
+                # Even test pattern failed
+                self.camera = None
+                self.is_running = False
+                self.update_status("Camera Error")
+                self.update_button_states()
+        except Exception as e:
+            logger.error(f"Failed to start test pattern mode: {e}")
+            self.camera = None
+            self.is_running = False
+            self.update_status("Camera Error")
+            self.update_button_states()
 
     def stop_camera(self):
         if self.update_timer.isActive():
@@ -316,6 +325,7 @@ class CameraWidget(QGroupBox):
             except Exception:
                 pass
             self.camera = None
+        self.current_frame_data = None
         self.update_status("Initialize")
         self.update_button_states()
 
@@ -323,24 +333,23 @@ class CameraWidget(QGroupBox):
         if not self.is_running:
             logger.warning("Cannot set live mode - camera not running")
             return
+            
+        if not self.camera:
+            logger.warning("Cannot set live mode - no camera")
+            self.update_status("Camera not found")
+            return
         
-        # Handle test pattern mode specifically
-        if self.use_test_pattern:
+        # Check if camera is using test pattern
+        stats = self.camera.get_statistics()
+        if stats.get('use_test_pattern', False):
             self.is_live = True
             self.update_status("Test Pattern Active")
             self.update_button_states()
-            return
-            
-        # If camera is not found and not in test pattern mode
-        if not self.camera:
-            logger.warning("Cannot set live mode - no camera and not in test pattern mode")
-            self.update_status("Camera not found")
-            return
-            
-        # Regular camera live mode
-        self.is_live = True
-        self.update_status("Live")
-        self.update_button_states()
+        else:
+            # Regular camera live mode
+            self.is_live = True
+            self.update_status("Live")
+            self.update_button_states()
 
     def set_pause_mode(self):
         if not self.is_running:
@@ -357,144 +366,52 @@ class CameraWidget(QGroupBox):
         self.auto_contrast = not self.auto_contrast
         self.auto_contrast_button.setChecked(self.auto_contrast)
 
-    def create_blank_frame(self, width=640, height=480):
-        """Create a completely black frame for when camera is not found."""
-        img = np.zeros((height, width, 3), dtype=np.uint8)
-        # No text - the status indicator already shows "Camera not found"
-        self.display_frame(img)
 
-    def create_test_pattern(self, width=640, height=480):
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        
-        # Add a grid background pattern
-        for i in range(0, height, 50):
-            cv2.line(frame, (0, i), (width, i), (50, 50, 50), 1)
-        for i in range(0, width, 50):
-            cv2.line(frame, (i, 0), (i, height), (50, 50, 50), 1)
-        
-        # Add crosshairs at the center
-        center_x, center_y = width // 2, height // 2
-        cv2.line(frame, (center_x, 0), (center_x, height), (0, 255, 0), 1)
-        cv2.line(frame, (0, center_y), (width, center_y), (0, 255, 0), 1)
-        cv2.circle(frame, (center_x, center_y), 100, (0, 0, 255), 1)
-        
-        # Add moving elements for the test pattern
-        y_pos = (self.test_frame_counter * 2) % height
-        x_pos = (self.test_frame_counter * 3) % width
-        
-        # Moving horizontal line
-        cv2.line(frame, (0, y_pos), (width, y_pos), (0, 0, 255), 2)
-        # Moving vertical line
-        cv2.line(frame, (x_pos, 0), (x_pos, height), (255, 0, 0), 2)
-        
-        # Pulsing circle
-        radius = 50 + 30 * np.sin(self.test_frame_counter / 30.0)
-        cv2.circle(frame, (width // 2, height // 2), int(radius), (0, 255, 255), 2)
-        
-        # Add text to indicate it's a test pattern
-        cv2.putText(frame, "TEST PATTERN MODE", (width // 2 - 120, height - 50), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 140, 255), 2)
-        cv2.putText(frame, "No camera hardware detected", (width // 2 - 150, 40), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Add frame counter
-        cv2.putText(frame, f"Frame: {self.test_frame_counter}", (20, height - 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        
-        self.test_frame_counter += 1
-        return frame
 
-    def check_camera_state(self):
-        """Check camera state and update status if needed."""
-        if not self.camera:
-            return False
-            
-        if hasattr(self.camera, 'is_open') and not self.camera.is_open:
-            # Camera was previously open but is now closed
-            if self.camera_error != "Camera disconnected":
-                self.camera_error = "Camera disconnected"
-                self.update_status("Initialize")
-                logger.warning("Camera disconnected")
-            return False
-            
-        return True
-        
     def update_frame(self):
         """
         Update the camera frame display. Called by update_timer.
         
-        Handles:
-        - Test pattern generation
-        - Camera frame capture
-        - Error handling with log suppression for repetitive errors
-        - FPS calculation
-        - Frame processing and display
+        Gets the latest frame from the threaded camera controller and displays it.
+        Also handles frame recording and statistics display.
         """
-        if not self.is_running:
+        if not self.is_running or not self.is_live:
+            return
+            
+        if not self.camera:
             return
             
         try:
-            if not self.is_live:
-                # Skip updates when not in live mode
+            # Get latest frame from threaded camera
+            frame_data = self.camera.get_latest_frame(timeout=0.01)  # Very short timeout for responsive UI
+            
+            if frame_data is None:
+                # No new frame available - this is normal in high-FPS scenarios
                 return
-                
-            if self.use_test_pattern:
-                # Generate test pattern instead of using camera
-                frame = self.create_test_pattern(640, 480)
-            else:
-                # Camera mode - check state first
-                if not self.camera:
-                    return
-                    
-                # Verify camera is still connected and open
-                if not self.check_camera_state():
-                    return
-                
-                # Attempt to get a frame
-                try:
-                    frame = self.camera.get_frame()
-                    if frame is None:
-                        # Frame retrieval failed but no exception
-                        self.warning_count += 1
-                        # Don't return immediately, skip a few more attempts then switch to test pattern
-                        if self.warning_count > 10:  # After 10 failed attempts (~330ms)
-                            logger.info("Camera hardware error - switching to test pattern")
-                            self.use_test_pattern = True
-                            self.update_status("Hardware Error - Test Pattern")
-                            self.warning_count = 0
-                        return
-                        
-                    # Successfully got a frame - reset error state
-                    self.warning_count = 0
-                    if self.camera_error:
-                        self.camera_error = None
-                        self.update_status("Live")
-                    
-                except Exception as e:
-                    # Handle camera error during frame capture
-                    error_msg = str(e).lower()
-                    self.warning_count += 1
-                    
-                    # Switch to test pattern after several errors instead of just logging
-                    if self.warning_count >= 5:  # After 5 errors (~165ms)
-                        if "closed camera" in error_msg or "camera not found" in error_msg:
-                            logger.info("Camera disconnected")
-                            self.use_test_pattern = True
-                            self.update_status("Initialize")
-                            self.camera_error = "Camera disconnected"
-                        else:
-                            self.use_test_pattern = True
-                            self.update_status("Hardware Error - Test Pattern")
-                            self.camera_error = str(e)
-                        self.warning_count = 0
-                    return
-                    
-            frame = self.process_frame(frame)
+            
+            # Check if this is actually a new frame
+            if frame_data.timestamp <= self.last_frame_timestamp:
+                return  # Same frame, don't update
+            
+            self.last_frame_timestamp = frame_data.timestamp
+            self.current_frame_data = frame_data
+            
+            # Process frame for display
+            processed_frame = self.process_frame(frame_data.frame)
             
             # Record frame if recording is active
-            self._record_frame(frame)
+            self._record_frame(processed_frame)
             
-            self.display_frame(frame)
+            # Display the frame
+            self.display_frame(processed_frame)
+            
+            # Update status with camera statistics (occasionally)
+            if frame_data.frame_number % 60 == 0:  # Update stats every 60 frames
+                stats = self.camera.get_statistics()
+                if stats['use_test_pattern']:
+                    self.update_status(f"Test Pattern - {stats['fps']:.1f} FPS")
+                else:
+                    self.update_status(f"Live - {stats['fps']:.1f} FPS")
             
         except Exception as e:
             # Log unique errors only
@@ -505,7 +422,7 @@ class CameraWidget(QGroupBox):
 
     def calculate_auto_brightness_adjustment(self, frame):
         """
-        Calculate automatic brightness adjustment based on image analysis.
+        Optimized automatic brightness adjustment using subsampling.
         
         Args:
             frame: Input image frame (BGR format)
@@ -513,42 +430,59 @@ class CameraWidget(QGroupBox):
         Returns:
             float: Brightness adjustment value
         """
-        # Convert to grayscale for brightness analysis
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Use subsampling for faster analysis (every 4th pixel in each dimension)
+        height, width = frame.shape[:2]
+        subsampled = frame[::4, ::4]  # 16x faster analysis
         
-        # Calculate current average brightness
-        current_brightness = np.mean(gray)
+        # Calculate brightness from green channel only (perceptually most important)
+        # This avoids color space conversion overhead
+        current_brightness = np.mean(subsampled[:, :, 1])  # Green channel
         
-        # Calculate how much adjustment is needed
+        # Calculate adjustment with rate limiting
         brightness_difference = self.target_brightness - current_brightness
-        
-        # Apply adjustment rate to smooth the transition
         adjustment = brightness_difference * self.brightness_adjustment_rate
         
-        # Limit the adjustment to prevent over-correction
-        max_adjustment = 30  # Maximum brightness change per frame
-        adjustment = np.clip(adjustment, -max_adjustment, max_adjustment)
-        
-        return adjustment
+        # Limit adjustment to prevent flickering
+        return np.clip(adjustment, -20, 20)
 
     def process_frame(self, frame):
-        img = frame.copy()
+        """
+        Optimized frame processing pipeline.
         
-        # Apply automatic brightness adjustment
+        Args:
+            frame: Input frame to process
+            
+        Returns:
+            Processed frame ready for display
+        """
+        # Skip processing if no effects are enabled (most common case)
+        if not (self.auto_brightness or self.mono_enabled or self.auto_contrast):
+            return frame
+        
+        # Only copy if we need to modify the frame
+        img = frame
+        
+        # Apply automatic brightness adjustment (most expensive operation)
         if self.auto_brightness:
-            brightness_adjustment = self.calculate_auto_brightness_adjustment(img)
+            brightness_adjustment = self.calculate_auto_brightness_adjustment(frame)
             if abs(brightness_adjustment) > 1:  # Only adjust if significant difference
-                # Convert to float for calculations to avoid overflow/underflow
-                img = img.astype(np.float32)
-                img = img + brightness_adjustment
-                # Clip values to valid range [0, 255] and convert back to uint8
-                img = np.clip(img, 0, 255).astype(np.uint8)
+                # Create copy only when needed
+                if img is frame:
+                    img = frame.copy()
+                # Use cv2.add for hardware acceleration where available
+                img = cv2.add(img, np.full_like(img, brightness_adjustment, dtype=np.uint8))
         
-        # Apply mono or auto-contrast if set programmatically
+        # Apply mono conversion (medium cost)
         if self.mono_enabled:
+            if img is frame:
+                img = frame.copy()
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            
+        # Apply auto-contrast (highest cost - skip unless really needed)
         if self.auto_contrast:
+            if img is frame:
+                img = frame.copy()
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             l = cv2.equalizeHist(l)
@@ -558,16 +492,36 @@ class CameraWidget(QGroupBox):
         return img
 
     def display_frame(self, frame):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w = rgb.shape[:2]
-        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
-        pix = QPixmap.fromImage(qimg)
+        """
+        Optimized frame display with reduced memory allocations.
         
-        # Scale to fill the available space while keeping aspect ratio
-        if self.display_label.width() > 1 and self.display_label.height() > 1:
-            # Use KeepAspectRatio to ensure the image isn't distorted
-            pix = pix.scaled(self.display_label.width(), self.display_label.height(), 
-                             Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        Args:
+            frame: BGR frame to display
+        """
+        # Convert BGR to RGB in-place to avoid extra memory allocation
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w = rgb_frame.shape[:2]
+        
+        # Create QImage directly from the data buffer
+        bytes_per_line = 3 * w
+        qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        
+        # Get current display size
+        display_width = self.display_label.width()
+        display_height = self.display_label.height()
+        
+        # Only scale if display size is valid and different from frame size
+        if (display_width > 1 and display_height > 1 and 
+            (w != display_width or h != display_height)):
+            
+            # Use FastTransformation for better performance during live view
+            # SmoothTransformation only needed for final/static images
+            pix = QPixmap.fromImage(qimg).scaled(
+                display_width, display_height, 
+                Qt.KeepAspectRatio, Qt.FastTransformation
+            )
+        else:
+            pix = QPixmap.fromImage(qimg)
             
         self.display_label.setPixmap(pix)
 
@@ -598,17 +552,11 @@ class CameraWidget(QGroupBox):
             # Ensure directory exists
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # Determine frame shape from current camera or test pattern
-            if self.use_test_pattern:
-                frame_shape = (480, 640, 3)  # Test pattern dimensions
+            # Get frame shape from threaded camera
+            if self.camera:
+                frame_shape = self.camera.frame_shape
             else:
-                # Get frame shape from camera (convert ctypes to int)
-                if self.camera:
-                    height = int(self.camera.height)
-                    width = int(self.camera.width)
-                    frame_shape = (height, width, 3)
-                else:
-                    frame_shape = (480, 640, 3)
+                frame_shape = (480, 640, 3)  # Default shape
             
             # Create HDF5 recorder
             self.hdf5_recorder = HDF5VideoRecorder(
@@ -618,12 +566,17 @@ class CameraWidget(QGroupBox):
                 compression='lzf'  # Fast compression for random access
             )
             
+            # Get camera statistics for metadata
+            stats = self.camera.get_statistics() if self.camera else {}
+            
             # Start recording with metadata
             recording_metadata = {
-                'recording_mode': 'test_pattern' if self.use_test_pattern else 'camera',
-                'camera_id': getattr(self.camera, 'camera_id', 0) if self.camera else 0,
+                'recording_mode': 'test_pattern' if stats.get('use_test_pattern', False) else 'camera',
+                'camera_id': self.camera.camera_id if self.camera else 0,
                 'operator': os.getenv('USERNAME', 'Unknown'),
-                'system_name': 'AFS_tracking'
+                'system_name': 'AFS_tracking',
+                'threaded_capture': True,
+                'max_queue_size': self.camera.max_queue_size if self.camera else 0
             }
             
             # Add user-provided metadata
