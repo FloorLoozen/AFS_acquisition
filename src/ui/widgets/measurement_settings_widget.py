@@ -7,9 +7,8 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QLineEdit, QFileDialog, QFormLayout, QFrame, QWidget
+    QLineEdit, QFileDialog, QFrame, QWidget
 )
-from PyQt5.QtCore import Qt
 
 from src.logger import get_logger
 
@@ -24,152 +23,144 @@ class MeasurementSettingsWidget(QGroupBox):
         
         logger.info("Initializing MeasurementSettingsWidget")
         
-        # Default paths
+        # Initialize paths
         self.measurements_save_path = ""
         self.lookup_table_save_path = ""
+        self.default_filename = datetime.now().strftime("%Y%m%d")
         
-        # Default filename with today's date
-        today = datetime.now().strftime("%Y%m%d")
-        self.default_filename = today
-        
-        self.init_ui()
+        self._init_ui()
 
-    def init_ui(self):
+    def _init_ui(self):
         """Initialize the user interface."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 24, 8, 8)
         
-        # Create a frame for the settings
-        settings_frame = QFrame()
-        settings_frame.setFrameShape(QFrame.StyledPanel)
-        settings_frame.setFrameShadow(QFrame.Raised)
-        settings_frame.setLineWidth(1)
-        settings_layout = QVBoxLayout(settings_frame)
-        settings_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Path settings section
-        path_section = self.create_path_settings_section()
-        settings_layout.addWidget(path_section)
-        
-        # Add some stretch to push content to top
-        settings_layout.addStretch(1)
-        
-        # Add the settings frame to main layout
+        # Create settings frame
+        settings_frame = self._create_settings_frame()
         main_layout.addWidget(settings_frame)
 
-    def create_path_settings_section(self):
+    def _create_settings_frame(self):
+        """Create the main settings frame."""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Add path settings
+        path_section = self._create_path_settings_section()
+        layout.addWidget(path_section)
+        layout.addStretch(1)
+        
+        return frame
+
+    def _create_path_settings_section(self):
         """Create the path settings section."""
-        # Create a simple widget instead of a group box
         section = QWidget()
         layout = QVBoxLayout(section)
         
-        # Measurements save path
-        measurements_layout = QHBoxLayout()
-        measurements_label = QLabel("Measurements Save Path:")
-        measurements_label.setMinimumWidth(150)
-        self.measurements_path_edit = QLineEdit()
-        self.measurements_path_edit.setPlaceholderText("Select folder to save measurements...")
-        self.measurements_browse_btn = QPushButton("Browse...")
-        self.measurements_browse_btn.setFixedWidth(60)  # Set fixed width to match .hdf5 label
-        self.measurements_browse_btn.clicked.connect(self.browse_measurements_path)
+        # Create all form rows
+        self._add_path_row(layout, "Measurements Save Path:", "measurements", 
+                          "Select folder to save measurements...", self._browse_measurements_path)
         
-        measurements_layout.addWidget(measurements_label)
-        measurements_layout.addWidget(self.measurements_path_edit, 1)
-        measurements_layout.addWidget(self.measurements_browse_btn)
+        self._add_path_row(layout, "Lookup Table Save Path:", "lookup", 
+                          "Select folder to save lookup tables...", self._browse_lookup_path)
         
-        # Lookup table save path
-        lookup_layout = QHBoxLayout()
-        lookup_label = QLabel("Lookup Table Save Path:")
-        lookup_label.setMinimumWidth(150)
-        self.lookup_path_edit = QLineEdit()
-        self.lookup_path_edit.setPlaceholderText("Select folder to save lookup tables...")
-        self.lookup_browse_btn = QPushButton("Browse...")
-        self.lookup_browse_btn.setFixedWidth(60)  # Set fixed width to match .hdf5 label
-        self.lookup_browse_btn.clicked.connect(self.browse_lookup_path)
+        self._add_filename_row(layout)
         
-        lookup_layout.addWidget(lookup_label)
-        lookup_layout.addWidget(self.lookup_path_edit, 1)
-        lookup_layout.addWidget(self.lookup_browse_btn)
+        layout.addSpacing(20)  # Separator
         
-        # Filename
-        filename_layout = QHBoxLayout()
-        filename_label = QLabel("Filename:")
-        filename_label.setMinimumWidth(150)
+        self._add_text_row(layout, "Sample:", "sample", "")
+        self._add_text_row(layout, "Notes:", "notes", "")
+        
+        return section
+    
+    def _add_path_row(self, layout, label_text, attr_name, placeholder, browse_callback):
+        """Add a path selection row with label, line edit, and browse button."""
+        row_layout = QHBoxLayout()
+        
+        label = QLabel(label_text)
+        label.setMinimumWidth(150)
+        
+        line_edit = QLineEdit()
+        line_edit.setPlaceholderText(placeholder)
+        setattr(self, f"{attr_name}_path_edit", line_edit)
+        
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setFixedWidth(60)
+        browse_btn.clicked.connect(browse_callback)
+        
+        row_layout.addWidget(label)
+        row_layout.addWidget(line_edit, 1)
+        row_layout.addWidget(browse_btn)
+        
+        layout.addLayout(row_layout)
+    
+    def _add_filename_row(self, layout):
+        """Add the filename row with .hdf5 extension label."""
+        row_layout = QHBoxLayout()
+        
+        label = QLabel("Filename:")
+        label.setMinimumWidth(150)
+        
         self.filename_edit = QLineEdit()
         self.filename_edit.setText(self.default_filename)
         self.filename_edit.setPlaceholderText("measurement_file")
+        
         hdf5_label = QLabel(".hdf5")
         hdf5_label.setStyleSheet("font-weight: bold; color: #666;")
-        hdf5_label.setFixedWidth(60)  # Set fixed width to match browse buttons
-        filename_layout.addWidget(filename_label)
-        filename_layout.addWidget(self.filename_edit, 1)
-        filename_layout.addWidget(hdf5_label)
+        hdf5_label.setFixedWidth(60)
         
-        # Add layouts to section
-        layout.addLayout(measurements_layout)
-        layout.addLayout(lookup_layout)
-        layout.addLayout(filename_layout)
+        row_layout.addWidget(label)
+        row_layout.addWidget(self.filename_edit, 1)
+        row_layout.addWidget(hdf5_label)
         
-        # Add spacing to separate file paths from metadata
-        layout.addSpacing(20)
+        layout.addLayout(row_layout)
+    
+    def _add_text_row(self, layout, label_text, attr_name, placeholder):
+        """Add a text input row with label and spacer."""
+        row_layout = QHBoxLayout()
         
-        # Sample information
-        sample_layout = QHBoxLayout()
-        sample_label = QLabel("Sample:")
-        sample_label.setMinimumWidth(150)
-        self.sample_edit = QLineEdit()
-        # Add a dummy widget to match the width of browse buttons
-        sample_spacer = QLabel("")
-        sample_spacer.setFixedWidth(60)
-        sample_layout.addWidget(sample_label)
-        sample_layout.addWidget(self.sample_edit, 1)
-        sample_layout.addWidget(sample_spacer)
+        label = QLabel(label_text)
+        label.setMinimumWidth(150)
         
-        # Notes field
-        notes_layout = QHBoxLayout()
-        notes_label = QLabel("Notes:")
-        notes_label.setMinimumWidth(150)
-        self.notes_edit = QLineEdit()
-        # Add a dummy widget to match the width of browse buttons
-        notes_spacer = QLabel("")
-        notes_spacer.setFixedWidth(60)
-        notes_layout.addWidget(notes_label)
-        notes_layout.addWidget(self.notes_edit, 1)
-        notes_layout.addWidget(notes_spacer)
+        line_edit = QLineEdit()
+        line_edit.setPlaceholderText(placeholder)
+        setattr(self, f"{attr_name}_edit", line_edit)
         
-        layout.addLayout(sample_layout)
-        layout.addLayout(notes_layout)
+        spacer = QLabel("")
+        spacer.setFixedWidth(60)
         
-        return section
+        row_layout.addWidget(label)
+        row_layout.addWidget(line_edit, 1)
+        row_layout.addWidget(spacer)
+        
+        layout.addLayout(row_layout)
 
-    def browse_measurements_path(self):
+    def _browse_measurements_path(self):
         """Browse for measurements save path."""
-        current_path = self.measurements_path_edit.text() or os.path.expanduser("~")
-        path = QFileDialog.getExistingDirectory(
-            self, 
-            "Select Measurements Save Directory", 
-            current_path
-        )
-        
+        path = self._browse_for_directory("Select Measurements Save Directory", 
+                                         self.measurements_path_edit.text())
         if path:
             self.measurements_path_edit.setText(path)
             self.measurements_save_path = path
             logger.info(f"Measurements save path set to: {path}")
 
-    def browse_lookup_path(self):
+    def _browse_lookup_path(self):
         """Browse for lookup table save path."""
-        current_path = self.lookup_path_edit.text() or os.path.expanduser("~")
-        path = QFileDialog.getExistingDirectory(
-            self, 
-            "Select Lookup Table Save Directory", 
-            current_path
-        )
-        
+        path = self._browse_for_directory("Select Lookup Table Save Directory", 
+                                         self.lookup_path_edit.text())
         if path:
             self.lookup_path_edit.setText(path)
             self.lookup_table_save_path = path
             logger.info(f"Lookup table save path set to: {path}")
+    
+    def _browse_for_directory(self, title, current_path):
+        """Common directory browsing functionality."""
+        start_path = current_path or os.path.expanduser("~")
+        return QFileDialog.getExistingDirectory(self, title, start_path)
 
+    # Getter methods
     def get_measurements_path(self):
         """Get the current measurements save path."""
         return self.measurements_save_path
@@ -188,9 +179,7 @@ class MeasurementSettingsWidget(QGroupBox):
 
     def get_filename(self):
         """Get the current HDF5 filename with .hdf5 extension."""
-        filename = self.filename_edit.text().strip()
-        if not filename:
-            filename = self.default_filename
+        filename = self.filename_edit.text().strip() or self.default_filename
         return f"{filename}.hdf5"
 
     def get_full_file_path(self):
@@ -199,6 +188,7 @@ class MeasurementSettingsWidget(QGroupBox):
             return ""
         return os.path.join(self.measurements_save_path, self.get_filename())
 
+    # Setter methods
     def set_measurements_path(self, path):
         """Set the measurements save path."""
         if path and os.path.isdir(path):
@@ -217,8 +207,7 @@ class MeasurementSettingsWidget(QGroupBox):
         """Set the filename (without .hdf5 extension)."""
         if filename:
             # Remove .hdf5 extension if provided
-            if filename.lower().endswith('.hdf5'):
-                filename = filename[:-5]
+            filename = filename[:-5] if filename.lower().endswith('.hdf5') else filename
             self.filename_edit.setText(filename)
             logger.info(f"Filename set to: {filename}")
 
@@ -234,6 +223,7 @@ class MeasurementSettingsWidget(QGroupBox):
             self.notes_edit.setText(notes)
             logger.info(f"Notes set: {notes}")
 
+    # Utility methods
     def is_configured(self):
         """Check if all required paths are configured."""
         return bool(self.measurements_save_path and self.lookup_table_save_path)

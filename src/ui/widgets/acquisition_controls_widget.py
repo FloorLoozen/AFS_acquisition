@@ -6,12 +6,13 @@ Provides Start, Stop, and Save recording controls for data acquisition.
 import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
-    QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QMessageBox, QWidget
+    QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, 
+    QMessageBox
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import pyqtSignal
 
 from src.logger import get_logger
+from src.ui.components.status_display import StatusDisplay
 
 logger = get_logger("acquisition_controls")
 
@@ -58,14 +59,13 @@ class AcquisitionControlsWidget(QGroupBox):
         self.save_btn.clicked.connect(self.save_recording)
         self.save_btn.setEnabled(False)  # Initially disabled
         
-        # Status label for recording feedback (next to buttons)
-        self.status_label = QLabel("")
-        self.status_label.setAlignment(Qt.AlignLeft)
+        # Status display for recording feedback (next to buttons)
+        self.status_display = StatusDisplay()
         
         controls_layout.addWidget(self.start_btn)
         controls_layout.addWidget(self.stop_btn)
         controls_layout.addWidget(self.save_btn)
-        controls_layout.addWidget(self.status_label, 1)  # Give status label more space
+        controls_layout.addWidget(self.status_display, 1)  # Give status display more space
         
         main_layout.addLayout(controls_layout)
         main_layout.addStretch(1)
@@ -123,8 +123,7 @@ class AcquisitionControlsWidget(QGroupBox):
             self.update_save_button_state()  # This will disable save during recording
             
             # Update status
-            self.status_label.setText("🔴 RECORDING")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.status_display.set_status("Recording")
             
             logger.info(f"Recording started - target path: {full_path}")
             
@@ -150,8 +149,7 @@ class AcquisitionControlsWidget(QGroupBox):
             self.update_save_button_state()  # This will enable save if path is valid
             
             # Update status
-            self.status_label.setText("⏹️ Recording stopped - ready to save")
-            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.status_display.set_status("Stopped")
             
             logger.info("Recording stopped")
             
@@ -180,8 +178,7 @@ class AcquisitionControlsWidget(QGroupBox):
             self.save_recording_requested.emit(save_path)
             
             # Update status
-            self.status_label.setText("💾 Recording saved successfully")
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.status_display.set_status("Saved")
             
             # Show success message
             QMessageBox.information(self, "Recording Saved", 
@@ -219,13 +216,11 @@ class AcquisitionControlsWidget(QGroupBox):
         self.update_save_button_state()
         
         # Update status
-        self.status_label.setText("❌ Recording failed")
-        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        self.status_display.set_status("Error")
 
     def clear_status(self):
         """Clear the status display."""
-        self.status_label.setText("")
-        self.status_label.setStyleSheet("")
+        self.status_display.clear()
 
     def get_recording_state(self):
         """Get the current recording state."""

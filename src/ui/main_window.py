@@ -1,14 +1,9 @@
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
-    QMenuBar, QAction, QLabel, QMessageBox, QSizePolicy, 
-    QGroupBox, QPushButton, QSlider, QComboBox, QLineEdit, QFormLayout,
-    QApplication
+    QMainWindow, QWidget, QGridLayout, QMenuBar, QAction, 
+    QMessageBox, QSizePolicy, QApplication
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QCursor
+from PyQt5.QtCore import QTimer
 
-
-# Use only absolute imports with src. prefix
 from src.logger import get_logger
 from src.ui.widgets.camera_widget import CameraWidget
 from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
@@ -20,189 +15,143 @@ logger = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
-    """
-    Main application window with camera view, control panels, and menus.
-    Features:
-    - Automatically maximized window
-    - Two-column layout (60% controls, 40% camera)
-    - Automatic hardware initialization
-    - Simplified menu structure with all tools under one menu
-    """
+    """Main application window with 3-row layout and camera view."""
 
     def __init__(self):
         super().__init__()
         logger.info("Initializing main window")
+        
+        # Initialize widget references
         self.camera_widget = None
         self.measurement_settings_widget = None
         self.acquisition_controls_widget = None
         self.measurement_controls_widget = None
-        self.init_ui()
+        
+        self._init_ui()
         self.keyboard_shortcuts = KeyboardShortcutManager(self)
         
-        # Automatically initialize hardware on startup
-        QTimer.singleShot(100, self.initialize_hardware)
+        # Auto-initialize hardware after UI is ready
+        QTimer.singleShot(100, self._initialize_hardware)
 
-    def init_ui(self):
+    def _init_ui(self):
+        """Initialize the user interface."""
         self.setWindowTitle("AFS Tracking System")
-        self.setGeometry(100, 100, 1280, 800)  # Default size if not maximized
-        
-        # Start application in maximized window
+        self.setGeometry(100, 100, 1280, 800)
         self.showMaximized()
 
         self._create_menu_bar()
         self._create_central_layout()
 
-        # Ensure normal cursor is set at startup
         QApplication.restoreOverrideCursor()
-        
         self.statusBar().showMessage("Ready")
 
     def _create_menu_bar(self):
-        menubar = QMenuBar(self)
-        self.setMenuBar(menubar)
+        """Create application menu bar."""
+        menubar = self.menuBar()
 
-        # File
+        # File menu
         file_menu = menubar.addMenu("File")
-        exit_action = QAction("Exit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        self._add_action(file_menu, "Exit", "Ctrl+Q", self.close)
         
-        # Tools menu - simplified menu structure as requested
+        # Tools menu
         tools_menu = menubar.addMenu("Tools")
-        
-        # Camera Settings
-        camera_action = QAction("Camera Settings", self)
-        camera_action.triggered.connect(self.open_camera_settings)
-        tools_menu.addAction(camera_action)
-        
-        # Stage Controller
-        stage_action = QAction("Stage Controller", self)
-        stage_action.triggered.connect(self.open_stage_controls)
-        tools_menu.addAction(stage_action)
-        
-        # Resonance Finder
-        resonance_action = QAction("Resonance Finder", self)
-        resonance_action.triggered.connect(self.open_resonance_finder)
-        tools_menu.addAction(resonance_action)
-        
-        # Force Path Maker with better name
-        freq_path_action = QAction("Force Path Designer", self)
-        freq_path_action.triggered.connect(self.open_frequency_path_designer)
-        tools_menu.addAction(freq_path_action)
+        self._add_action(tools_menu, "Camera Settings", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
+        self._add_action(tools_menu, "Resonance Finder", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
 
-        # Help
+        # Help menu
         help_menu = menubar.addMenu("Help")
-        about_action = QAction("About", self)
-        about_action.triggered.connect(self.open_about)
-        help_menu.addAction(about_action)
+        self._add_action(help_menu, "About", None, self._open_about)
+
+    def _add_action(self, menu, text, shortcut, callback):
+        """Helper to add menu actions."""
+        action = QAction(text, self)
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.triggered.connect(callback)
+        menu.addAction(action)
 
     def _create_central_layout(self):
-        """
-        Create the main window layout with a 2-column grid:
-        - Left column (45%): Control panels split into three rows
-          - Top row: Measurement settings
-          - Middle row: Acquisition controls  
-          - Bottom row: Measurement controls
-        - Right column (55%): Camera view spanning all three rows
-        """
+        """Create main layout: left column (3 rows of controls) + right column (camera)."""
         central = QWidget(self)
-        main_layout = QGridLayout(central)
-        main_layout.setContentsMargins(6, 6, 6, 6)
+        layout = QGridLayout(central)
+        layout.setContentsMargins(6, 6, 6, 6)
         
-        # Left column - split into three rows
-        measurement_settings = self._create_measurement_settings_widget()
-        main_layout.addWidget(measurement_settings, 0, 0)
+        # Left column widgets
+        self._create_measurement_settings_widget(layout, 0, 0)
+        self._create_acquisition_controls_widget(layout, 1, 0)
+        self._create_measurement_controls_widget(layout, 2, 0)
         
-        acquisition_controls = self._create_acquisition_controls_widget()
-        main_layout.addWidget(acquisition_controls, 1, 0)
-        
-        measurement_controls = self._create_measurement_controls_widget()
-        main_layout.addWidget(measurement_controls, 2, 0)
-        
-        # Right column - Camera widget spanning all three rows
+        # Right column camera (spans all 3 rows)
         self.camera_widget = CameraWidget()
         self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.camera_widget.setMinimumWidth(400)
-        main_layout.addWidget(self.camera_widget, 0, 1, 3, 1)  # Span 3 rows
+        layout.addWidget(self.camera_widget, 0, 1, 3, 1)
         
-        # Set column stretch factors to 45:55 - balanced layout with slightly larger camera
-        main_layout.setColumnStretch(0, 45)  # Control column (45%)
-        main_layout.setColumnStretch(1, 55)  # Camera column (55%)
-        
-        # Set row stretch factors
-        main_layout.setRowStretch(0, 1)  # Measurement settings
-        main_layout.setRowStretch(1, 1)  # Acquisition controls
-        main_layout.setRowStretch(2, 1)  # Measurement controls
+        # Set proportions: 45% controls, 55% camera
+        layout.setColumnStretch(0, 45)
+        layout.setColumnStretch(1, 55)
+        layout.setRowStretch(0, 1)
+        layout.setRowStretch(1, 1)
+        layout.setRowStretch(2, 1)
         
         self.setCentralWidget(central)
         
-    def _create_measurement_settings_widget(self):
-        """Create the measurement settings widget (top-left)."""
+    def _create_measurement_settings_widget(self, layout, row, col):
+        """Create and add measurement settings widget."""
         self.measurement_settings_widget = MeasurementSettingsWidget()
-        return self.measurement_settings_widget
+        layout.addWidget(self.measurement_settings_widget, row, col)
         
-    def _create_acquisition_controls_widget(self):
-        """Create the acquisition controls widget (middle-left)."""
+    def _create_acquisition_controls_widget(self, layout, row, col):
+        """Create and add acquisition controls widget."""
         self.acquisition_controls_widget = AcquisitionControlsWidget()
         
-        # Connect the acquisition controls to the measurement settings
+        # Set measurement settings reference
         if self.measurement_settings_widget:
             self.acquisition_controls_widget.set_measurement_settings_widget(self.measurement_settings_widget)
         
-        # Connect signals from acquisition controls to camera widget
-        self.acquisition_controls_widget.start_recording_requested.connect(self.handle_start_recording)
-        self.acquisition_controls_widget.stop_recording_requested.connect(self.handle_stop_recording)
-        self.acquisition_controls_widget.save_recording_requested.connect(self.handle_save_recording)
+        # Connect recording signals
+        self.acquisition_controls_widget.start_recording_requested.connect(self._handle_start_recording)
+        self.acquisition_controls_widget.stop_recording_requested.connect(self._handle_stop_recording)
+        self.acquisition_controls_widget.save_recording_requested.connect(self._handle_save_recording)
         
-        return self.acquisition_controls_widget
+        layout.addWidget(self.acquisition_controls_widget, row, col)
     
-    def _create_measurement_controls_widget(self):
-        """Create the measurement controls widget (bottom-left)."""
+    def _create_measurement_controls_widget(self, layout, row, col):
+        """Create and add measurement controls widget."""
         self.measurement_controls_widget = MeasurementControlsWidget()
-        return self.measurement_controls_widget
+        layout.addWidget(self.measurement_controls_widget, row, col)
 
     # Menu handlers
-    def open_camera_settings(self):
-        QMessageBox.information(self, "Camera Settings", "This feature will be implemented later.")
+    def _show_not_implemented(self):
+        """Show not implemented message."""
+        QMessageBox.information(self, "Not Implemented", "This feature will be implemented later.")
 
-    def open_stage_controls(self):
-        # Open the XY Stage dialog
+    def _open_stage_controls(self):
+        """Open XY Stage control dialog."""
         try:
-            # Always ensure normal cursor before opening the dialog
             QApplication.restoreOverrideCursor()
             
             from src.ui.widgets.xy_stage_widget import XYStageWidget
             
             # Store reference to prevent garbage collection
-            self._stage_dialog = getattr(self, "_stage_dialog", None)
-            
-            if self._stage_dialog is None or not self._stage_dialog.isVisible():
-                # Create a new dialog instance
+            if not hasattr(self, '_stage_dialog') or not self._stage_dialog.isVisible():
                 self._stage_dialog = XYStageWidget(self)
                 self._stage_dialog.show()
             else:
-                # If dialog already exists, bring it to front
                 self._stage_dialog.activateWindow()
                 self._stage_dialog.raise_()
         except Exception as e:
             logger.error(f"Failed to open stage dialog: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open stage controls: {e}")
-    
-    def open_resonance_finder(self):
-        QMessageBox.information(self, "Resonance Finder", "This feature will be implemented later.")
-    
-    def open_frequency_path_designer(self):
-        QMessageBox.information(self, "Force Path Designer", "This feature will be implemented later.")
-    
-    def open_spectrum_analyzer(self):
-        QMessageBox.information(self, "Spectrum Analyzer", "This feature will be implemented later.")
-    
-    def open_data_export(self):
-        QMessageBox.information(self, "Export Data", "This feature will be implemented later.")
 
-    def open_about(self):
-        QMessageBox.information(self, "About", "AFS Tracking System v3\n\nAutomated tracking system for AFS using IDS cameras and MCL MicroDrive XY stage hardware.")
+    def _open_about(self):
+        """Show about dialog."""
+        QMessageBox.information(self, "About", 
+            "AFS Tracking System v3\n\n"
+            "Automated tracking system for AFS using IDS cameras "
+            "and MCL MicroDrive XY stage hardware.")
     
     def get_measurement_settings(self):
         """Get the measurement settings widget instance."""
@@ -244,17 +193,16 @@ class MainWindow(QMainWindow):
             return self.measurement_settings_widget.get_notes()
         return ""
     
-    def handle_start_recording(self, file_path):
-        """Handle start recording request from measurement controls."""
+    def _handle_start_recording(self, file_path):
+        """Handle start recording request."""
         logger.info(f"Starting recording to: {file_path}")
         
-        # Check if camera is available and running
         if not self.camera_widget or not self.camera_widget.is_running:
-            self.acquisition_controls_widget.recording_failed("Camera is not running. Please ensure camera is connected and running.")
+            self.acquisition_controls_widget.recording_failed(
+                "Camera is not running. Please ensure camera is connected and running.")
             return
         
         try:
-            # Start video recording in camera widget
             if hasattr(self.camera_widget, 'start_recording'):
                 success = self.camera_widget.start_recording(file_path)
                 if success:
@@ -265,17 +213,15 @@ class MainWindow(QMainWindow):
                     self.acquisition_controls_widget.recording_failed("Failed to start video recording in camera.")
             else:
                 self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
-                
         except Exception as e:
             logger.error(f"Error starting recording: {e}")
             self.acquisition_controls_widget.recording_failed(f"Error starting recording: {str(e)}")
     
-    def handle_stop_recording(self):
-        """Handle stop recording request from measurement controls."""
+    def _handle_stop_recording(self):
+        """Handle stop recording request."""
         logger.info("Stopping recording")
         
         try:
-            # Stop video recording in camera widget
             if hasattr(self.camera_widget, 'stop_recording'):
                 saved_path = self.camera_widget.stop_recording()
                 if saved_path:
@@ -286,127 +232,67 @@ class MainWindow(QMainWindow):
                     self.acquisition_controls_widget.recording_failed("Failed to stop recording properly.")
             else:
                 self.acquisition_controls_widget.recording_failed("Camera widget does not support recording.")
-                
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
             self.acquisition_controls_widget.recording_failed(f"Error stopping recording: {str(e)}")
     
-    def handle_save_recording(self, file_path):
-        """Handle save recording request from measurement controls."""
+    def _handle_save_recording(self, file_path):
+        """Handle save recording request."""
         logger.info(f"Saving recording to: {file_path}")
         
         try:
-            # For now, the recording is already saved when stopped
-            # In the future, this could handle additional metadata saving, HDF5 creation, etc.
-            
-            # Update status
+            # Recording is already saved when stopped
             self.statusBar().showMessage(f"Recording saved: {file_path}")
             logger.info(f"Recording saved successfully: {file_path}")
             
-            # Clear the acquisition controls status after a delay
+            # Clear status after delay
             QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
-            
         except Exception as e:
             logger.error(f"Error saving recording: {e}")
             self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
-            
-    def start_measurement(self):
-        """Legacy method - replaced by measurement controls widget."""
-        pass
-    
-    def stop_measurement(self):
-        """Legacy method - replaced by measurement controls widget."""
-        pass
         
-    def initialize_hardware(self):
-        """
-        Initialize all hardware components automatically at startup.
-        Called with a short delay after the UI is displayed to ensure
-        all widgets are properly set up before hardware connection begins.
-        """
+    def _initialize_hardware(self):
+        """Initialize all hardware components at startup."""
         logger.info("Initializing hardware components...")
-        
-        # Update status bar
         self.statusBar().showMessage("Initializing hardware...")
         
         try:
-            # Initialize all hardware components in sequence
-            # The system will continue even if some components fail to initialize
-            self._initialize_camera()
-            self._initialize_xy_stage()
-            self._initialize_function_generator()
+            self._init_camera()
+            self._init_xy_stage() 
+            self._init_function_generator()
         except Exception as e:
             logger.error(f"Hardware initialization error: {e}")
             self.statusBar().showMessage(f"Hardware initialization error: {str(e)}")
         finally:
-            # Always ensure the cursor is restored to normal
             QApplication.restoreOverrideCursor()
         
-        # Update status after a short delay
-        # This gives the user time to see the status message
+        # Show completion message after delay
         QTimer.singleShot(2000, lambda: self.statusBar().showMessage("Hardware initialization complete"))
     
-    def _initialize_camera(self):
+    def _init_camera(self):
         """Initialize camera hardware."""
         logger.info("Initializing camera...")
-        
-        # Show camera-specific waiting message
         self.statusBar().showMessage("Initializing camera... Please wait")
         
         try:
-            # Camera widget should auto-initialize, just check its status
-            if self.camera_widget:
-                # Camera widget exists but may not be fully initialized yet
-                if hasattr(self.camera_widget, 'is_running') and self.camera_widget.is_running:
-                    # Camera is already running
-                    if hasattr(self.camera_widget, 'use_test_pattern') and self.camera_widget.use_test_pattern:
-                        # Camera is in test pattern mode
-                        logger.info("Camera initialized in test pattern mode")
-                        self.statusBar().showMessage("Camera running in test pattern mode")
-                    else:
-                        # Camera is running with actual hardware
-                        logger.info("Camera hardware initialized successfully")
-                        self.statusBar().showMessage("Camera hardware initialized")
+            if self.camera_widget and hasattr(self.camera_widget, 'is_running'):
+                if self.camera_widget.is_running:
+                    mode = "test pattern" if getattr(self.camera_widget, 'use_test_pattern', False) else "hardware"
+                    logger.info(f"Camera initialized in {mode} mode")
+                    self.statusBar().showMessage(f"Camera running in {mode} mode")
                 else:
-                    # Camera widget exists but hasn't started running yet
-                    logger.info("Camera widget starting initialization process")
+                    logger.info("Camera widget starting initialization")
                     self.statusBar().showMessage("Camera initializing")
             else:
-                # Camera widget doesn't exist at all
                 logger.warning("Camera widget creation failed")
                 self.statusBar().showMessage("Camera initialization failed, using fallback")
         finally:
-            # Ensure cursor is normal
             QApplication.restoreOverrideCursor()
             
-    def _initialize_xy_stage(self):
-        """Initialize XY stage hardware."""
-        logger.info("Initializing XY stage...")
-        self.statusBar().showMessage("Initializing XY stage...")
-        
-        # Will be implemented later
-        try:
-            # Stage controller initialization
-            pass
-        except Exception as e:
-            logger.error(f"XY stage initialization error: {e}")
-            logger.info("Continuing with limited functionality")
-            self.statusBar().showMessage("XY stage initialization failed")
-        else:
-            self.statusBar().showMessage("XY stage initialization complete")
+    def _init_xy_stage(self):
+        """Initialize XY stage hardware (placeholder)."""
+        logger.info("XY stage initialization - not implemented yet")
     
-    def _initialize_function_generator(self):
-        """Initialize function generator hardware."""
-        logger.info("Initializing function generator...")
-        self.statusBar().showMessage("Initializing function generator...")
-        
-        # Will be implemented later
-        try:
-            # Function generator initialization
-            pass
-        except Exception as e:
-            logger.error(f"Function generator initialization error: {e}")
-            logger.info("Continuing with limited functionality")
-            self.statusBar().showMessage("Function generator initialization failed")
-        else:
-            self.statusBar().showMessage("Function generator initialization complete")
+    def _init_function_generator(self):
+        """Initialize function generator hardware (placeholder).""" 
+        logger.info("Function generator initialization - not implemented yet")

@@ -5,57 +5,17 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QFrame, QSizePolicy, QGridLayout, QSlider
+    QFrame, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QColor, QPainter
-
-# Fix imports to work with both direct run and module run
+from PyQt5.QtGui import QImage, QPixmap
 
 from src.logger import get_logger
 from src.controllers.camera_controller import CameraController
+from src.ui.components.status_display import StatusDisplay
 
 logger = get_logger("camera_gui")
 
-
-class StatusIndicator(QLabel):
-    """
-    Circle indicator that changes color based on status.
-    Colors:
-    - Green: Live, Connected
-    - Orange: Initializing, Reconnecting
-    - Yellow: Paused
-    - Red: Disconnected, Camera not found, Reconnect failed
-    - Gray: Unknown status
-    """
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(16, 16)
-        self.status_color = QColor(128, 128, 128)  # Default gray
-        
-    def set_status(self, status):
-        if status == "Live":
-            self.status_color = QColor(0, 255, 0)  # Green
-        elif status == "Initializing..." or status.startswith("Reconnecting"):
-            self.status_color = QColor(255, 165, 0)  # Orange
-        elif status == "Connected":
-            self.status_color = QColor(0, 255, 0)  # Green
-        elif status == "Paused":
-            self.status_color = QColor(255, 255, 0)  # Yellow
-        elif status == "Disconnected" or status == "Camera not found" or status == "Reconnect failed":
-            self.status_color = QColor(255, 0, 0)  # Red
-        else:
-            self.status_color = QColor(128, 128, 128)  # Gray
-        self.update()
-        
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(self.status_color)
-        painter.setPen(Qt.black)
-        painter.drawEllipse(2, 2, 12, 12)
-        painter.end()
 
 
 class CameraWidget(QGroupBox):
@@ -118,7 +78,7 @@ class CameraWidget(QGroupBox):
 
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(15)
+        self.update_timer.setInterval(33)  # ~30 FPS instead of ~67 FPS for better performance
         
         # Image processing toggles (keep for internal use)
         self.mono_enabled = False
@@ -127,13 +87,13 @@ class CameraWidget(QGroupBox):
         self.target_brightness = 128  # Target average brightness (0-255)
         self.brightness_adjustment_rate = 0.1  # How fast to adjust (0.0-1.0)
 
-        # Status indicator
-        self.status_indicator = StatusIndicator()
+        # Status display
+        self.status_display = StatusDisplay()
 
         self.init_ui()
 
-        # Auto-connect shortly after startup
-        QTimer.singleShot(300, self.connect_camera)
+        # Auto-connect shortly after startup with shorter delay
+        QTimer.singleShot(100, self.connect_camera)
 
     def init_ui(self):
         main = QVBoxLayout(self)
@@ -157,18 +117,16 @@ class CameraWidget(QGroupBox):
         button_layout = QHBoxLayout()
         self.play_button = QPushButton("▶️ Play"); self.play_button.clicked.connect(self.set_live_mode)
         self.pause_button = QPushButton("⏸️ Pause"); self.pause_button.clicked.connect(self.set_pause_mode)
-        self.reconnect_button = QPushButton("🔄 Reconnect"); self.reconnect_button.clicked.connect(self.reconnect_camera)
+        self.reconnect_button = QPushButton("🔄 Initialize"); self.reconnect_button.clicked.connect(self.reconnect_camera)
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
         button_layout.addWidget(self.reconnect_button)
         button_layout.addStretch(1)
         
-        # Right side: Status indicators
+        # Right side: Status display
         status_layout = QHBoxLayout()
         status_layout.addStretch(1)
-        self.status_label = QLabel("Initializing...")
-        status_layout.addWidget(self.status_label)
-        status_layout.addWidget(self.status_indicator)
+        status_layout.addWidget(self.status_display)
         
         # Add both sides to bottom row
         bottom_row.addLayout(button_layout, 3)  # Buttons take 3/4 of space
@@ -190,24 +148,32 @@ class CameraWidget(QGroupBox):
         
     def try_reconnect(self):
         """
-        Try to reconnect the camera with a 10-second timeout.
+        Try to reconnect the camera with a 5-second timeout.
         Shows countdown in the status indicator and gives up after timeout.
         """
-        # Check if we've exceeded the 10-second timeout
+        # Check if we've exceeded the 5-second timeout
         elapsed_time = time.time() - self.reconnection_start_time
         self.reconnection_attempts += 1
         
         # Calculate remaining time and update status with countdown
-        remaining_time = max(0, int(10.0 - elapsed_time))
-        self.update_status(f"Reconnecting ({remaining_time}s)...")
+        remaining_time = max(0, int(5.0 - elapsed_time))
+        self.update_status(f"Initializing ({remaining_time}s)...")
         
-        if elapsed_time > 10.0:  # 10-second timeout
-            # Give up after 10 seconds
-            logger.warning(f"Camera reconnection timeout after {self.reconnection_attempts} attempts")
-            self.update_status("Reconnect failed")
-            self.create_blank_frame()
-            # Re-enable reconnect button
+        if elapsed_time > 5.0:  # 5-second timeout (reduced from 10)
+            # Give up after 5 seconds and fall back to test pattern
+            logger.info(f"Camera initialization timeout after {self.reconnection_attempts} attempts, using test pattern")
+            self.use_test_pattern = True
+            self.camera = None
+            self.is_running = True
+            self.is_live = False
+            self.update_status("Test Pattern Mode")
+            self.update_button_states()
+            if not self.update_timer.isActive():
+                self.update_timer.start()
+            self.set_live_mode()  # Start test pattern
+            # Re-enable initialize button
             self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setText("🔄 Retry Hardware")
             return
             
         # Try to connect
@@ -220,43 +186,59 @@ class CameraWidget(QGroupBox):
                 self.is_live = False
                 self.update_status("Connected")
                 self.update_button_states()
-                self.update_timer.start()
+                if not self.update_timer.isActive():
+                    self.update_timer.start()
                 self.set_live_mode()  # Auto start live view
-                logger.info(f"Camera reconnected successfully after {self.reconnection_attempts} attempts")
-                # Re-enable reconnect button
+                logger.info(f"Camera connected successfully after {self.reconnection_attempts} attempts")
+                # Re-enable initialize button
                 self.reconnect_button.setEnabled(True)
+                self.reconnect_button.setText("🔄 Initialize")
                 return
                 
-            # If initialization failed, try again in 500ms (up to 10 seconds total)
-            logger.info(f"Reconnection attempt {self.reconnection_attempts} failed, retrying...")
-            self.camera = None  # Clear failed connection attempt
-            QTimer.singleShot(500, self.try_reconnect)
+            # If initialization failed, clean up and try again in 300ms
+            if self.camera:
+                try:
+                    self.camera.close()
+                except:
+                    pass
+                self.camera = None
+            QTimer.singleShot(300, self.try_reconnect)  # Faster retry
             
         except Exception as e:
-            logger.error(f"Camera reconnect error: {e}")
-            self.camera = None
-            QTimer.singleShot(500, self.try_reconnect)
+            logger.info(f"Camera initialization attempt {self.reconnection_attempts}: {e}")
+            if self.camera:
+                try:
+                    self.camera.close()
+                except:
+                    pass
+                self.camera = None
+            QTimer.singleShot(300, self.try_reconnect)
         
     def reconnect_camera(self):
-        """Attempt to reconnect to the camera for up to 10 seconds."""
-        logger.info("Attempting to reconnect camera...")
-        self.update_status("Reconnecting...")
+        """Attempt to initialize/reconnect the camera hardware."""
+        logger.info("Attempting to initialize camera hardware...")
+        self.update_status("Initializing...")
         
-        # First disconnect if already connected
-        if self.camera:
-            self.stop_camera()
-            
-        # Disable reconnect button during reconnection attempt
+        # Stop current camera operations
+        self.stop_camera()
+        
+        # Reset error states
+        self.camera_error = None
+        self.warning_count = 0
+        
+        # Disable initialize button during attempt
         self.reconnect_button.setEnabled(False)
+        self.reconnect_button.setText("🔄 Initializing...")
         
-        # Start a reconnection attempt with timeout
+        # Start initialization attempt with timeout
         self.reconnection_start_time = time.time()
         self.reconnection_attempts = 0
-        self.try_reconnect()
+        
+        # Small delay to ensure cleanup is complete
+        QTimer.singleShot(100, self.try_reconnect)
 
     def update_status(self, text):
-        self.status_label.setText(text)
-        self.status_indicator.set_status(text)
+        self.status_display.set_status(text)
 
     def connect_camera(self, camera_id=0):
         """
@@ -272,38 +254,56 @@ class CameraWidget(QGroupBox):
             logger.info("Camera already running, skipping connection")
             return
         
-        logger.info("Starting camera connection process")
+        logger.info("Starting camera initialization")
         self.update_status("Initializing...")
         
-        # If pyueye is not available, use test pattern mode
+        # If pyueye is not available, use test pattern mode immediately
         if not self.pyueye_available:
-            logger.info("Using test pattern mode (pyueye module not available)")
+            logger.info("pyueye module not available, using test pattern")
             self._start_test_pattern_mode("Test Pattern Mode")
+            self.reconnect_button.setText("🔄 Install Camera Driver")
             return
         
-        # If pyueye is available, try to initialize the camera
+        # Quick hardware check - don't spend too much time on startup
         try:
-            logger.info("Attempting to connect to camera hardware")
+            logger.info("Quick camera hardware check...")
             self.camera = CameraController(camera_id)
             
-            if not self.camera.initialize():
-                logger.warning("Camera hardware initialization failed")
-                self._start_test_pattern_mode("Camera Init Failed - Test Pattern")
+            # Use a shorter timeout for initial connection
+            if self.camera.initialize():
+                # Camera initialized successfully
+                logger.info("Camera hardware connected successfully")
+                self.use_test_pattern = False
+                self.is_running = True
+                self.is_live = False
+                self.update_status("Connected")
+                self.update_button_states()
+                self.update_timer.start()
+                self.set_live_mode()  # Auto start live view
+                return
+            else:
+                # Hardware initialization failed, use test pattern
+                logger.info("Camera hardware not responding, using test pattern")
+                if self.camera:
+                    try:
+                        self.camera.close()
+                    except:
+                        pass
+                    self.camera = None
+                self._start_test_pattern_mode("Hardware Not Found - Test Pattern")
+                self.reconnect_button.setText("🔄 Retry Hardware")
                 return
             
-            # Camera initialized successfully
-            logger.info("Camera hardware initialized successfully")
-            self.use_test_pattern = False
-            self.is_running = True
-            self.is_live = False
-            self.update_status("Connected")
-            self.update_button_states()
-            self.update_timer.start()
-            self.set_live_mode()  # Auto start live view
-            
         except Exception as e:
-            logger.warning(f"Camera connection error: {e}")
-            self._start_test_pattern_mode(f"Camera Error - Test Pattern")
+            logger.info(f"Camera hardware check failed: {e}")
+            if self.camera:
+                try:
+                    self.camera.close()
+                except:
+                    pass
+                self.camera = None
+            self._start_test_pattern_mode("Hardware Error - Test Pattern")
+            self.reconnect_button.setText("🔄 Retry Hardware")
     
     def _start_test_pattern_mode(self, status_text):
         """Helper method to start test pattern mode with the given status text"""
@@ -472,6 +472,13 @@ class CameraWidget(QGroupBox):
                         self.warning_count += 1
                         if self.warning_count == 1:  # Only log first occurrence
                             logger.info("No frame available from camera")
+                        # Don't return immediately, skip a few more attempts then switch to test pattern
+                        if self.warning_count > 10:  # After 10 failed attempts (~330ms)
+                            logger.info("Too many failed frame attempts, switching to test pattern")
+                            self.use_test_pattern = True
+                            self.update_status("Hardware Error - Test Pattern")
+                            self.reconnect_button.setText("🔄 Retry Hardware")
+                            self.warning_count = 0
                         return
                         
                     # Successfully got a frame - reset error state
@@ -485,18 +492,20 @@ class CameraWidget(QGroupBox):
                     error_msg = str(e).lower()
                     self.warning_count += 1
                     
-                    # Only log the first occurrence of each error type
-                    if self.warning_count == 1:
-                        if "closed camera" in error_msg:
-                            self.update_status("Disconnected")
-                            self.camera_error = "Camera closed"
-                        elif "camera not found" in error_msg:
-                            self.update_status("Camera not found")
-                            self.camera_error = "Camera not found"
+                    # Switch to test pattern after several errors instead of just logging
+                    if self.warning_count >= 5:  # After 5 errors (~165ms)
+                        if "closed camera" in error_msg or "camera not found" in error_msg:
+                            logger.info("Camera disconnected, switching to test pattern")
+                            self.use_test_pattern = True
+                            self.update_status("Disconnected - Test Pattern")
+                            self.camera_error = "Camera disconnected"
                         else:
-                            logger.warning(f"Camera error: {e}")
-                            self.update_status("Error")
+                            logger.info(f"Camera error, switching to test pattern: {e}")
+                            self.use_test_pattern = True
+                            self.update_status("Hardware Error - Test Pattern")
                             self.camera_error = str(e)
+                        self.reconnect_button.setText("🔄 Retry Hardware")
+                        self.warning_count = 0
                     return
                     
             frame = self.process_frame(frame)
