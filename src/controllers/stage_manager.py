@@ -38,6 +38,45 @@ class StageManager:
             cls._instance = StageManager()
         return cls._instance
 
+    # --- Settings access ---
+    def get_stage_settings(self) -> dict:
+        """Get current stage settings for metadata storage."""
+        from datetime import datetime
+        
+        settings = {
+            'timestamp': datetime.now().isoformat(),
+            'is_connected': self._is_connected,
+            'default_step_size_mm': self._default_step_size,
+            'default_speed_mm_per_s': self._default_speed,
+        }
+        
+        if self._is_connected and self._stage:
+            try:
+                # Get current position
+                x_pos, y_pos = self.get_position()
+                settings.update({
+                    'current_x_mm': x_pos,
+                    'current_y_mm': y_pos,
+                    'stage_type': 'MCL MicroDrive',
+                    'controller_connected': True,
+                })
+                
+                # Get hardware-specific settings if available
+                if hasattr(self._stage, 'get_settings'):
+                    hw_settings = self._stage.get_settings()
+                    settings.update(hw_settings)
+                    
+            except Exception as e:
+                logger.warning(f"Error getting stage settings: {e}")
+                settings['settings_error'] = str(e)
+        else:
+            settings.update({
+                'controller_connected': False,
+                'stage_type': 'Disconnected',
+            })
+        
+        return settings
+
     # --- Connection management ---
     def connect(self) -> bool:
         if self._is_connected and self._stage is not None:

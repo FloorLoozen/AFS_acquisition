@@ -57,6 +57,20 @@ class CameraWidget(QGroupBox):
         self.recording_start_time = None
         self.recorded_frames = 0
         
+        # Frame rate control for recording
+        self.target_recording_fps = 25.0
+        self.last_recorded_time = 0
+        self.frame_interval = 1.0 / self.target_recording_fps
+        
+        # Recording indicators
+        self.recording_indicator = QLabel()
+        self.recording_stats = QLabel()
+        self.recording_stats.setStyleSheet("font-family: monospace; font-size: 10px;")
+        self.recording_indicator.setFixedSize(12, 12)
+        self.recording_indicator.setStyleSheet(
+            "background-color: gray; border-radius: 6px; margin: 2px;"
+        )
+        
         # Maximize camera view - set size policy to strongly expand in both directions
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.display_label.setMinimumSize(320, 240)  # Set minimum size
@@ -115,8 +129,10 @@ class CameraWidget(QGroupBox):
         button_layout.addWidget(self.reconnect_button)
         button_layout.addStretch(1)
         
-        # Right side: Status display
+        # Right side: Status display with recording indicator
         status_layout = QHBoxLayout()
+        status_layout.addWidget(self.recording_indicator)
+        status_layout.addWidget(self.recording_stats)
         status_layout.addStretch(1)
         status_layout.addWidget(self.status_display)
         
@@ -558,12 +574,12 @@ class CameraWidget(QGroupBox):
             else:
                 frame_shape = (480, 640, 3)  # Default shape
             
-            # Create HDF5 recorder
+            # Create HDF5 recorder with no compression for speed
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
-                fps=60.0,  # Set to 60 Hz as requested
-                compression='lzf'  # Fast compression for random access
+                fps=25.0,  # Target recording FPS to match live performance
+                compression=None  # No compression for maximum speed
             )
             
             # Get camera statistics for metadata
@@ -587,11 +603,31 @@ class CameraWidget(QGroupBox):
                 logger.error("Failed to start HDF5 recording")
                 return False
             
+            # Extract and save camera settings as metadata
+            if self.camera and hasattr(self.camera, 'get_camera_settings'):
+                try:
+                    camera_settings = self.camera.get_camera_settings()
+                    self.hdf5_recorder.add_camera_settings(camera_settings)
+                    logger.info(f"Saved camera settings to HDF5: {len(camera_settings)} parameters")
+                except Exception as e:
+                    logger.warning(f"Failed to save camera settings to HDF5: {e}")
+            
+            # Extract and save stage settings as metadata
+            try:
+                from src.controllers.stage_manager import StageManager
+                stage_manager = StageManager.get_instance()
+                stage_settings = stage_manager.get_stage_settings()
+                self.hdf5_recorder.add_stage_settings(stage_settings)
+                logger.info(f"Saved stage settings to HDF5: {len(stage_settings)} parameters")
+            except Exception as e:
+                logger.warning(f"Failed to save stage settings to HDF5: {e}")
+            
             # Set recording state
             self.is_recording = True
             self.recording_path = file_path
             self.recording_start_time = datetime.now()
             self.recorded_frames = 0
+            self.last_recorded_time = time.time()  # Reset frame rate timer
             
             logger.info(f"Started HDF5 recording to: {file_path}")
             return True
@@ -647,12 +683,18 @@ class CameraWidget(QGroupBox):
     def _record_frame(self, frame):
         """
         Record a frame to the HDF5 file if recording is active.
+        Uses frame rate limiting to match target recording FPS.
         
         Args:
             frame: The frame to record (BGR format)
         """
         if not self.is_recording or not self.hdf5_recorder:
             return
+        
+        # Frame rate limiting - only record at target FPS
+        current_time = time.time()
+        if current_time - self.last_recorded_time < self.frame_interval:
+            return  # Skip this frame to maintain target FPS
         
         try:
             # Ensure frame is the correct size for the recorder
@@ -665,6 +707,7 @@ class CameraWidget(QGroupBox):
             # Record frame to HDF5
             if self.hdf5_recorder.record_frame(frame):
                 self.recorded_frames += 1
+                self.last_recorded_time = current_time
             else:
                 logger.warning(f"Failed to record frame {self.recorded_frames}")
             

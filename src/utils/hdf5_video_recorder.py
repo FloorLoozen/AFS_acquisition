@@ -432,15 +432,36 @@ class HDF5VideoRecorder:
                 final_shape = (self.frame_count, *self.frame_shape)
                 self.video_dataset.resize(final_shape)
                 
-                # Add final recording statistics
+                # Add comprehensive recording statistics
                 if self.start_time:
                     duration = (datetime.now() - self.start_time).total_seconds()
                     actual_fps = self.frame_count / duration if duration > 0 else 0
                     
+                    # Basic recording stats
                     self.video_dataset.attrs['recording_duration_s'] = duration
                     self.video_dataset.attrs['total_frames'] = self.frame_count
                     self.video_dataset.attrs['actual_fps'] = actual_fps
                     self.video_dataset.attrs['finished_at'] = datetime.now().isoformat()
+                    
+                    # Performance statistics
+                    frame_size_bytes = self.frame_shape[0] * self.frame_shape[1] * self.frame_shape[2]
+                    total_data_mb = (self.frame_count * frame_size_bytes) / (1024 * 1024)
+                    
+                    self.video_dataset.attrs['frame_size_bytes'] = frame_size_bytes
+                    self.video_dataset.attrs['total_data_mb'] = total_data_mb
+                    self.video_dataset.attrs['target_fps'] = self.fps
+                    self.video_dataset.attrs['fps_efficiency'] = (actual_fps / self.fps * 100) if self.fps > 0 else 0
+                    
+                    # File size information (estimated compressed size)
+                    try:
+                        import os
+                        if os.path.exists(self.file_path):
+                            file_size_mb = os.path.getsize(self.file_path) / (1024 * 1024)
+                            self.video_dataset.attrs['file_size_mb'] = file_size_mb
+                            compression_ratio = (total_data_mb / file_size_mb) if file_size_mb > 0 else 1.0
+                            self.video_dataset.attrs['compression_ratio'] = compression_ratio
+                    except Exception as e:
+                        logger.debug(f"Could not calculate file size: {e}")
             
             # Close HDF5 file
             if self.h5_file:
