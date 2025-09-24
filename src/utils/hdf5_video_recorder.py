@@ -56,7 +56,6 @@ class HDF5VideoRecorder:
         
         # Additional data storage
         self.settings_group = None
-        self.timeseries_group = None
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
@@ -125,8 +124,7 @@ class HDF5VideoRecorder:
                 self._add_user_metadata(metadata)
             
             # Create groups for additional data
-            self.settings_group = self.h5_file.create_group('settings')
-            self.timeseries_group = self.h5_file.create_group('timeseries')
+            self.settings_group = self.h5_file.create_group('hardware_settings')
             
             # Set recording state
             self.is_recording = True
@@ -166,7 +164,6 @@ class HDF5VideoRecorder:
         
         # AFS-specific metadata
         self.video_dataset.attrs['system'] = 'AFS_tracking'
-        self.video_dataset.attrs['pixel_size_um'] = 0.1  # Placeholder - should come from hardware
         
     def _add_user_metadata(self, metadata: Dict[str, Any]):
         """Add user-provided metadata to the file."""
@@ -286,123 +283,7 @@ class HDF5VideoRecorder:
             logger.error(f"Error saving stage settings: {e}")
             return False
     
-    def add_function_generator_data(self, timestamps: np.ndarray, values: np.ndarray, 
-                                   channel_name: str = 'output'):
-        """
-        Add function generator output data over time.
-        
-        Args:
-            timestamps: Array of timestamps (in seconds from recording start)
-            values: Array of output values
-            channel_name: Name of the channel/signal
-        """
-        if not self.is_recording or not self.timeseries_group:
-            return False
-            
-        try:
-            # Create dataset for this channel if it doesn't exist
-            if channel_name not in self.timeseries_group:
-                # Create compound dataset with timestamp and value
-                dt = np.dtype([('timestamp', 'f8'), ('value', 'f8')])
-                max_points = 1000000  # Allow up to 1M data points
-                
-                dataset = self.timeseries_group.create_dataset(
-                    channel_name,
-                    shape=(len(timestamps),),
-                    maxshape=(max_points,),
-                    dtype=dt,
-                    chunks=True,
-                    compression='gzip'
-                )
-                
-                # Add metadata
-                dataset.attrs['description'] = f'Function generator {channel_name} over time'
-                dataset.attrs['units_time'] = 'seconds'
-                dataset.attrs['units_value'] = 'volts'
-            else:
-                dataset = self.timeseries_group[channel_name]
-                
-                # Resize dataset to accommodate new data
-                old_size = dataset.shape[0]
-                new_size = old_size + len(timestamps)
-                dataset.resize((new_size,))
-            
-            # Store data
-            data = np.empty(len(timestamps), dtype=dataset.dtype)
-            data['timestamp'] = timestamps
-            data['value'] = values
-            
-            if channel_name in self.timeseries_group:
-                # Append to existing data
-                old_size = dataset.shape[0] - len(timestamps)
-                dataset[old_size:] = data
-            else:
-                # First data for this channel
-                dataset[:] = data
-            
-            logger.debug(f"Saved {len(timestamps)} function generator data points for {channel_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error saving function generator data: {e}")
-            return False
-    
-    def add_stage_position_data(self, timestamps: np.ndarray, x_positions: np.ndarray, 
-                               y_positions: np.ndarray):
-        """
-        Add XY stage position data over time.
-        
-        Args:
-            timestamps: Array of timestamps (in seconds from recording start)
-            x_positions: Array of X positions in mm
-            y_positions: Array of Y positions in mm
-        """
-        if not self.is_recording or not self.timeseries_group:
-            return False
-            
-        try:
-            # Create compound dataset for stage positions
-            dt = np.dtype([('timestamp', 'f8'), ('x_mm', 'f8'), ('y_mm', 'f8')])
-            
-            if 'stage_position' not in self.timeseries_group:
-                max_points = 1000000
-                
-                dataset = self.timeseries_group.create_dataset(
-                    'stage_position',
-                    shape=(len(timestamps),),
-                    maxshape=(max_points,),
-                    dtype=dt,
-                    chunks=True,
-                    compression='gzip'
-                )
-                
-                dataset.attrs['description'] = 'XY stage position over time'
-                dataset.attrs['units_time'] = 'seconds'
-                dataset.attrs['units_position'] = 'mm'
-            else:
-                dataset = self.timeseries_group['stage_position']
-                old_size = dataset.shape[0]
-                new_size = old_size + len(timestamps)
-                dataset.resize((new_size,))
-            
-            # Store data
-            data = np.empty(len(timestamps), dtype=dataset.dtype)
-            data['timestamp'] = timestamps
-            data['x_mm'] = x_positions
-            data['y_mm'] = y_positions
-            
-            if 'stage_position' in self.timeseries_group:
-                old_size = dataset.shape[0] - len(timestamps)
-                dataset[old_size:] = data
-            else:
-                dataset[:] = data
-            
-            logger.debug(f"Saved {len(timestamps)} stage position data points")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error saving stage position data: {e}")
-            return False
+
     
     def _grow_dataset(self):
         """Grow the dataset when it's full."""
@@ -449,7 +330,6 @@ class HDF5VideoRecorder:
                     
                     self.video_dataset.attrs['frame_size_bytes'] = frame_size_bytes
                     self.video_dataset.attrs['total_data_mb'] = total_data_mb
-                    self.video_dataset.attrs['target_fps'] = self.fps
                     self.video_dataset.attrs['fps_efficiency'] = (actual_fps / self.fps * 100) if self.fps > 0 else 0
                     
                     # File size information (estimated compressed size)

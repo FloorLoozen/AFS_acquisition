@@ -219,10 +219,6 @@ class MainWindow(QMainWindow):
                     metadata['measurement_notes'] = self.measurement_settings_widget.get_notes()
                     metadata['save_path'] = self.measurement_settings_widget.get_save_path()
                 
-                # Add recording parameters
-                metadata['target_fps'] = 60.0
-                metadata['pixel_size_um'] = 0.1  # Placeholder - should come from calibration
-                
                 success = self.camera_widget.start_recording(file_path, metadata)
                 if success:
                     self.acquisition_controls_widget.recording_started_successfully()

@@ -1,8 +1,15 @@
-colorama
-numpy
-opencv-python
-# pyueye==4.1.0  # Not available for Python 3.13, install manually
-PyQt5
-python-dateutil
-h5py
-matplotlib
+# Core dependencies for AFS tracking system
+numpy>=1.24.0
+h5py>=3.8.0
+PyQt5>=5.15.0
+opencv-python>=4.7.0
+
+# Optional hardware support
+# pyueye>=4.1.0  # IDS camera support - install manually from IDS website
+
+# Utilities
+colorama>=0.4.0
+python-dateutil>=2.8.0
+
+# Optional for development/analysis
+# matplotlib>=3.7.0  # For plotting and visualization

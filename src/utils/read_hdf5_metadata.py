@@ -36,8 +36,8 @@ def read_hdf5_metadata(file_path):
                     print(f"   {key:25}: {value}")
             
             # Camera settings
-            if 'settings/camera' in f:
-                camera_group = f['settings/camera']
+            if 'hardware_settings/camera' in f:
+                camera_group = f['hardware_settings/camera']
                 print(f"\n📸 Camera Settings ({len(camera_group.attrs)} parameters):")
                 for key, value in camera_group.attrs.items():
                     if isinstance(value, bytes):
@@ -47,8 +47,8 @@ def read_hdf5_metadata(file_path):
                 print(f"\n📸 Camera Settings: Not found")
             
             # Stage settings
-            if 'settings/xy_stage' in f:
-                stage_group = f['settings/xy_stage']
+            if 'hardware_settings/xy_stage' in f:
+                stage_group = f['hardware_settings/xy_stage']
                 print(f"\n🔧 Stage Settings ({len(stage_group.attrs)} parameters):")
                 for key, value in stage_group.attrs.items():
                     if isinstance(value, bytes):
@@ -67,21 +67,6 @@ def read_hdf5_metadata(file_path):
                     print(f"   {key:25}: {value}")
             else:
                 print(f"\n📝 User Metadata: Not found")
-            
-            # Timeseries data
-            if 'timeseries' in f:
-                timeseries_group = f['timeseries']
-                print(f"\n📊 Timeseries Data:")
-                for dataset_name in timeseries_group.keys():
-                    dataset = timeseries_group[dataset_name]
-                    print(f"   {dataset_name:20}: {dataset.shape} points")
-                    if hasattr(dataset, 'attrs'):
-                        for attr_key, attr_value in dataset.attrs.items():
-                            if isinstance(attr_value, bytes):
-                                attr_value = attr_value.decode('utf-8')
-                            print(f"      {attr_key}: {attr_value}")
-            else:
-                print(f"\n📊 Timeseries Data: None")
             
             # File structure overview
             print(f"\n🗂️  HDF5 Structure:")

@@ -62,14 +62,7 @@ class CameraWidget(QGroupBox):
         self.last_recorded_time = 0
         self.frame_interval = 1.0 / self.target_recording_fps
         
-        # Recording indicators
-        self.recording_indicator = QLabel()
-        self.recording_stats = QLabel()
-        self.recording_stats.setStyleSheet("font-family: monospace; font-size: 10px;")
-        self.recording_indicator.setFixedSize(12, 12)
-        self.recording_indicator.setStyleSheet(
-            "background-color: gray; border-radius: 6px; margin: 2px;"
-        )
+
         
         # Maximize camera view - set size policy to strongly expand in both directions
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -129,10 +122,8 @@ class CameraWidget(QGroupBox):
         button_layout.addWidget(self.reconnect_button)
         button_layout.addStretch(1)
         
-        # Right side: Status display with recording indicator
+        # Right side: Status display
         status_layout = QHBoxLayout()
-        status_layout.addWidget(self.recording_indicator)
-        status_layout.addWidget(self.recording_stats)
         status_layout.addStretch(1)
         status_layout.addWidget(self.status_display)
         
@@ -587,12 +578,8 @@ class CameraWidget(QGroupBox):
             
             # Start recording with metadata
             recording_metadata = {
-                'recording_mode': 'test_pattern' if stats.get('use_test_pattern', False) else 'camera',
-                'camera_id': self.camera.camera_id if self.camera else 0,
                 'operator': os.getenv('USERNAME', 'Unknown'),
-                'system_name': 'AFS_tracking',
-                'threaded_capture': True,
-                'max_queue_size': self.camera.max_queue_size if self.camera else 0
+                'system_name': 'AFS_tracking'
             }
             
             # Add user-provided metadata
