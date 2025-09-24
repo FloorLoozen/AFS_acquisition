@@ -92,6 +92,9 @@ class CameraWidget(QGroupBox):
 
         self.init_ui()
 
+        # Set initial status to show initialization is starting
+        self.update_status("Initializing...")
+
         # Auto-connect shortly after startup with shorter delay
         QTimer.singleShot(100, self.connect_camera)
 
@@ -117,7 +120,7 @@ class CameraWidget(QGroupBox):
         button_layout = QHBoxLayout()
         self.play_button = QPushButton("▶️ Play"); self.play_button.clicked.connect(self.set_live_mode)
         self.pause_button = QPushButton("⏸️ Pause"); self.pause_button.clicked.connect(self.set_pause_mode)
-        self.reconnect_button = QPushButton("🔄 Initialize"); self.reconnect_button.clicked.connect(self.reconnect_camera)
+        self.reconnect_button = QPushButton("🔄 Re-initialize"); self.reconnect_button.clicked.connect(self.reconnect_camera)
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
         button_layout.addWidget(self.reconnect_button)
@@ -171,9 +174,8 @@ class CameraWidget(QGroupBox):
             if not self.update_timer.isActive():
                 self.update_timer.start()
             self.set_live_mode()  # Start test pattern
-            # Re-enable initialize button
+            # Re-enable initialize button (text stays the same)
             self.reconnect_button.setEnabled(True)
-            self.reconnect_button.setText("🔄 Retry Hardware")
             return
             
         # Try to connect
@@ -190,9 +192,8 @@ class CameraWidget(QGroupBox):
                     self.update_timer.start()
                 self.set_live_mode()  # Auto start live view
                 logger.info(f"Camera connected successfully after {self.reconnection_attempts} attempts")
-                # Re-enable initialize button
+                # Re-enable initialize button (text stays the same)
                 self.reconnect_button.setEnabled(True)
-                self.reconnect_button.setText("🔄 Initialize")
                 return
                 
             # If initialization failed, clean up and try again in 300ms
@@ -226,9 +227,8 @@ class CameraWidget(QGroupBox):
         self.camera_error = None
         self.warning_count = 0
         
-        # Disable initialize button during attempt
+        # Disable initialize button during attempt (but keep the text the same)
         self.reconnect_button.setEnabled(False)
-        self.reconnect_button.setText("🔄 Initializing...")
         
         # Start initialization attempt with timeout
         self.reconnection_start_time = time.time()
@@ -261,12 +261,12 @@ class CameraWidget(QGroupBox):
         if not self.pyueye_available:
             logger.info("pyueye module not available, using test pattern")
             self._start_test_pattern_mode("Test Pattern Mode")
-            self.reconnect_button.setText("🔄 Install Camera Driver")
             return
         
         # Quick hardware check - don't spend too much time on startup
         try:
             logger.info("Quick camera hardware check...")
+            self.update_status("Connecting...")
             self.camera = CameraController(camera_id)
             
             # Use a shorter timeout for initial connection
@@ -291,7 +291,6 @@ class CameraWidget(QGroupBox):
                         pass
                     self.camera = None
                 self._start_test_pattern_mode("Hardware Not Found - Test Pattern")
-                self.reconnect_button.setText("🔄 Retry Hardware")
                 return
             
         except Exception as e:
@@ -303,7 +302,6 @@ class CameraWidget(QGroupBox):
                     pass
                 self.camera = None
             self._start_test_pattern_mode("Hardware Error - Test Pattern")
-            self.reconnect_button.setText("🔄 Retry Hardware")
     
     def _start_test_pattern_mode(self, status_text):
         """Helper method to start test pattern mode with the given status text"""
@@ -328,7 +326,7 @@ class CameraWidget(QGroupBox):
             except Exception:
                 pass
             self.camera = None
-        self.update_status("Disconnected")
+        self.update_status("Initialize")
         self.update_button_states()
 
     def set_live_mode(self):
@@ -427,7 +425,7 @@ class CameraWidget(QGroupBox):
             # Camera was previously open but is now closed
             if self.camera_error != "Camera disconnected":
                 self.camera_error = "Camera disconnected"
-                self.update_status("Disconnected")
+                self.update_status("Initialize")
                 logger.warning("Camera disconnected")
             return False
             
@@ -477,7 +475,6 @@ class CameraWidget(QGroupBox):
                             logger.info("Too many failed frame attempts, switching to test pattern")
                             self.use_test_pattern = True
                             self.update_status("Hardware Error - Test Pattern")
-                            self.reconnect_button.setText("🔄 Retry Hardware")
                             self.warning_count = 0
                         return
                         
@@ -497,14 +494,13 @@ class CameraWidget(QGroupBox):
                         if "closed camera" in error_msg or "camera not found" in error_msg:
                             logger.info("Camera disconnected, switching to test pattern")
                             self.use_test_pattern = True
-                            self.update_status("Disconnected - Test Pattern")
+                            self.update_status("Initialize")
                             self.camera_error = "Camera disconnected"
                         else:
                             logger.info(f"Camera error, switching to test pattern: {e}")
                             self.use_test_pattern = True
                             self.update_status("Hardware Error - Test Pattern")
                             self.camera_error = str(e)
-                        self.reconnect_button.setText("🔄 Retry Hardware")
                         self.warning_count = 0
                     return
                     
