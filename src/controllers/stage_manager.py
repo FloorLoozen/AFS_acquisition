@@ -146,16 +146,28 @@ class StageManager:
     
     def move_up(self) -> bool:
         # UP key should move LEFT (negative X)
+        if not self.is_connected and not self.connect():
+            logger.debug("Cannot move up: XY stage not connected")
+            return False
         return self.move_relative(dx=-self._default_step_size)
 
     def move_down(self) -> bool:
         # DOWN key should move RIGHT (positive X)
+        if not self.is_connected and not self.connect():
+            logger.debug("Cannot move down: XY stage not connected")
+            return False
         return self.move_relative(dx=self._default_step_size)
 
     def move_left(self) -> bool:
         # LEFT key should move UP (positive Y)
+        if not self.is_connected and not self.connect():
+            logger.debug("Cannot move left: XY stage not connected")
+            return False
         return self.move_relative(dy=self._default_step_size)
 
     def move_right(self) -> bool:
         # RIGHT key should move DOWN (negative Y)
+        if not self.is_connected and not self.connect():
+            logger.debug("Cannot move right: XY stage not connected")
+            return False
         return self.move_relative(dy=-self._default_step_size)

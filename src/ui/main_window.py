@@ -28,10 +28,13 @@ class MainWindow(QMainWindow):
         self.measurement_controls_widget = None
         
         self._init_ui()
+        
+        # Initialize hardware first, then set up keyboard shortcuts
+        self._initialize_hardware()
         self.keyboard_shortcuts = KeyboardShortcutManager(self)
         
-        # Auto-initialize hardware after UI is ready
-        QTimer.singleShot(100, self._initialize_hardware)
+        # Delay focus setting to ensure everything is loaded
+        QTimer.singleShot(100, self._ensure_main_window_focus)
 
     def _init_ui(self):
         """Initialize the user interface."""
@@ -44,6 +47,11 @@ class MainWindow(QMainWindow):
 
         QApplication.restoreOverrideCursor()
         self.statusBar().showMessage("Ready")
+        
+        # Ensure main window has focus to capture keyboard shortcuts
+        self.setFocus()
+        self.activateWindow()
+        self.raise_()
 
     def _create_menu_bar(self):
         """Create application menu bar."""
@@ -328,3 +336,10 @@ class MainWindow(QMainWindow):
     def _init_function_generator(self):
         """Initialize function generator hardware (placeholder).""" 
 # Function generator initialization placeholder
+    
+    def _ensure_main_window_focus(self):
+        """Ensure main window has focus for keyboard shortcuts to work."""
+        self.setFocus()
+        self.activateWindow()
+        self.raise_()
+        logger.debug("Main window focus set for keyboard shortcuts")
