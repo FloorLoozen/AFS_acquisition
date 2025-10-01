@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         
         # Tools menu
         tools_menu = menubar.addMenu("Tools")
-        self._add_action(tools_menu, "Camera Settings", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
         self._add_action(tools_menu, "Resonance Finder", None, self._show_not_implemented)
         self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
@@ -153,6 +153,29 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to open stage dialog: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open stage controls: {e}")
+
+    def _open_camera_settings(self):
+        """Open camera settings dialog."""
+        try:
+            from src.ui.widgets.camera_settings_widget import CameraSettingsWidget
+            
+            # Get camera controller from camera widget
+            camera_controller = None
+            if hasattr(self.camera_widget, 'camera'):
+                camera_controller = self.camera_widget.camera
+            
+            # Store reference to prevent garbage collection
+            if not hasattr(self, '_camera_settings_dialog') or not self._camera_settings_dialog.isVisible():
+                self._camera_settings_dialog = CameraSettingsWidget(camera_controller, self)
+                self._camera_settings_dialog.show()
+            else:
+                # Update controller reference in case it changed
+                self._camera_settings_dialog.set_camera_controller(camera_controller)
+                self._camera_settings_dialog.activateWindow()
+                self._camera_settings_dialog.raise_()
+        except Exception as e:
+            logger.error(f"Failed to open camera settings: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to open camera settings: {e}")
 
     def _open_about(self):
         """Show about dialog."""
