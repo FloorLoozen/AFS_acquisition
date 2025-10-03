@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("Tools")
         self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
+        self._add_action(tools_menu, "Function Generator", None, self._focus_function_generator)
         self._add_action(tools_menu, "Resonance Finder", None, self._show_not_implemented)
         self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
 
@@ -177,12 +178,46 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to open camera settings: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open camera settings: {e}")
 
+    def _focus_function_generator(self):
+        """Focus on the function generator controls in the measurement controls widget."""
+        if self.measurement_controls_widget:
+            # Scroll to and highlight the measurement controls widget
+            self.measurement_controls_widget.setFocus()
+            # Show a brief message to guide the user
+            self.statusBar().showMessage("Function Generator controls are in the Measurement Controls panel", 3000)
+
     def _open_about(self):
         """Show about dialog."""
         QMessageBox.information(self, "About", 
             "AFS Tracking System v3\n\n"
             "Automated tracking system for AFS using IDS cameras "
             "and MCL MicroDrive XY stage hardware.")
+    
+    def closeEvent(self, event):
+        """Handle application close event."""
+        logger.info("Application closing - cleaning up hardware")
+        
+        try:
+            # Cleanup function generator
+            if hasattr(self.measurement_controls_widget, 'cleanup'):
+                self.measurement_controls_widget.cleanup()
+            
+            # Cleanup camera
+            if hasattr(self.camera_widget, 'close'):
+                self.camera_widget.close()
+            
+            # Cleanup stage controller
+            try:
+                from src.controllers.stage_manager import StageManager
+                stage_manager = StageManager.get_instance()
+                stage_manager.disconnect()
+            except Exception as e:
+                logger.debug(f"Stage cleanup error: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+        
+        event.accept()
     
     def get_measurement_settings(self):
         """Get the measurement settings widget instance."""
@@ -223,6 +258,18 @@ class MainWindow(QMainWindow):
         if self.measurement_settings_widget:
             return self.measurement_settings_widget.get_notes()
         return ""
+    
+    def get_function_generator_status(self):
+        """Get function generator status information."""
+        if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_status'):
+            return self.measurement_controls_widget.get_function_generator_status()
+        return {'enabled': False, 'connected': False}
+    
+    def get_function_generator_controller(self):
+        """Get the function generator controller instance."""
+        if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_controller'):
+            return self.measurement_controls_widget.get_function_generator_controller()
+        return None
     
     def _handle_start_recording(self, file_path):
         """Handle start recording request."""
@@ -307,18 +354,21 @@ class MainWindow(QMainWindow):
 # Hardware initialization starts
         self.statusBar().showMessage("Initializing hardware...")
         
+        # Collect hardware status for non-camera components first
+        hardware_status = {}
+        
         try:
-            self._init_camera()
-            self._init_xy_stage() 
-            self._init_function_generator()
+            hardware_status["XY Stage"] = self._init_xy_stage()
+            hardware_status["Function Generator"] = self._init_function_generator()
+            
+            # Handle camera separately - wait for it to fully initialize
+            self._init_camera_with_status_check(hardware_status)
+            
         except Exception as e:
             logger.error(f"Hardware initialization error: {e}")
             self.statusBar().showMessage(f"Hardware initialization error: {str(e)}")
         finally:
             QApplication.restoreOverrideCursor()
-        
-        # Show completion message after delay
-        QTimer.singleShot(2000, lambda: self.statusBar().showMessage("Hardware initialization complete"))
     
     def _init_camera(self):
         """Initialize camera hardware."""
@@ -328,15 +378,24 @@ class MainWindow(QMainWindow):
         try:
             if self.camera_widget and hasattr(self.camera_widget, 'is_running'):
                 if self.camera_widget.is_running:
-                    mode = "test pattern" if getattr(self.camera_widget, 'use_test_pattern', False) else "hardware"
-# Camera mode info shown in status bar
-                    self.statusBar().showMessage(f"Camera running in {mode} mode")
+                    # Check if using test pattern or real hardware
+                    use_test_pattern = getattr(self.camera_widget, 'use_test_pattern', False)
+                    if use_test_pattern:
+                        logger.info("Camera running in test pattern mode")
+                        return {"connected": False, "message": "Using test pattern (no hardware detected)"}
+                    else:
+                        logger.info("Camera running with hardware")
+                        return {"connected": True, "message": "Camera hardware detected"}
                 else:
                     logger.info("Camera widget starting initialization")
-                    self.statusBar().showMessage("Camera initializing")
+                    # Camera is still initializing - this is normal and expected
+                    return {"connected": False, "message": "Still initializing (this is normal - try retry in a moment)"}
             else:
                 logger.warning("Camera widget creation failed")
-                self.statusBar().showMessage("Camera initialization failed, using fallback")
+                return {"connected": False, "message": "Camera widget creation failed"}
+        except Exception as e:
+            logger.error(f"Camera initialization error: {e}")
+            return {"connected": False, "message": f"Initialization error: {str(e)}"}
         finally:
             QApplication.restoreOverrideCursor()
             
@@ -347,15 +406,146 @@ class MainWindow(QMainWindow):
             stage_manager = StageManager.get_instance()
             if stage_manager.connect():
                 logger.info("XY stage connected")
+                return {"connected": True, "message": "XY stage hardware connected"}
             else:
                 logger.warning("XY stage connection failed")
+                return {"connected": False, "message": "XY stage hardware not found"}
         except Exception as e:
             logger.warning(f"XY stage initialization failed: {e}")
+            return {"connected": False, "message": f"Initialization error: {str(e)}"}
     
     def _init_function_generator(self):
-        """Initialize function generator hardware (placeholder).""" 
-# Function generator initialization placeholder
+        """Initialize function generator hardware."""
+        # Function generator initialization is handled by the measurement controls widget
+        logger.info("Checking function generator status from measurement controls widget")
+        
+        try:
+            if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_controller'):
+                fg_controller = self.measurement_controls_widget.get_function_generator_controller()
+                if fg_controller and fg_controller.is_connected():
+                    logger.info("Function generator connected")
+                    return {"connected": True, "message": "Function generator connected"}
+                else:
+                    logger.info("Function generator not connected")
+                    return {"connected": False, "message": "VISA resource not found or connection failed"}
+            else:
+                logger.warning("Function generator controller not available")
+                return {"connected": False, "message": "Controller not available"}
+        except Exception as e:
+            logger.error(f"Function generator status check failed: {e}")
+            return {"connected": False, "message": f"Status check error: {str(e)}"}
     
+    def _show_hardware_status_warning(self, hardware_status):
+        """Show hardware status warning dialog if there are connection issues."""
+        try:
+            from src.ui.dialogs.hardware_status_dialog import show_hardware_status_warning
+            
+            result = show_hardware_status_warning(hardware_status, self)
+            
+            if result == 2:  # Retry requested
+                logger.info("User requested hardware connection retry")
+                self.statusBar().showMessage("Retrying hardware connections...")
+                
+                # Retry hardware initialization after a short delay
+                QTimer.singleShot(500, self._retry_hardware_initialization)
+            elif result == 1:  # Continue anyway
+                logger.info("User chose to continue with hardware connection issues")
+                self._show_initialization_complete()
+            elif result is None:  # No issues, dialog not shown
+                logger.info("All hardware connected successfully")
+                self._show_initialization_complete()
+                
+        except ImportError as e:
+            logger.error(f"Could not import hardware status dialog: {e}")
+            # Fallback: show simple message box for critical issues
+            disconnected = [name for name, status in hardware_status.items() 
+                          if not status.get('connected', False)]
+            if disconnected:
+                QMessageBox.warning(self, "Hardware Warning", 
+                                  f"Hardware not connected: {', '.join(disconnected)}")
+        except Exception as e:
+            logger.error(f"Error showing hardware status dialog: {e}")
+    
+    def _retry_hardware_initialization(self):
+        """Retry hardware initialization."""
+        logger.info("Retrying hardware initialization")
+        
+        # Collect hardware status again
+        hardware_status = {}
+        
+        try:
+            hardware_status["XY Stage"] = self._init_xy_stage()
+            hardware_status["Function Generator"] = self._init_function_generator()
+            
+            # Check camera again
+            camera_status = self._init_camera()
+            hardware_status["Camera"] = camera_status
+            
+            # Show status immediately on retry
+            self._check_and_show_hardware_status(hardware_status)
+            
+        except Exception as e:
+            logger.error(f"Hardware retry error: {e}")
+            self.statusBar().showMessage(f"Hardware retry error: {str(e)}")
+    
+    def _init_camera_with_status_check(self, hardware_status):
+        """Initialize camera and wait for completion before checking status."""
+        self.statusBar().showMessage("Initializing camera... Please wait")
+        
+        # Start camera initialization
+        initial_status = self._init_camera()
+        
+        if initial_status["connected"]:
+            # Camera already connected
+            hardware_status["Camera"] = initial_status
+            self._check_and_show_hardware_status(hardware_status)
+        else:
+            # Camera is still initializing, wait for it to complete
+            logger.info("Camera initializing - waiting for completion")
+            self._wait_for_camera_initialization(hardware_status, max_wait_time=8)
+    
+    def _wait_for_camera_initialization(self, hardware_status, max_wait_time=8):
+        """Wait for camera to finish initializing, then check status."""
+        self.camera_wait_timer = QTimer()
+        self.camera_wait_timer.setSingleShot(True)
+        self.camera_wait_elapsed = 0
+        
+        def check_camera_status():
+            self.camera_wait_elapsed += 1
+            
+            # Check if camera is now running
+            camera_status = self._init_camera()
+            
+            if camera_status["connected"]:
+                # Camera is now connected
+                logger.info("Camera initialization completed successfully")
+                hardware_status["Camera"] = camera_status
+                self._check_and_show_hardware_status(hardware_status)
+            elif self.camera_wait_elapsed >= max_wait_time:
+                # Timeout - camera failed to initialize
+                logger.warning("Camera initialization timeout")
+                hardware_status["Camera"] = {"connected": False, "message": "Initialization timeout - hardware may not be connected"}
+                self._check_and_show_hardware_status(hardware_status)
+            else:
+                # Keep waiting
+                self.statusBar().showMessage(f"Camera initializing... ({self.camera_wait_elapsed}s)")
+                QTimer.singleShot(1000, check_camera_status)
+        
+        # Start checking after 1 second
+        QTimer.singleShot(1000, check_camera_status)
+    
+    def _check_and_show_hardware_status(self, hardware_status):
+        """Check hardware status and show warning if needed."""
+        # Show hardware status warning if needed
+        self._show_hardware_status_warning(hardware_status)
+        
+        # Show completion message
+        QTimer.singleShot(500, self._show_initialization_complete)
+    
+    def _show_initialization_complete(self):
+        """Show initialization complete message."""
+        self.statusBar().showMessage("Hardware initialization complete")
+
     def _ensure_main_window_focus(self):
         """Ensure main window has focus for keyboard shortcuts to work."""
         self.setFocus()
