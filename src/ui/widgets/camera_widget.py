@@ -33,34 +33,34 @@ class CameraWidget(QGroupBox):
         self.is_live = False
         self.camera_error = None
         
-        # Frame data
+        # Frame data with performance optimization
         self.current_frame_data: FrameData = None
         self.last_frame_timestamp = 0
+        # Removed complex frame control variables
         
-        # Warning suppression to prevent log spam
-        self.last_warning_time = 0
-        self.warning_count = 0
-        self.log_warning_threshold = 30  # Only log every 30 attempts when repeating
+        # Performance monitoring
+        self.display_fps_counter = 0
+        self.display_fps_start_time = time.time()
+        self.last_display_fps = 0
         
-        # Reconnection state
-        self.reconnection_start_time = 0
-        self.reconnection_attempts = 0
+
 
         # Display + timers
         self.display_label = QLabel()
         self.display_label.setAlignment(Qt.AlignCenter)
         
-        # Video recording state
+        # Video recording state with robustness
         self.is_recording = False
         self.hdf5_recorder = None
+        self.recording_errors = 0
+        self.max_recording_errors = 50
         self.recording_path = ""
         self.recording_start_time = None
         self.recorded_frames = 0
         
-        # Frame rate control for recording
+        # Recording control
         self.target_recording_fps = 25.0
-        self.last_recorded_time = 0
-        self.frame_interval = 1.0 / self.target_recording_fps
+        self.recording_start_timestamp = 0
         
 
         
@@ -71,17 +71,14 @@ class CameraWidget(QGroupBox):
         # Set the widget to strongly prefer expanding
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Display update timer (higher frequency for smooth display)
+        # High-frequency timer for frame capture
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(16)  # ~60 FPS display refresh for smooth playback
+        self.update_timer.setInterval(10)  # 100Hz for optimal frame capture
         
-        # Image processing toggles (keep for internal use)
+        # Image processing toggles
         self.mono_enabled = False
         self.auto_contrast = False
-        self.auto_brightness = True  # Enable automatic brightness adjustment
-        self.target_brightness = 128  # Target average brightness (0-255)
-        self.brightness_adjustment_rate = 0.1  # How fast to adjust (0.0-1.0)
 
         # Status display
         self.status_display = StatusDisplay()
@@ -120,6 +117,9 @@ class CameraWidget(QGroupBox):
         button_layout.addWidget(self.play_button)
         button_layout.addWidget(self.pause_button)
         button_layout.addWidget(self.reconnect_button)
+        
+
+        
         button_layout.addStretch(1)
         
         # Right side: Status display
@@ -365,22 +365,13 @@ class CameraWidget(QGroupBox):
         self.update_status("Paused")
         self.update_button_states()
 
-    def toggle_mono(self):
-        self.mono_enabled = not self.mono_enabled
-        self.mono_button.setChecked(self.mono_enabled)
 
-    def toggle_auto_contrast(self):
-        self.auto_contrast = not self.auto_contrast
-        self.auto_contrast_button.setChecked(self.auto_contrast)
 
 
 
     def update_frame(self):
         """
-        Update the camera frame display. Called by update_timer.
-        
-        Gets the latest frame from the threaded camera controller and displays it.
-        Also handles frame recording and statistics display.
+        Process frames from camera and handle recording.
         """
         if not self.is_running or not self.is_live:
             return
@@ -388,37 +379,49 @@ class CameraWidget(QGroupBox):
         if not self.camera:
             return
             
+
+            
         try:
-            # Get latest frame from threaded camera
-            frame_data = self.camera.get_latest_frame(timeout=0.01)  # Very short timeout for responsive UI
+            # Get latest frame
+            frame_data = self.camera.get_latest_frame(timeout=0.001)
             
             if frame_data is None:
-                # No new frame available - this is normal in high-FPS scenarios
                 return
-            
-            # Check if this is actually a new frame
-            if frame_data.timestamp <= self.last_frame_timestamp:
-                return  # Same frame, don't update
             
             self.last_frame_timestamp = frame_data.timestamp
             self.current_frame_data = frame_data
             
-            # Process frame for display
+            # Record frame if recording
+            if self.is_recording:
+                self._record_frame(frame_data.frame)
+            
+            # Always update display (keep it simple)
             processed_frame = self.process_frame(frame_data.frame)
-            
-            # Record frame if recording is active
-            self._record_frame(processed_frame)
-            
-            # Display the frame
             self.display_frame(processed_frame)
             
-            # Update status with camera statistics (occasionally)
-            if frame_data.frame_number % 60 == 0:  # Update stats every 60 frames
-                stats = self.camera.get_statistics()
-                if stats['use_test_pattern']:
-                    self.update_status(f"Test Pattern - {stats['fps']:.1f} FPS")
-                else:
-                    self.update_status(f"Live - {stats['fps']:.1f} FPS")
+            # Update performance monitoring
+            self.display_fps_counter += 1
+            current_time = time.time()
+            if current_time - self.display_fps_start_time >= 2.0:  # Update every 2 seconds
+                display_fps = self.display_fps_counter / (current_time - self.display_fps_start_time)
+                self.last_display_fps = display_fps
+                self.display_fps_counter = 0
+                self.display_fps_start_time = current_time
+            
+            # Update status with performance info (less frequently for better performance)
+            if frame_data.frame_number % 150 == 0:  # Update stats every 150 frames (5 seconds at 30fps)
+                try:
+                    stats = self.camera.get_statistics()
+                    display_info = f"Display: {self.last_display_fps:.1f} FPS"
+                    if self.is_recording:
+                        status_text = f"Recording - {display_info}"
+                    elif stats['use_test_pattern']:
+                        status_text = f"Test Pattern - {display_info}"
+                    else:
+                        status_text = f"Live - {display_info}"
+                    self.update_status(status_text)
+                except:
+                    pass  # Don't let stats errors affect display performance
             
         except Exception as e:
             # Log unique errors only
@@ -427,34 +430,11 @@ class CameraWidget(QGroupBox):
                 self.camera_error = str(e)
                 self.update_status("Error")
 
-    def calculate_auto_brightness_adjustment(self, frame):
-        """
-        Optimized automatic brightness adjustment using subsampling.
-        
-        Args:
-            frame: Input image frame (BGR format)
-            
-        Returns:
-            float: Brightness adjustment value
-        """
-        # Use subsampling for faster analysis (every 4th pixel in each dimension)
-        height, width = frame.shape[:2]
-        subsampled = frame[::4, ::4]  # 16x faster analysis
-        
-        # Calculate brightness from green channel only (perceptually most important)
-        # This avoids color space conversion overhead
-        current_brightness = np.mean(subsampled[:, :, 1])  # Green channel
-        
-        # Calculate adjustment with rate limiting
-        brightness_difference = self.target_brightness - current_brightness
-        adjustment = brightness_difference * self.brightness_adjustment_rate
-        
-        # Limit adjustment to prevent flickering
-        return np.clip(adjustment, -20, 20)
+
 
     def process_frame(self, frame):
         """
-        Optimized frame processing pipeline.
+        Minimal frame processing optimized for recording performance.
         
         Args:
             frame: Input frame to process
@@ -462,54 +442,38 @@ class CameraWidget(QGroupBox):
         Returns:
             Processed frame ready for display
         """
-        # Skip processing if no effects are enabled (most common case)
-        if not (self.auto_brightness or self.mono_enabled or self.auto_contrast):
+        # Skip processing during recording for maximum performance
+        if self.is_recording:
+            return frame
+            
+        # Skip processing if no effects are enabled
+        if not (self.mono_enabled or self.auto_contrast):
             return frame
         
-        # Only copy if we need to modify the frame
-        img = frame
-        
-        # Apply automatic brightness adjustment (most expensive operation)
-        if self.auto_brightness:
-            brightness_adjustment = self.calculate_auto_brightness_adjustment(frame)
-            if abs(brightness_adjustment) > 1:  # Only adjust if significant difference
-                # Create copy only when needed
-                if img is frame:
-                    img = frame.copy()
-                # Use cv2.add for hardware acceleration where available
-                img = cv2.add(img, np.full_like(img, brightness_adjustment, dtype=np.uint8))
-        
-        # Apply mono conversion (medium cost)
+        # Apply mono conversion if enabled
         if self.mono_enabled:
-            if img is frame:
-                img = frame.copy()
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            
-        # Apply auto-contrast (highest cost - skip unless really needed)
-        if self.auto_contrast:
-            if img is frame:
-                img = frame.copy()
-            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-            l, a, b = cv2.split(lab)
-            l = cv2.equalizeHist(l)
-            lab = cv2.merge((l, a, b))
-            img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 
-        return img
+        return frame
 
     def display_frame(self, frame):
         """
-        Optimized frame display with reduced memory allocations.
+        Ultra-optimized frame display for maximum performance.
         
         Args:
             frame: BGR frame to display
         """
-        # Convert BGR to RGB in-place to avoid extra memory allocation
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Skip RGB conversion for test patterns that might already be RGB
+        if frame.shape[2] == 3:
+            # Convert BGR to RGB - required for proper display
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            rgb_frame = frame
+            
         h, w = rgb_frame.shape[:2]
         
-        # Create QImage directly from the data buffer
+        # Create QImage directly from the data buffer for zero-copy operation
         bytes_per_line = 3 * w
         qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         
@@ -517,12 +481,12 @@ class CameraWidget(QGroupBox):
         display_width = self.display_label.width()
         display_height = self.display_label.height()
         
-        # Only scale if display size is valid and different from frame size
+        # Only scale if display size is valid and significantly different from frame size
+        scale_threshold = 50  # Don't rescale for small differences
         if (display_width > 1 and display_height > 1 and 
-            (w != display_width or h != display_height)):
+            (abs(w - display_width) > scale_threshold or abs(h - display_height) > scale_threshold)):
             
-            # Use FastTransformation for better performance during live view
-            # SmoothTransformation only needed for final/static images
+            # Use FastTransformation for maximum performance during live view
             pix = QPixmap.fromImage(qimg).scaled(
                 display_width, display_height, 
                 Qt.KeepAspectRatio, Qt.FastTransformation
@@ -565,12 +529,11 @@ class CameraWidget(QGroupBox):
             else:
                 frame_shape = (480, 640, 3)  # Default shape
             
-            # Create HDF5 recorder with no compression for speed
+            # Create HDF5 recorder with LZF compression for speed
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
-                fps=25.0,  # Target recording FPS to match live performance
-                compression=None  # No compression for maximum speed
+                fps=25.0  # Target recording FPS to match live performance
             )
             
             # Get camera statistics for metadata
@@ -594,10 +557,25 @@ class CameraWidget(QGroupBox):
             if self.camera and hasattr(self.camera, 'get_camera_settings'):
                 try:
                     camera_settings = self.camera.get_camera_settings()
+                    # Add image processing settings
+                    camera_settings['mono_enabled'] = self.mono_enabled
+                    camera_settings['auto_contrast'] = self.auto_contrast
+                    
                     self.hdf5_recorder.add_camera_settings(camera_settings)
                     logger.info(f"Saved camera settings to HDF5: {len(camera_settings)} parameters")
                 except Exception as e:
                     logger.warning(f"Failed to save camera settings to HDF5: {e}")
+            else:
+                # Save image processing settings even if camera settings unavailable
+                try:
+                    image_settings = {
+                        'mono_enabled': self.mono_enabled,
+                        'auto_contrast': self.auto_contrast
+                    }
+                    self.hdf5_recorder.add_camera_settings(image_settings)
+                    logger.info(f"Saved image processing settings to HDF5: {len(image_settings)} parameters")
+                except Exception as e:
+                    logger.warning(f"Failed to save image processing settings to HDF5: {e}")
             
             # Extract and save stage settings as metadata
             try:
@@ -613,10 +591,10 @@ class CameraWidget(QGroupBox):
             self.is_recording = True
             self.recording_path = file_path
             self.recording_start_time = datetime.now()
+            self.recording_start_timestamp = time.time()
             self.recorded_frames = 0
-            self.last_recorded_time = time.time()  # Reset frame rate timer
             
-            logger.info(f"Started HDF5 recording to: {file_path}")
+            logger.info(f"Started HDF5 recording: {file_path}")
             return True
             
         except Exception as e:
@@ -669,37 +647,17 @@ class CameraWidget(QGroupBox):
 
     def _record_frame(self, frame):
         """
-        Record a frame to the HDF5 file if recording is active.
-        Uses frame rate limiting to match target recording FPS.
-        
-        Args:
-            frame: The frame to record (BGR format)
+        Record frame with minimal overhead.
         """
         if not self.is_recording or not self.hdf5_recorder:
             return
         
-        # Frame rate limiting - only record at target FPS
-        current_time = time.time()
-        if current_time - self.last_recorded_time < self.frame_interval:
-            return  # Skip this frame to maintain target FPS
-        
         try:
-            # Ensure frame is the correct size for the recorder
-            expected_shape = self.hdf5_recorder.frame_shape
-            if frame.shape != expected_shape:
-                # Resize frame to match expected shape
-                target_height, target_width = expected_shape[:2]
-                frame = cv2.resize(frame, (target_width, target_height))
-            
-            # Record frame to HDF5
             if self.hdf5_recorder.record_frame(frame):
                 self.recorded_frames += 1
-                self.last_recorded_time = current_time
-            else:
-                logger.warning(f"Failed to record frame {self.recorded_frames}")
-            
         except Exception as e:
-            logger.error(f"Error recording frame to HDF5: {e}")
+            logger.error(f"Recording error: {e}")
+            self.recording_errors += 1
 
     # Basic keyboard shortcuts for tests
     def keyPressEvent(self, event):

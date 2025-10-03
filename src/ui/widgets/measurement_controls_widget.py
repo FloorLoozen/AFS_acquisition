@@ -29,7 +29,7 @@ class MeasurementControlsWidget(QGroupBox):
         self.fg_controller = None
         
         # Default settings
-        self.default_frequency = 14.0  # MHz
+        self.default_frequency = 10.0  # MHz
         self.default_amplitude = 4.0   # Vpp
         
         self._init_ui()
@@ -64,53 +64,30 @@ class MeasurementControlsWidget(QGroupBox):
         section = QWidget()
         layout = QVBoxLayout(section)
         
-        # Create all control rows
-        self._add_connection_row(layout)
-        self._add_output_row(layout)
-        
-        layout.addSpacing(20)  # Separator
-        
+        # Create simplified control rows
+        self._add_enable_row(layout)
         self._add_frequency_row(layout)
         self._add_amplitude_row(layout)
         
         return section
     
-    def _add_connection_row(self, layout):
-        """Add connection status row with label and connect button."""
+    def _add_enable_row(self, layout):
+        """Add function generator on/off button row."""
         row_layout = QHBoxLayout()
         
-        label = QLabel("Status:")
+        label = QLabel("Function Generator:")
         label.setMinimumWidth(150)
         
-        self.status_label = QLabel("Disconnected")
-        self.status_label.setStyleSheet("color: red; font-weight: bold;")
-        
-        self.connect_button = QPushButton("Connect")
-        self.connect_button.setFixedWidth(60)
-        self.connect_button.clicked.connect(self._on_connect_clicked)
-        
-        row_layout.addWidget(label)
-        row_layout.addWidget(self.status_label, 1)
-        row_layout.addWidget(self.connect_button)
-        
-        layout.addLayout(row_layout)
-    
-    def _add_output_row(self, layout):
-        """Add output enable/disable row."""
-        row_layout = QHBoxLayout()
-        
-        label = QLabel("Output:")
-        label.setMinimumWidth(150)
-        
-        self.fg_enable_checkbox = QCheckBox("Enable Function Generator")
-        self.fg_enable_checkbox.stateChanged.connect(self._on_fg_toggle)
+        self.fg_toggle_button = QPushButton("OFF")
+        self.fg_toggle_button.setCheckable(True)
+        self.fg_toggle_button.setFixedWidth(60)
+        self.fg_toggle_button.clicked.connect(self._on_fg_toggle)
         
         spacer = QLabel("")
-        spacer.setFixedWidth(60)
         
         row_layout.addWidget(label)
-        row_layout.addWidget(self.fg_enable_checkbox, 1)
-        row_layout.addWidget(spacer)
+        row_layout.addWidget(self.fg_toggle_button)
+        row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
     
@@ -121,20 +98,22 @@ class MeasurementControlsWidget(QGroupBox):
         label = QLabel("Frequency:")
         label.setMinimumWidth(150)
         
-        self.frequency_spinbox = QDoubleSpinBox()
-        self.frequency_spinbox.setRange(0.1, 200.0)  # 0.1 MHz to 200 MHz
-        self.frequency_spinbox.setSingleStep(0.1)
-        self.frequency_spinbox.setSuffix(" MHz")
-        self.frequency_spinbox.setDecimals(3)
-        self.frequency_spinbox.setValue(self.default_frequency)
-        self.frequency_spinbox.valueChanged.connect(self._on_settings_changed)
+        self.frequency_edit = QLineEdit()
+        self.frequency_edit.setText(str(self.default_frequency))
+        self.frequency_edit.setFixedWidth(80)
+        self.frequency_edit.setPlaceholderText("0.1-10.0")
+        self.frequency_edit.textChanged.connect(self._on_frequency_changed)
+        self.frequency_edit.editingFinished.connect(self._on_frequency_enter)
+        
+        mhz_label = QLabel("mhz")
+        mhz_label.setMinimumWidth(40)
         
         spacer = QLabel("")
-        spacer.setFixedWidth(60)
         
         row_layout.addWidget(label)
-        row_layout.addWidget(self.frequency_spinbox, 1)
-        row_layout.addWidget(spacer)
+        row_layout.addWidget(self.frequency_edit)
+        row_layout.addWidget(mhz_label)
+        row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
     
@@ -145,20 +124,22 @@ class MeasurementControlsWidget(QGroupBox):
         label = QLabel("Amplitude:")
         label.setMinimumWidth(150)
         
-        self.amplitude_spinbox = QDoubleSpinBox()
-        self.amplitude_spinbox.setRange(0.1, 20.0)  # 0.1 V to 20 V peak-to-peak
-        self.amplitude_spinbox.setSingleStep(0.1)
-        self.amplitude_spinbox.setSuffix(" Vpp")
-        self.amplitude_spinbox.setDecimals(2)
-        self.amplitude_spinbox.setValue(self.default_amplitude)
-        self.amplitude_spinbox.valueChanged.connect(self._on_settings_changed)
+        self.amplitude_edit = QLineEdit()
+        self.amplitude_edit.setText(str(self.default_amplitude))
+        self.amplitude_edit.setFixedWidth(80)
+        self.amplitude_edit.setPlaceholderText("0.1-20.0")
+        self.amplitude_edit.textChanged.connect(self._on_amplitude_changed)
+        self.amplitude_edit.editingFinished.connect(self._on_amplitude_enter)
+        
+        vpp_label = QLabel("vpp")
+        vpp_label.setMinimumWidth(40)
         
         spacer = QLabel("")
-        spacer.setFixedWidth(60)
         
         row_layout.addWidget(label)
-        row_layout.addWidget(self.amplitude_spinbox, 1)
-        row_layout.addWidget(spacer)
+        row_layout.addWidget(self.amplitude_edit)
+        row_layout.addWidget(vpp_label)
+        row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
 
@@ -168,122 +149,133 @@ class MeasurementControlsWidget(QGroupBox):
             self.fg_controller = FunctionGeneratorController()
             logger.info("Function generator controller created")
             
-            # Attempt auto-connection
+            # Attempt auto-connection silently
             if self.fg_controller.connect():
-                logger.info("Function generator auto-connected successfully")
-                self._update_connection_status()
+                logger.info("Function generator connected")
             else:
-                logger.info("Function generator auto-connection failed - manual connection available")
-                self._update_connection_status()
+                logger.info("Function generator not available - will try when needed")
         except Exception as e:
             logger.error(f"Failed to create function generator controller: {e}")
             self.fg_controller = None
-            self._update_connection_status()
     
-    def _on_connect_clicked(self):
-        """Handle connect button click."""
+    def _ensure_connection(self):
+        """Ensure function generator is connected, try to reconnect if needed."""
         if not self.fg_controller:
-            # Retry creating the controller
             self._initialize_function_generator()
-            return
+            return self.fg_controller is not None
         
-        if self.fg_controller.is_connected():
-            # Disconnect
-            self.fg_controller.disconnect()
-            logger.info("Function generator disconnected")
-            self._update_connection_status()
-        else:
-            # Connect
-            if self.fg_controller.connect():
-                logger.info("Function generator connected successfully")
-                self._update_connection_status()
-            else:
-                logger.error("Failed to connect to function generator")
-                self._update_connection_status()
+        if not self.fg_controller.is_connected():
+            # Try to reconnect silently
+            return self.fg_controller.connect()
+        
+        return True
     
-    def _update_connection_status(self):
-        """Update the connection status display."""
-        if self.fg_controller and self.fg_controller.is_connected():
-            self.status_label.setText("Connected")
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
-            self.connect_button.setText("Disconnect")
+    def _on_fg_toggle(self, checked):
+        """Handle function generator on/off button toggle."""
+        if checked:
+            # Try to connect if not connected
+            if not self._ensure_connection():
+                logger.warning("Function generator not available")
+                self.fg_toggle_button.setChecked(False)
+                return
             
-            # Enable controls
-            self.fg_enable_checkbox.setEnabled(True)
-            self.frequency_spinbox.setEnabled(True)
-            self.amplitude_spinbox.setEnabled(True)
-        elif not self.fg_controller:
-            self.status_label.setText("Controller Error")
-            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
-            self.connect_button.setText("Retry")
-            
-            # Disable controls
-            self.fg_enable_checkbox.setChecked(False)
-            self.fg_enable_checkbox.setEnabled(False)
-            self.frequency_spinbox.setEnabled(False)
-            self.amplitude_spinbox.setEnabled(False)
-        else:
-            self.status_label.setText("Disconnected")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
-            self.connect_button.setText("Connect")
-            
-            # Disable controls and turn off output
-            self.fg_enable_checkbox.setChecked(False)
-            self.fg_enable_checkbox.setEnabled(False)
-            self.frequency_spinbox.setEnabled(False)
-            self.amplitude_spinbox.setEnabled(False)
-    
-    def _on_fg_toggle(self, state):
-        """Handle function generator on/off toggle."""
-        is_enabled = state == Qt.Checked
-        
-        if not self.fg_controller or not self.fg_controller.is_connected():
-            logger.warning("Function generator not connected")
-            self.fg_enable_checkbox.setChecked(False)
-            return
-        
-        if is_enabled:
             # Turn on with current settings
-            frequency = self.frequency_spinbox.value()
-            amplitude = self.amplitude_spinbox.value()
+            try:
+                frequency = float(self.frequency_edit.text())
+                amplitude = float(self.amplitude_edit.text())
+            except ValueError:
+                frequency = self.default_frequency
+                amplitude = self.default_amplitude
             
             success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
             if not success:
-                logger.error("Failed to enable function generator output")
-                self.fg_enable_checkbox.setChecked(False)
+                logger.error("Failed to enable function generator")
+                self.fg_toggle_button.setChecked(False)
+                self.fg_toggle_button.setText("OFF")
             else:
-                logger.info(f"Function generator enabled: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
+                logger.info(f"Function generator ON: {frequency:.3f} mhz, {amplitude:.2f} vpp")
+                self.fg_toggle_button.setText("ON")
         else:
             # Turn off
-            success = self.fg_controller.stop_all_outputs()
-            if not success:
-                logger.error("Failed to disable function generator output")
-            else:
-                logger.info("Function generator disabled")
+            if self.fg_controller and self.fg_controller.is_connected():
+                success = self.fg_controller.stop_all_outputs()
+                if success:
+                    logger.info("Function generator OFF")
+                else:
+                    logger.error("Failed to disable function generator")
+            
+            self.fg_toggle_button.setText("OFF")
         
         # Emit signal
-        self.function_generator_toggled.emit(is_enabled and self.fg_controller.is_connected())
+        self.function_generator_toggled.emit(checked and self._ensure_connection())
     
     def _on_settings_changed(self):
         """Handle frequency or amplitude changes."""
-        if not self.fg_controller or not self.fg_controller.is_connected():
-            return
-        
         # If output is enabled, update immediately
-        if self.fg_enable_checkbox.isChecked():
-            frequency = self.frequency_spinbox.value()
-            amplitude = self.amplitude_spinbox.value()
+        if self.fg_toggle_button.isChecked() and self._ensure_connection():
+            try:
+                frequency = float(self.frequency_edit.text())
+                amplitude = float(self.amplitude_edit.text())
+            except ValueError:
+                frequency = self.default_frequency
+                amplitude = self.default_amplitude
             
             success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
             if success:
-                logger.info(f"Function generator settings updated: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
-            else:
-                logger.error("Failed to update function generator settings")
+                logger.info(f"Settings: {frequency:.3f} mhz, {amplitude:.2f} vpp")
         
         # Emit signal
-        frequency = self.frequency_spinbox.value()
-        amplitude = self.amplitude_spinbox.value()
+        try:
+            frequency = float(self.frequency_edit.text())
+            amplitude = float(self.amplitude_edit.text())
+        except ValueError:
+            frequency = self.default_frequency
+            amplitude = self.default_amplitude
         self.function_generator_settings_changed.emit(frequency, amplitude)
+    
+    def _on_frequency_changed(self):
+        """Handle text changes in frequency field"""
+        pass  # No real-time validation needed
+    
+    def _on_frequency_enter(self):
+        """Handle Enter key press in frequency field."""
+        if self.fg_toggle_button.isChecked() and self._ensure_connection():
+            try:
+                frequency = float(self.frequency_edit.text())
+                amplitude = float(self.amplitude_edit.text())
+                
+                # Validate range
+                if not (0.1 <= frequency <= 10.0):
+                    frequency = max(0.1, min(10.0, frequency))
+                    self.frequency_edit.setText(str(frequency))
+                
+                success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
+                if success:
+                    logger.info(f"Frequency updated: {frequency:.3f} mhz")
+            except ValueError:
+                self.frequency_edit.setText(str(self.default_frequency))
+    
+    def _on_amplitude_changed(self):
+        """Handle text changes in amplitude field"""
+        pass  # No real-time validation needed
+    
+    def _on_amplitude_enter(self):
+        """Handle Enter key press in amplitude field."""
+        if self.fg_toggle_button.isChecked() and self._ensure_connection():
+            try:
+                frequency = float(self.frequency_edit.text())
+                amplitude = float(self.amplitude_edit.text())
+                
+                # Validate range
+                if not (0.1 <= amplitude <= 20.0):
+                    amplitude = max(0.1, min(20.0, amplitude))
+                    self.amplitude_edit.setText(str(amplitude))
+                
+                success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
+                if success:
+                    logger.info(f"Amplitude updated: {amplitude:.2f} vpp")
+            except ValueError:
+                self.amplitude_edit.setText(str(self.default_amplitude))
 
     # Public methods for external control
     
@@ -293,15 +285,21 @@ class MeasurementControlsWidget(QGroupBox):
     
     def is_function_generator_enabled(self) -> bool:
         """Check if function generator output is enabled."""
-        return self.fg_enable_checkbox.isChecked()
+        return self.fg_toggle_button.isChecked()
     
     def get_frequency(self) -> float:
         """Get current frequency setting in MHz."""
-        return self.frequency_spinbox.value()
+        try:
+            return float(self.frequency_edit.text())
+        except ValueError:
+            return self.default_frequency
     
     def get_amplitude(self) -> float:
         """Get current amplitude setting in Vpp."""
-        return self.amplitude_spinbox.value()
+        try:
+            return float(self.amplitude_edit.text())
+        except ValueError:
+            return self.default_amplitude
     
     def set_frequency(self, frequency_mhz: float):
         """Set frequency in MHz."""
@@ -313,25 +311,26 @@ class MeasurementControlsWidget(QGroupBox):
     
     def enable_function_generator(self, enable: bool = True):
         """Enable or disable function generator output."""
-        self.fg_enable_checkbox.setChecked(enable)
+        self.fg_toggle_button.setChecked(enable)
     
     def get_function_generator_status(self) -> dict:
         """Get function generator status information."""
-        status = {
+        # Auto-check connection status
+        connected = self._ensure_connection()
+        
+        return {
             'enabled': self.is_function_generator_enabled(),
             'frequency_mhz': self.get_frequency(),
             'amplitude_vpp': self.get_amplitude(),
-            'connected': False
+            'connected': connected
         }
-        
-        if self.fg_controller:
-            controller_status = self.fg_controller.get_output_status()
-            status.update(controller_status)
-        
-        return status
 
     def cleanup(self):
         """Clean up resources when widget is destroyed."""
         if self.fg_controller:
+            # Turn off outputs first
+            if self.fg_toggle_button.isChecked():
+                self.fg_controller.stop_all_outputs()
+            # Then disconnect
             self.fg_controller.disconnect()
-            logger.info("Function generator controller cleanup completed")
+            logger.info("Function generator cleanup completed")

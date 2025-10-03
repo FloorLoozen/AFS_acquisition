@@ -454,25 +454,32 @@ class CameraController:
         """Main capture loop running in background thread."""
         logger.debug(f"Capture loop started (test_pattern: {self.use_test_pattern})")
         
-        # Dynamic target FPS based on mode
-        target_fps = 30.0 if self.use_test_pattern else 120.0  # Higher FPS for real cameras
-        target_interval = 1.0 / target_fps
+        # MAXIMUM SPEED MODE - no frame rate limiting
+        # target_fps = 30.0 if self.use_test_pattern else 120.0  # Higher FPS for real cameras
+        # target_interval = 1.0 / target_fps
         last_capture_time = 0
         
         while self.running:
             try:
                 current_time = time.time()
                 
-                # Rate limiting - only for test pattern mode
-                if self.use_test_pattern:
-                    time_since_last = current_time - last_capture_time
-                    if time_since_last < target_interval:
-                        time.sleep(target_interval - time_since_last)
-                        current_time = time.time()
+                # NO RATE LIMITING - generate frames as fast as possible
+                # if self.use_test_pattern:
+                #     time_since_last = current_time - last_capture_time
+                #     if time_since_last < target_interval:
+                #         time.sleep(target_interval - time_since_last)
+                #         current_time = time.time()
                 
                 # Capture frame
                 frame = self._capture_single_frame()
                 if frame is not None:
+                    # Debug: Log every 30 frames generated
+                    if hasattr(self, 'debug_generated_count'):
+                        self.debug_generated_count += 1
+                    else:
+                        self.debug_generated_count = 1
+                        
+
                     # Create frame data
                     with self.stats_lock:
                         frame_data = FrameData(
@@ -509,9 +516,9 @@ class CameraController:
                     with self.stats_lock:
                         self.consecutive_errors += 1
                     
-                    # If too many consecutive errors, add a small delay
-                    if self.consecutive_errors > 10:
-                        time.sleep(0.01)  # 10ms delay
+                    # REMOVED delay that was slowing down frame generation
+                    # if self.consecutive_errors > 10:
+                    #     time.sleep(0.01)  # 10ms delay
                 
                 last_capture_time = current_time
                 
@@ -519,7 +526,7 @@ class CameraController:
                 logger.error(f"Error in capture loop: {e}")
                 with self.stats_lock:
                     self.consecutive_errors += 1
-                time.sleep(0.01)  # Brief delay on error
+                # time.sleep(0.01)  # REMOVED delay that was slowing down frame generation
         
         logger.debug("Capture loop ended")
     

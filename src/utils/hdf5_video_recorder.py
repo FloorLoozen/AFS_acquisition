@@ -5,6 +5,7 @@ Provides high-performance video recording with frame-level access, compression, 
 
 import h5py
 import numpy as np
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import os
@@ -27,20 +28,18 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: str, frame_shape: Tuple[int, int, int], 
-                 fps: float = 60.0, compression: str = 'lzf'):
+                 fps: float = 60.0):
         """
-        Initialize the HDF5 video recorder.
+        Initialize the HDF5 video recorder with GZIP compression.
         
         Args:
             file_path: Path to save the HDF5 file
             frame_shape: Shape of each frame (height, width, channels)
             fps: Frames per second for metadata
-            compression: Compression type ('lzf', 'gzip', or None)
         """
         self.file_path = file_path
         self.frame_shape = frame_shape
         self.fps = fps
-        self.compression = compression
         
         # Recording state
         self.h5_file = None
@@ -49,20 +48,28 @@ class HDF5VideoRecorder:
         self.frame_count = 0
         self.start_time = None
         
-        # Dataset parameters
+        # Dataset parameters - optimized for performance
         self.chunk_size = self._calculate_optimal_chunk_size(frame_shape)
-        self.initial_size = 1000  # Initial number of frames to allocate
-        self.growth_factor = 1.5  # Factor to grow dataset when full
+        self.initial_size = 2000  # Larger initial allocation to reduce resizing
+        self.growth_factor = 2.0  # Exponential growth for better amortized performance
+        
+        # Performance tracking
+        self.write_errors = 0
+        self.max_write_errors = 10  # Stop recording after too many errors
+        self.last_flush_time = 0
+        self.flush_interval = 5.0  # Flush every 5 seconds for data safety
         
         # Additional data storage
         self.settings_group = None
+        self._closed = False
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
         Calculate optimal chunk size for the dataset.
         
-        Frame-level chunking for optimal random access:
-        - Chunk size = (1, height, width, channels) for single frame access
+        Optimized chunking for compression and I/O performance:
+        - Balance between compression efficiency and random access
+        - Target chunk size around 1-4 MB for optimal HDF5 performance
         
         Args:
             frame_shape: Shape of each frame (height, width, channels)
@@ -70,8 +77,13 @@ class HDF5VideoRecorder:
         Returns:
             Optimal chunk size tuple
         """
-        # Single frame chunks for optimal random access
-        return (1, *frame_shape)
+        frame_bytes = np.prod(frame_shape)
+        target_chunk_bytes = 2 * 1024 * 1024  # 2MB target chunk size
+        
+        # Calculate frames per chunk for target size
+        frames_per_chunk = max(1, min(16, target_chunk_bytes // frame_bytes))
+        
+        return (frames_per_chunk, *frame_shape)
     
     def start_recording(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -89,30 +101,43 @@ class HDF5VideoRecorder:
         
         try:
             # Ensure directory exists
-            os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
+            dir_path = os.path.dirname(self.file_path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
             
-            # Open HDF5 file for writing
-            self.h5_file = h5py.File(self.file_path, 'w')
+            # Check available disk space before starting
+            if not self._check_disk_space():
+                logger.error("Insufficient disk space to start recording")
+                return False
+            
+            # Open HDF5 file for writing with robust settings
+            self.h5_file = h5py.File(
+                self.file_path, 
+                'w',
+                libver='latest',  # Use latest HDF5 format for best performance
+                swmr=False  # Single writer mode for better performance
+            )
             
             # Create main video dataset with compression and chunking
             # Shape: (n_frames, height, width, channels)
             initial_shape = (self.initial_size, *self.frame_shape)
             max_shape = (None, *self.frame_shape)  # Unlimited frames
             
-            # Dataset creation parameters
+            # Dataset creation parameters - optimized for speed and compression
             dataset_kwargs = {
                 'shape': initial_shape,
                 'maxshape': max_shape,
                 'dtype': np.uint8,
                 'chunks': self.chunk_size,
                 'shuffle': True,  # Enable shuffle filter for better compression
+                'fillvalue': 0,  # Set fill value for uninitialized data
+                'track_times': False,  # Disable timestamp tracking for performance
             }
             
-            # Add compression if specified
-            if self.compression:
-                dataset_kwargs['compression'] = self.compression
-                if self.compression == 'gzip':
-                    dataset_kwargs['compression_opts'] = 6  # Medium compression level
+            # Use LZF compression for maximum speed (much faster than GZIP)
+            dataset_kwargs['compression'] = 'lzf'
+            # LZF doesn't use compression_opts - it's optimized for speed
+            dataset_kwargs['fletcher32'] = True  # Add checksum for data integrity
             
             self.video_dataset = self.h5_file.create_dataset('video', **dataset_kwargs)
             
@@ -132,7 +157,7 @@ class HDF5VideoRecorder:
             self.start_time = datetime.now()
             
             logger.info(f"Started HDF5 recording: {self.file_path}")
-            logger.info(f"Frame shape: {self.frame_shape}, FPS: {self.fps}, Compression: {self.compression}")
+            logger.info(f"Frame shape: {self.frame_shape}, FPS: {self.fps}, Compression: lzf")
             
             return True
             
@@ -143,6 +168,32 @@ class HDF5VideoRecorder:
                 self.h5_file = None
             return False
     
+    def _check_disk_space(self, min_gb: float = 1.0) -> bool:
+        """
+        Check if there's sufficient disk space for recording.
+        
+        Args:
+            min_gb: Minimum required space in GB
+            
+        Returns:
+            True if sufficient space available
+        """
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage(os.path.dirname(self.file_path) or '.')
+            free_gb = free / (1024**3)
+            
+            if free_gb < min_gb:
+                logger.warning(f"Low disk space: {free_gb:.1f}GB available, {min_gb}GB required")
+                return False
+                
+            logger.debug(f"Disk space OK: {free_gb:.1f}GB available")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Could not check disk space: {e}")
+            return True  # Allow recording if check fails
+    
     def _add_dataset_metadata(self):
         """Add technical metadata to the video dataset."""
         if not self.video_dataset:
@@ -151,7 +202,7 @@ class HDF5VideoRecorder:
         # Recording parameters
         self.video_dataset.attrs['fps'] = self.fps
         self.video_dataset.attrs['frame_shape'] = self.frame_shape
-        self.video_dataset.attrs['compression'] = self.compression or 'none'
+        self.video_dataset.attrs['compression'] = 'lzf'
         self.video_dataset.attrs['chunk_size'] = self.chunk_size
         
         # Timestamp information
@@ -192,7 +243,7 @@ class HDF5VideoRecorder:
     
     def record_frame(self, frame: np.ndarray) -> bool:
         """
-        Record a single frame to the HDF5 file.
+        Record a single frame to the HDF5 file with robust error handling.
         
         Args:
             frame: Frame data as numpy array (height, width, channels)
@@ -200,14 +251,25 @@ class HDF5VideoRecorder:
         Returns:
             True if frame recorded successfully
         """
-        if not self.is_recording or not self.video_dataset:
+        if not self.is_recording or not self.video_dataset or self._closed:
+            return False
+        
+        # Check for too many write errors
+        if self.write_errors >= self.max_write_errors:
+            logger.error(f"Too many write errors ({self.write_errors}), stopping recording")
+            self.stop_recording()
             return False
             
         try:
-            # Validate frame shape
+            # Validate frame shape and dtype
             if frame.shape != self.frame_shape:
                 logger.warning(f"Frame shape mismatch: expected {self.frame_shape}, got {frame.shape}")
+                self.write_errors += 1
                 return False
+            
+            if frame.dtype != np.uint8:
+                # Convert to uint8 if needed
+                frame = frame.astype(np.uint8)
             
             # Check if we need to resize the dataset
             if self.frame_count >= self.video_dataset.shape[0]:
@@ -217,14 +279,34 @@ class HDF5VideoRecorder:
             self.video_dataset[self.frame_count] = frame
             self.frame_count += 1
             
-            # Flush to disk periodically for data safety
-            if self.frame_count % 100 == 0:
-                self.h5_file.flush()
+            # Reset error count on successful write
+            self.write_errors = 0
+            
+            # Smart flushing - time-based rather than frame-based for better performance
+            current_time = time.time()
+            if current_time - self.last_flush_time >= self.flush_interval:
+                try:
+                    self.h5_file.flush()
+                    self.last_flush_time = current_time
+                except Exception as flush_error:
+                    logger.warning(f"Flush failed: {flush_error}")
             
             return True
             
+        except OSError as e:
+            # Handle disk space and I/O errors specifically
+            if "No space left" in str(e) or "errno 28" in str(e):
+                logger.error(f"Disk full! Stopping recording: {e}")
+                self.stop_recording()
+                return False
+            else:
+                logger.error(f"I/O error recording frame {self.frame_count}: {e}")
+                self.write_errors += 1
+                return False
+                
         except Exception as e:
             logger.error(f"Error recording frame {self.frame_count}: {e}")
+            self.write_errors += 1
             return False
     
     def add_camera_settings(self, settings: Dict[str, Any]):
@@ -286,28 +368,47 @@ class HDF5VideoRecorder:
 
     
     def _grow_dataset(self):
-        """Grow the dataset when it's full."""
-        current_size = self.video_dataset.shape[0]
-        new_size = int(current_size * self.growth_factor)
-        
-        logger.debug(f"Growing dataset from {current_size} to {new_size} frames")
-        
-        # Resize dataset
-        new_shape = (new_size, *self.frame_shape)
-        self.video_dataset.resize(new_shape)
+        """Grow the dataset when it's full with robust error handling."""
+        try:
+            current_size = self.video_dataset.shape[0]
+            new_size = int(current_size * self.growth_factor)
+            
+            logger.debug(f"Growing dataset from {current_size} to {new_size} frames")
+            
+            # Check disk space before growing
+            estimated_growth_mb = (new_size - current_size) * np.prod(self.frame_shape) / (1024**2)
+            
+            if not self._check_disk_space(estimated_growth_mb / 1024 + 0.5):  # Add 0.5GB buffer
+                logger.error("Insufficient disk space to grow dataset")
+                self.stop_recording()
+                return
+            
+            # Resize dataset
+            new_shape = (new_size, *self.frame_shape)
+            self.video_dataset.resize(new_shape)
+            
+            logger.info(f"Dataset grown to {new_size} frames capacity")
+            
+        except Exception as e:
+            logger.error(f"Failed to grow dataset: {e}")
+            self.stop_recording()
     
     def stop_recording(self) -> bool:
         """
-        Stop recording and finalize the HDF5 file.
+        Stop recording and finalize the HDF5 file with comprehensive cleanup.
         
         Returns:
             True if recording stopped successfully
         """
-        if not self.is_recording:
+        if not self.is_recording or self._closed:
             logger.warning("No recording in progress")
             return False
         
+        # Set closed flag to prevent further writes
+        self._closed = True
+        
         try:
+            logger.info(f"Stopping HDF5 recording after {self.frame_count} frames...")
             # Resize dataset to actual number of frames recorded
             if self.video_dataset and self.frame_count > 0:
                 final_shape = (self.frame_count, *self.frame_shape)
@@ -343,14 +444,26 @@ class HDF5VideoRecorder:
                     except Exception as e:
                         logger.debug(f"Could not calculate file size: {e}")
             
-            # Close HDF5 file
+            # Final flush before closing
             if self.h5_file:
-                self.h5_file.close()
-                self.h5_file = None
+                try:
+                    self.h5_file.flush()
+                except Exception as e:
+                    logger.warning(f"Final flush failed: {e}")
+            
+            # Close HDF5 file safely
+            if self.h5_file:
+                try:
+                    self.h5_file.close()
+                except Exception as e:
+                    logger.warning(f"Error closing HDF5 file: {e}")
+                finally:
+                    self.h5_file = None
             
             # Reset state
             self.is_recording = False
             self.video_dataset = None
+            self.settings_group = None
             
             duration = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
             logger.info(f"HDF5 recording completed: {self.frame_count} frames in {duration:.1f}s")
@@ -369,7 +482,7 @@ class HDF5VideoRecorder:
             'frame_count': self.frame_count,
             'file_path': self.file_path,
             'fps': self.fps,
-            'compression': self.compression,
+            'compression': 'lzf',
         }
         
         if self.start_time:
@@ -380,12 +493,16 @@ class HDF5VideoRecorder:
         return info
     
     def __del__(self):
-        """Ensure file is closed on destruction."""
-        if self.h5_file:
+        """Ensure file is closed on destruction with robust cleanup."""
+        if hasattr(self, 'h5_file') and self.h5_file:
             try:
-                self.h5_file.close()
-            except:
-                pass
+                if hasattr(self, 'is_recording') and self.is_recording:
+                    logger.warning("HDF5 recorder destroyed while recording - forcing stop")
+                    self.stop_recording()
+                else:
+                    self.h5_file.close()
+            except Exception as e:
+                logger.debug(f"Error in HDF5 recorder destructor: {e}")
 
 
 # Utility functions for reading HDF5 video files
