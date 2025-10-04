@@ -1,8 +1,12 @@
+"""Main application window for the AFS Tracking System."""
+
+from typing import Optional, Dict, Any
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QGridLayout, QMenuBar, QAction, 
-    QMessageBox, QSizePolicy, QApplication
+    QMainWindow, QWidget, QGridLayout, QAction, 
+    QMessageBox, QSizePolicy, QApplication, QMenuBar, QMenu
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, QCloseEvent
+from PyQt5.QtGui import QCloseEvent
 
 from src.utils.logger import get_logger
 from src.ui.widgets.camera_widget import CameraWidget
@@ -15,17 +19,35 @@ logger = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
-    """Main application window with 3-row layout and camera view."""
+    """Main application window for AFS Tracking System.
+    
+    Provides a 3-row layout with camera view, measurement settings,
+    acquisition controls, and measurement controls. Handles hardware
+    initialization, keyboard shortcuts, and application lifecycle.
+    
+    Attributes:
+        camera_widget: Live camera display and recording controls
+        measurement_settings_widget: File paths and sample information
+        acquisition_controls_widget: Recording parameters and controls
+        measurement_controls_widget: Measurement execution controls
+        keyboard_shortcuts: Global keyboard shortcut manager
+    """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the main application window.
+        
+        Sets up the UI layout, initializes hardware connections,
+        and configures keyboard shortcuts for efficient operation.
+        """
         super().__init__()
         logger.info("AFS Tracking started")
         
-        # Initialize widget references
-        self.camera_widget = None
-        self.measurement_settings_widget = None
-        self.acquisition_controls_widget = None
-        self.measurement_controls_widget = None
+        # Initialize widget references with proper type hints
+        self.camera_widget: Optional[CameraWidget] = None
+        self.measurement_settings_widget: Optional[MeasurementSettingsWidget] = None
+        self.acquisition_controls_widget: Optional[AcquisitionControlsWidget] = None
+        self.measurement_controls_widget: Optional[MeasurementControlsWidget] = None
+        self.keyboard_shortcuts: Optional[KeyboardShortcutManager] = None
         
         self._init_ui()
         
@@ -36,8 +58,12 @@ class MainWindow(QMainWindow):
         # Delay focus setting to ensure everything is loaded
         QTimer.singleShot(100, self._ensure_main_window_focus)
 
-    def _init_ui(self):
-        """Initialize the user interface."""
+    def _init_ui(self) -> None:
+        """Initialize the user interface layout and appearance.
+        
+        Sets up the main window properties, creates the menu bar and central
+        layout, and ensures proper focus for keyboard shortcuts.
+        """
         self.setWindowTitle("AFS Tracking System")
         self.setGeometry(100, 100, 1280, 800)
         self.showMaximized()
@@ -53,8 +79,12 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         self.raise_()
 
-    def _create_menu_bar(self):
-        """Create application menu bar."""
+    def _create_menu_bar(self) -> None:
+        """Create and configure the application menu bar.
+        
+        Sets up File, Hardware, and Help menus with appropriate actions
+        and keyboard shortcuts for common operations.
+        """
         menubar = self.menuBar()
 
         # File menu
@@ -73,8 +103,18 @@ class MainWindow(QMainWindow):
         help_menu = menubar.addMenu("Help")
         self._add_action(help_menu, "About", None, self._open_about)
 
-    def _add_action(self, menu, text, shortcut, callback):
-        """Helper to add menu actions."""
+    def _add_action(self, menu: QMenu, text: str, shortcut: str, callback) -> QAction:
+        """Helper to add menu actions with consistent formatting.
+        
+        Args:
+            menu: The menu to add the action to
+            text: Display text for the menu item
+            shortcut: Keyboard shortcut string (e.g., 'Ctrl+S')
+            callback: Function to call when action is triggered
+            
+        Returns:
+            The created QAction object
+        """
         action = QAction(text, self)
         if shortcut:
             action.setShortcut(shortcut)
@@ -193,8 +233,15 @@ class MainWindow(QMainWindow):
             "Automated tracking system for AFS using IDS cameras "
             "and MCL MicroDrive XY stage hardware.")
     
-    def closeEvent(self, event):
-        """Handle application close event."""
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Handle application close event with proper cleanup.
+        
+        Ensures all hardware connections are properly closed and
+        resources are cleaned up before application exit.
+        
+        Args:
+            event: The close event from PyQt5
+        """
         logger.info("Application closing - cleaning up hardware")
         
         try:
@@ -219,24 +266,40 @@ class MainWindow(QMainWindow):
         
         event.accept()
     
-    def get_measurement_settings(self):
-        """Get the measurement settings widget instance."""
+    def get_measurement_settings(self) -> Optional[MeasurementSettingsWidget]:
+        """Get the measurement settings widget instance.
+        
+        Returns:
+            The measurement settings widget or None if not initialized
+        """
         return self.measurement_settings_widget
     
-    def get_measurements_save_path(self):
-        """Get the configured save path (compatibility method)."""
+    def get_measurements_save_path(self) -> str:
+        """Get the configured save path (compatibility method).
+        
+        Returns:
+            The configured save path or empty string if not set
+        """
         if self.measurement_settings_widget:
             return self.measurement_settings_widget.get_save_path()
         return ""
     
-    def get_save_path(self):
-        """Get the configured save path."""
+    def get_save_path(self) -> str:
+        """Get the configured save path.
+        
+        Returns:
+            The configured save path or empty string if not set
+        """
         if self.measurement_settings_widget:
             return self.measurement_settings_widget.get_save_path()
         return ""
     
-    def get_hdf5_filename(self):
-        """Get the configured HDF5 filename."""
+    def get_hdf5_filename(self) -> str:
+        """Get the configured HDF5 filename.
+        
+        Returns:
+            The configured filename or empty string if not set
+        """
         if self.measurement_settings_widget:
             return self.measurement_settings_widget.get_filename()
         return ""

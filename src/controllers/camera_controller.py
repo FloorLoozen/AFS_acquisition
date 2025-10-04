@@ -473,13 +473,6 @@ class CameraController:
                 # Capture frame
                 frame = self._capture_single_frame()
                 if frame is not None:
-                    # Debug: Log every 30 frames generated
-                    if hasattr(self, 'debug_generated_count'):
-                        self.debug_generated_count += 1
-                    else:
-                        self.debug_generated_count = 1
-                        
-
                     # Create frame data
                     with self.stats_lock:
                         frame_data = FrameData(
@@ -758,8 +751,8 @@ if __name__ == "__main__":
                 # Print statistics every 60 frames
                 if frame_count % 60 == 0:
                     stats = camera.get_statistics()
-                    print(f"FPS: {stats['fps']:.1f}, Dropped: {stats['dropped_frames']}, "
-                          f"Queue: {stats['queue_size']}/{stats['max_queue_size']}")
+                    logger.info(f"FPS: {stats['fps']:.1f}, Dropped: {stats['dropped_frames']}, "
+                               f"Queue: {stats['queue_size']}/{stats['max_queue_size']}")
             
             # Exit on 'q' key
             if cv2.waitKey(1) & 0xFF == ord('q'):

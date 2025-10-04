@@ -166,6 +166,6 @@ if __name__ == "__main__":
     }
     
     result = show_hardware_status_warning(test_status)
-    print(f"Dialog result: {result}")
+    logger.info(f"Hardware status dialog result: {result}")
     
     sys.exit(app.exec_())

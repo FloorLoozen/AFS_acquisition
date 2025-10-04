@@ -1,16 +1,19 @@
-"""
-HDF5 Video Recorder for the AFS Tracking System.
-Provides high-performance video recording with frame-level access, compression, and metadata storage.
+"""HDF5 Video Recorder for the AFS Tracking System.
+
+Provides high-performance video recording with frame-level access, compression,
+and metadata storage. Optimized for real-time recording with LZF compression.
 """
 
 import h5py
 import numpy as np
 import time
-from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
 import os
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple, Union, List
+from pathlib import Path
 
 from src.utils.logger import get_logger
+from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
 
 logger = get_logger("hdf5_recorder")
 
@@ -27,26 +30,33 @@ class HDF5VideoRecorder:
     - Frame-by-frame recording with dynamic dataset growth
     """
     
-    def __init__(self, file_path: str, frame_shape: Tuple[int, int, int], 
-                 fps: float = 60.0):
+    def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
+                 fps: float = 60.0) -> None:
         """
-        Initialize the HDF5 video recorder with GZIP compression.
+        Initialize the HDF5 video recorder with optimized LZF compression.
         
         Args:
-            file_path: Path to save the HDF5 file
+            file_path: Path to save the HDF5 file (str or Path object)
             frame_shape: Shape of each frame (height, width, channels)
-            fps: Frames per second for metadata
+            fps: Frames per second for metadata (must be > 0)
+            
+        Raises:
+            ValueError: If frame_shape is invalid or fps <= 0
+            OSError: If the parent directory doesn't exist or isn't writable
         """
-        self.file_path = file_path
-        self.frame_shape = frame_shape
-        self.fps = fps
+        # Input validation using validation utilities
+        self.frame_shape = validate_frame_shape(frame_shape, "frame_shape")
+        self.fps = validate_positive_number(fps, "fps")
+        file_path_obj = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
         
-        # Recording state
-        self.h5_file = None
-        self.video_dataset = None
-        self.is_recording = False
-        self.frame_count = 0
-        self.start_time = None
+        self.file_path = str(file_path_obj)
+        
+        # Recording state with proper type annotations
+        self.h5_file: Optional[h5py.File] = None
+        self.video_dataset: Optional[h5py.Dataset] = None
+        self.is_recording: bool = False
+        self.frame_count: int = 0
+        self.start_time: Optional[float] = None
         
         # Dataset parameters - optimized for performance
         self.chunk_size = self._calculate_optimal_chunk_size(frame_shape)
@@ -633,35 +643,34 @@ if __name__ == "__main__":
     
     # Start recording
     if recorder.start_recording(metadata):
-        print("Recording started...")
+        logger.info("HDF5 test recording started")
         
-        # Record some test frames
+        # Record test frames
         for i in range(100):
-            # Create a test frame with changing pattern
             frame = np.random.randint(0, 256, frame_shape, dtype=np.uint8)
             frame[i % frame_shape[0], :, :] = 255  # Moving white line
             
             if not recorder.record_frame(frame):
-                print(f"Failed to record frame {i}")
+                logger.error(f"Failed to record test frame {i}")
                 break
         
         # Stop recording
         if recorder.stop_recording():
-            print("Recording completed successfully")
+            logger.info("HDF5 test recording completed successfully")
             
             # Load and verify
             info = load_hdf5_video_info(test_file)
-            print(f"Recorded video info: {info}")
+            logger.info(f"Test recording verification: {info}")
             
             # Load a test frame
             test_frame = load_hdf5_frame(test_file, 50)
             if test_frame is not None:
-                print(f"Successfully loaded frame 50: shape {test_frame.shape}")
+                logger.info(f"Test frame loaded successfully: shape {test_frame.shape}")
             
             # Clean up test file
             os.remove(test_file)
-            print("Test completed and cleaned up")
+            logger.info("HDF5 test completed and cleaned up")
         else:
-            print("Failed to stop recording")
+            logger.error("Failed to stop test recording")
     else:
-        print("Failed to start recording")
+        logger.error("Failed to start test recording")

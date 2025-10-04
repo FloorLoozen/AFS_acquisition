@@ -9,8 +9,9 @@ import os
 import time
 from typing import Dict, List, Tuple
 from pathlib import Path
-
 from src.utils.logger import get_logger
+
+logger = get_logger("compression_analyzer")
 
 logger = get_logger("compression_analyzer")
 
@@ -243,49 +244,44 @@ class CompressionAnalyzer:
         else:
             return "No compression data available"
     
-    def print_analysis_report(self, analysis: Dict, title: str = "HDF5 Compression Analysis"):
-        """Print a formatted analysis report."""
-        print(f"\n{'='*60}")
-        print(f"{title}")
-        print(f"{'='*60}")
+    def log_analysis_report(self, analysis: Dict, title: str = "HDF5 Compression Analysis"):
+        """Log a formatted analysis report."""
+        logger.info(f"=== {title} ===")
         
         if 'error' in analysis:
-            print(f"Error: {analysis['error']}")
+            logger.error(f"Compression analysis error: {analysis['error']}")
             return
         
         if 'summary' in analysis:
             # Benchmark report
-            print(f"\nSUMMARY:")
-            print(f"  Best compression: {analysis['summary']['best_compression']['method']} "
-                  f"({analysis['summary']['best_compression']['ratio']:.2f}x, "
-                  f"{analysis['summary']['best_compression']['space_saved_percent']:.1f}% saved)")
-            print(f"  Fastest write: {analysis['summary']['fastest_write']['method']} "
-                  f"({analysis['summary']['fastest_write']['speed_mbps']:.1f} MB/s)")
-            print(f"  Recommendation: {analysis['summary']['recommendation']}")
+            logger.info("Compression Analysis Summary:")
+            logger.info(f"  Best compression: {analysis['summary']['best_compression']['method']} "
+                       f"({analysis['summary']['best_compression']['ratio']:.2f}x, "
+                       f"{analysis['summary']['best_compression']['space_saved_percent']:.1f}% saved)")
+            logger.info(f"  Fastest write: {analysis['summary']['fastest_write']['method']} "
+                       f"({analysis['summary']['fastest_write']['speed_mbps']:.1f} MB/s)")
+            logger.info(f"  Recommendation: {analysis['summary']['recommendation']}")
             
-            print(f"\nDETAILED RESULTS:")
+            logger.info("Detailed Results:")
             for method, data in analysis.items():
                 if method != 'summary' and 'error' not in data:
-                    print(f"\n  {method.upper()}:")
-                    print(f"    File size: {data['file_size_mb']:.1f} MB")
-                    print(f"    Compression ratio: {data['compression_ratio']:.2f}x")
-                    print(f"    Space saved: {data['space_saved_percent']:.1f}%")
-                    print(f"    Write speed: {data['write_speed_mbps']:.1f} MB/s")
-                    print(f"    Write time: {data['write_time_seconds']:.2f} seconds")
+                    logger.info(f"  {method.upper()}: {data['file_size_mb']:.1f} MB, "
+                              f"{data['compression_ratio']:.2f}x ratio, "
+                              f"{data['write_speed_mbps']:.1f} MB/s")
         else:
             # Single file analysis
-            print(f"\nFile: {analysis.get('file_path', 'Unknown')}")
-            print(f"Video shape: {analysis.get('video_shape', 'Unknown')}")
-            print(f"Compression method: {analysis.get('compression_method', 'None')}")
-            print(f"File size: {analysis.get('file_size_mb', 0):.1f} MB")
-            print(f"Uncompressed size: {analysis.get('uncompressed_size_mb', 0):.1f} MB")
-            print(f"Compression ratio: {analysis.get('compression_ratio', 1):.2f}x")
-            print(f"Space saved: {analysis.get('space_saved_percent', 0):.1f}%")
+            logger.info(f"File Analysis: {analysis.get('file_path', 'Unknown')}")
+            logger.info(f"Video: {analysis.get('video_shape', 'Unknown')} - "
+                       f"{analysis.get('compression_method', 'None')} compression")
+            logger.info(f"Size: {analysis.get('file_size_mb', 0):.1f} MB "
+                       f"(vs {analysis.get('uncompressed_size_mb', 0):.1f} MB uncompressed)")
+            logger.info(f"Compression: {analysis.get('compression_ratio', 1):.2f}x ratio, "
+                       f"{analysis.get('space_saved_percent', 0):.1f}% saved")
             
             if 'fps' in analysis:
-                print(f"Recording FPS: {analysis['fps']:.1f}")
+                logger.info(f"Recording FPS: {analysis['fps']:.1f}")
             if 'recording_duration_s' in analysis:
-                print(f"Duration: {analysis['recording_duration_s']:.1f} seconds")
+                logger.info(f"Duration: {analysis['recording_duration_s']:.1f} seconds")
 
 
 def analyze_recording_files(directory: str = "C:/Users/fAFS/Documents/Floor/tmp"):
@@ -296,10 +292,10 @@ def analyze_recording_files(directory: str = "C:/Users/fAFS/Documents/Floor/tmp"
     hdf5_files = list(Path(directory).glob("*.hdf5"))
     
     if not hdf5_files:
-        print(f"No HDF5 files found in {directory}")
+        logger.info(f"No HDF5 files found in {directory}")
         return
     
-    print(f"Found {len(hdf5_files)} HDF5 files to analyze...")
+    logger.info(f"Found {len(hdf5_files)} HDF5 files to analyze...")
     
     total_uncompressed = 0
     total_compressed = 0
@@ -311,44 +307,44 @@ def analyze_recording_files(directory: str = "C:/Users/fAFS/Documents/Floor/tmp"
             total_uncompressed += analysis.get('uncompressed_size_mb', 0)
             total_compressed += analysis.get('file_size_mb', 0)
             
-            print(f"\n{file_path.name}:")
-            print(f"  Size: {analysis.get('file_size_mb', 0):.1f} MB")
-            print(f"  Compression: {analysis.get('compression_method', 'None')}")
-            print(f"  Ratio: {analysis.get('compression_ratio', 1):.2f}x")
-            print(f"  Space saved: {analysis.get('space_saved_percent', 0):.1f}%")
+            logger.info(f"\n{file_path.name}:")
+            logger.info(f"  Size: {analysis.get('file_size_mb', 0):.1f} MB")
+            logger.info(f"  Compression: {analysis.get('compression_method', 'None')}")
+            logger.info(f"  Ratio: {analysis.get('compression_ratio', 1):.2f}x")
+            logger.info(f"  Space saved: {analysis.get('space_saved_percent', 0):.1f}%")
         else:
-            print(f"\n{file_path.name}: Error - {analysis['error']}")
+            logger.error(f"\n{file_path.name}: Error - {analysis['error']}")
     
     if total_uncompressed > 0:
         overall_ratio = total_uncompressed / total_compressed if total_compressed > 0 else 1
         space_saved = (1 - total_compressed/total_uncompressed) * 100
         
-        print(f"\n{'='*60}")
-        print(f"OVERALL STATISTICS:")
-        print(f"  Total files: {len(hdf5_files)}")
-        print(f"  Total compressed size: {total_compressed:.1f} MB")
-        print(f"  Total uncompressed size: {total_uncompressed:.1f} MB")
-        print(f"  Overall compression ratio: {overall_ratio:.2f}x")
-        print(f"  Total space saved: {space_saved:.1f}% ({total_uncompressed - total_compressed:.1f} MB)")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"OVERALL STATISTICS:")
+        logger.info(f"  Total files: {len(hdf5_files)}")
+        logger.info(f"  Total compressed size: {total_compressed:.1f} MB")
+        logger.info(f"  Total uncompressed size: {total_uncompressed:.1f} MB")
+        logger.info(f"  Overall compression ratio: {overall_ratio:.2f}x")
+        logger.info(f"  Total space saved: {space_saved:.1f}% ({total_uncompressed - total_compressed:.1f} MB)")
 
 
 if __name__ == "__main__":
     # Run analysis on existing files
-    print("Analyzing existing HDF5 recording files...")
+    logger.info("Analyzing existing HDF5 recording files...")
     analyze_recording_files()
     
     # Run benchmark test
-    print("\n\nRunning compression benchmark...")
+    logger.info("\n\nRunning compression benchmark...")
     analyzer = CompressionAnalyzer()
     
     # Test with typical camera frame size
     frame_shape = (480, 640, 3)  # Height, width, channels
     benchmark = analyzer.benchmark_compression(frame_shape, num_frames=50)
     
-    analyzer.print_analysis_report(benchmark, "Compression Benchmark Results")
+    analyzer.log_analysis_report(benchmark, "Compression Benchmark Results")
     
     # Clean up test files
     import shutil
     if os.path.exists("compression_test"):
         shutil.rmtree("compression_test")
-        print("\nTest files cleaned up.")
+        logger.info("\nTest files cleaned up.")

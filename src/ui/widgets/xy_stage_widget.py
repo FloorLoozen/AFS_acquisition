@@ -193,6 +193,7 @@ class XYStageWidget(QDialog):
 
     # --- Connection handling ---
     def connect_stage(self):
+        """Connect to the XY stage hardware."""
         if self.is_connected:
             return
         self._update_status("Connecting...")
@@ -212,6 +213,7 @@ class XYStageWidget(QDialog):
             self._update_status("Connection error")
 
     def disconnect_stage(self):
+        """Disconnect from the XY stage hardware."""
         if not self.is_connected:
             return
         try:
@@ -249,6 +251,7 @@ class XYStageWidget(QDialog):
 
     # --- Position and movement ---
     def update_position_display(self):
+        """Update the position display with current stage coordinates."""
         if not self.is_connected:
             return
         x, y = self.manager.get_position()
