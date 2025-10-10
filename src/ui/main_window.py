@@ -213,15 +213,27 @@ class MainWindow(QMainWindow):
             # Store reference to prevent garbage collection
             if not hasattr(self, '_camera_settings_dialog') or not self._camera_settings_dialog.isVisible():
                 self._camera_settings_dialog = CameraSettingsWidget(camera_controller, self)
+                # Connect settings applied signal
+                self._camera_settings_dialog.settings_applied.connect(self._on_camera_settings_applied)
                 self._camera_settings_dialog.show()
             else:
                 # Update controller reference in case it changed
-                self._camera_settings_dialog.set_camera_controller(camera_controller)
+                if hasattr(self._camera_settings_dialog, 'camera'):
+                    self._camera_settings_dialog.camera = camera_controller
+                    self._camera_settings_dialog.load_current_settings()
                 self._camera_settings_dialog.activateWindow()
                 self._camera_settings_dialog.raise_()
         except Exception as e:
             logger.error(f"Failed to open camera settings: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open camera settings: {e}")
+    
+    def _on_camera_settings_applied(self, settings: dict):
+        """Handle camera settings being applied."""
+        logger.info(f"Camera settings updated from dialog: {settings}")
+        # The settings have already been applied to the camera controller
+        # Also update image processing settings in the camera widget
+        if self.camera_widget and hasattr(self.camera_widget, 'update_image_settings'):
+            self.camera_widget.update_image_settings(settings)
 
     def _focus_function_generator(self):
         """Focus on the function generator controls in the measurement controls widget."""

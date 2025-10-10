@@ -1,14 +1,15 @@
 """
-Camera Settings Widget for the AFS Tracking System.
-Provides intuitive controls for camera configuration.
+Minimal Camera Settings Widget for the AFS Tracking System.
+Ultra-simple design with only essential controls and 3 buttons.
 """
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QDoubleSpinBox,
-    QComboBox, QCheckBox, QPushButton, QSlider, QGroupBox, QGridLayout,
-    QMessageBox, QFormLayout
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
+    QGroupBox, QLineEdit, QPushButton, QSpacerItem,
+    QSizePolicy, QLabel
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal
+
 from src.utils.logger import get_logger
 
 logger = get_logger("camera_settings")
@@ -16,255 +17,215 @@ logger = get_logger("camera_settings")
 
 class CameraSettingsWidget(QDialog):
     """
-    Camera settings dialog with intuitive controls for exposure, gain, frame rate, etc.
+    Minimal camera settings dialog.
+    Only essential controls with clean 3-button interface.
     """
     
-    settings_changed = pyqtSignal(dict)  # Emitted when settings change
+    settings_applied = pyqtSignal(dict)
     
     def __init__(self, camera_controller=None, parent=None):
         super().__init__(parent)
-        self.camera_controller = camera_controller
-        self.setWindowTitle("Camera Settings")
-        self.setModal(True)
-        self.resize(400, 400)
+        self.camera = camera_controller
         
-        # Current settings cache
-        self._current_settings = {}
+        self.setWindowTitle("Camera Settings")
+        self.setFixedSize(320, 280)
+        self.setModal(True)
+        
+        # Default settings (brighter values)
+        self.default_settings = {
+            'exposure_ms': 15.0,
+            'gain_master': 2,     # Use integer for gain
+            'frame_rate_fps': 30.0,
+            'brightness': 50,     # Standard brightness
+            'contrast': 75,       # Higher contrast  
+            'saturation': 70      # More vivid
+        }
+        
+        # Current settings
+        self.current_settings = self.default_settings.copy()
         
         self.init_ui()
         self.load_current_settings()
-        
-        # Auto-refresh timer for live settings display
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.refresh_current_values)
-        self.refresh_timer.start(1000)  # Refresh every second
     
     def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        """Initialize minimal UI layout."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
         
-        # Exposure settings
-        exposure_group = QGroupBox("Exposure")
-        exposure_layout = QFormLayout(exposure_group)
-        exposure_layout.setContentsMargins(8, 8, 8, 8)
-        exposure_layout.setVerticalSpacing(8)
+        # Title
+        title_label = QLabel("Camera Parameters")
+        title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_label)
         
-        self.exposure_spin = QDoubleSpinBox()
-        self.exposure_spin.setRange(0.1, 1000.0)  # 0.1ms to 1000ms
-        self.exposure_spin.setSingleStep(0.1)
-        self.exposure_spin.setSuffix(" ms")
-        self.exposure_spin.setValue(33.33)
-        self.exposure_spin.valueChanged.connect(self.on_exposure_changed)
-        exposure_layout.addRow("Exposure Time:", self.exposure_spin)
+        # Settings group
+        settings_group = QGroupBox()
+        settings_layout = QFormLayout(settings_group)
+        settings_layout.setSpacing(6)
+        settings_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         
-        # Exposure slider for quick adjustment
-        self.exposure_slider = QSlider(Qt.Horizontal)
-        self.exposure_slider.setRange(1, 1000)  # 0.1ms to 100ms (scaled by 10)
-        self.exposure_slider.setValue(333)
-        self.exposure_slider.valueChanged.connect(self.on_exposure_slider_changed)
-        exposure_layout.addRow("Quick Adjust:", self.exposure_slider)
+        # Essential parameter controls (compact)
+        self.exposure_input = QLineEdit()
+        self.exposure_input.setFixedWidth(80)
+        self.exposure_input.setPlaceholderText("15.0")
+        settings_layout.addRow("Exposure (ms):", self.exposure_input)
         
-        layout.addWidget(exposure_group)
+        self.gain_input = QLineEdit()
+        self.gain_input.setFixedWidth(80) 
+        self.gain_input.setPlaceholderText("2")
+        settings_layout.addRow("Gain:", self.gain_input)
         
-        # Gain settings
-        gain_group = QGroupBox("Gain")
-        gain_layout = QFormLayout(gain_group)
-        gain_layout.setContentsMargins(8, 8, 8, 8)
-        gain_layout.setVerticalSpacing(8)
+        self.fps_input = QLineEdit()
+        self.fps_input.setFixedWidth(80)
+        self.fps_input.setPlaceholderText("30.0")
+        settings_layout.addRow("FPS:", self.fps_input)
         
-        self.gain_spin = QSpinBox()
-        self.gain_spin.setRange(0, 100)
-        self.gain_spin.setValue(0)
-        self.gain_spin.valueChanged.connect(self.on_gain_changed)
-        gain_layout.addRow("Master Gain:", self.gain_spin)
+        self.brightness_input = QLineEdit()
+        self.brightness_input.setFixedWidth(80)
+        self.brightness_input.setPlaceholderText("50")
+        settings_layout.addRow("Brightness:", self.brightness_input)
         
-        self.gain_slider = QSlider(Qt.Horizontal)
-        self.gain_slider.setRange(0, 100)
-        self.gain_slider.setValue(0)
-        self.gain_slider.valueChanged.connect(self.on_gain_slider_changed)
-        gain_layout.addRow("Quick Adjust:", self.gain_slider)
+        self.contrast_input = QLineEdit()
+        self.contrast_input.setFixedWidth(80)
+        self.contrast_input.setPlaceholderText("75")
+        settings_layout.addRow("Contrast:", self.contrast_input)
         
-        layout.addWidget(gain_group)
+        self.saturation_input = QLineEdit()
+        self.saturation_input.setFixedWidth(80)
+        self.saturation_input.setPlaceholderText("70")
+        settings_layout.addRow("Saturation:", self.saturation_input)
         
-        # Current status
-        status_group = QGroupBox("Current Status")
-        status_layout = QFormLayout(status_group)
-        status_layout.setContentsMargins(8, 8, 8, 8)
-        status_layout.setVerticalSpacing(6)
+        main_layout.addWidget(settings_group)
         
-        self.current_exposure_label = QLabel("--")
-        self.current_gain_label = QLabel("--")
-        self.connection_status_label = QLabel("--")
+        # Spacer
+        main_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
         
-        status_layout.addRow("Current Exposure:", self.current_exposure_label)
-        status_layout.addRow("Current Gain:", self.current_gain_label)
-        status_layout.addRow("Connection:", self.connection_status_label)
-        
-        layout.addWidget(status_group)
-        
-        # Control buttons
+        # Button layout (exactly 3 buttons)
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
         
-        self.refresh_btn = QPushButton("Refresh Settings")
-        self.refresh_btn.clicked.connect(self.load_current_settings)
+        # Apply button
+        self.apply_button = QPushButton("Apply")
+        self.apply_button.setFixedWidth(70)
+        self.apply_button.clicked.connect(self.apply_settings)
         
-        self.apply_btn = QPushButton("Apply")
-        self.apply_btn.clicked.connect(self.apply_all_settings)
+        # Default button  
+        self.default_button = QPushButton("Default")
+        self.default_button.setFixedWidth(70)
+        self.default_button.clicked.connect(self.load_defaults)
         
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.accept)
+        # Save button (close dialog)
+        self.save_button = QPushButton("Save")
+        self.save_button.setFixedWidth(70)
+        self.save_button.clicked.connect(self.save_and_close)
         
-        button_layout.addWidget(self.refresh_btn)
-        button_layout.addWidget(self.apply_btn)
         button_layout.addStretch()
-        button_layout.addWidget(self.close_btn)
+        button_layout.addWidget(self.apply_button)
+        button_layout.addWidget(self.default_button)
+        button_layout.addWidget(self.save_button)
+        button_layout.addStretch()
         
-        layout.addLayout(button_layout)
-    
-    def set_camera_controller(self, controller):
-        """Set the camera controller instance."""
-        self.camera_controller = controller
-        self.load_current_settings()
+        main_layout.addLayout(button_layout)
     
     def load_current_settings(self):
-        """Load current settings from camera controller."""
-        if not self.camera_controller:
-            self.connection_status_label.setText("No controller")
-            return
+        """Load current camera settings if available."""
+        if self.camera and hasattr(self.camera, 'get_camera_settings'):
+            try:
+                current = self.camera.get_camera_settings()
+                if current:
+                    # Only update with relevant settings that we can control
+                    for key in self.default_settings.keys():
+                        if key in current:
+                            self.current_settings[key] = current[key]
+                    logger.info(f"Loaded camera settings: {self.current_settings}")
+            except Exception as e:
+                logger.warning(f"Failed to load camera settings: {e}")
         
+        self.update_ui_from_settings()
+    
+    def load_defaults(self):
+        """Load default settings."""
+        self.current_settings = self.default_settings.copy()
+        self.update_ui_from_settings()
+    
+    def update_ui_from_settings(self):
+        """Update UI controls from current settings."""
+        self.exposure_input.setText(f"{self.current_settings.get('exposure_ms', 15.0):.2f}")
+        self.gain_input.setText(str(self.current_settings.get('gain_master', 2)))
+        self.fps_input.setText(f"{self.current_settings.get('frame_rate_fps', 30.0):.2f}")
+        self.brightness_input.setText(str(self.current_settings.get('brightness', 50)))
+        self.contrast_input.setText(str(self.current_settings.get('contrast', 75)))
+        self.saturation_input.setText(str(self.current_settings.get('saturation', 70)))
+    
+    def get_settings_from_ui(self) -> dict:
+        """Get settings from UI controls with proper rounding."""
         try:
-            settings = self.camera_controller.get_camera_settings()
-            self._current_settings = settings
+            settings = {}
             
-            # Update UI with current settings
-            if 'exposure_ms' in settings and settings['exposure_ms'] != 'unavailable':
-                self.exposure_spin.setValue(float(settings['exposure_ms']))
-                self.current_exposure_label.setText(f"{settings['exposure_ms']:.1f} ms")
+            # Parse numeric values with error handling and rounding
+            try:
+                settings['exposure_ms'] = round(float(self.exposure_input.text() or "15.0"), 2)
+            except ValueError:
+                settings['exposure_ms'] = 15.0
             
-            if 'gain_master' in settings and settings['gain_master'] != 'unavailable':
-                self.gain_spin.setValue(int(settings['gain_master']))
-                self.current_gain_label.setText(str(settings['gain_master']))
+            try:
+                settings['gain_master'] = int(self.gain_input.text() or "2")
+            except ValueError:
+                settings['gain_master'] = 2
             
-            # Update connection status
-            if self.camera_controller.is_initialized:
-                if self.camera_controller.use_test_pattern:
-                    self.connection_status_label.setText("Test Pattern Mode")
-                else:
-                    self.connection_status_label.setText("Hardware Connected")
-            else:
-                self.connection_status_label.setText("Not Initialized")
-                
-        except Exception as e:
-            logger.error(f"Failed to load camera settings: {e}")
-            self.connection_status_label.setText("Error loading settings")
-    
-    def refresh_current_values(self):
-        """Refresh the current status display."""
-        if not self.camera_controller:
-            return
+            try:
+                settings['frame_rate_fps'] = round(float(self.fps_input.text() or "30.0"), 2)
+            except ValueError:
+                settings['frame_rate_fps'] = 30.0
             
-        try:
-            # Update current settings display if needed
-            pass
-        except Exception:
-            pass
-    
-    def get_current_settings(self):
-        """Get settings as configured in the UI."""
-        return {
-            'exposure_ms': self.exposure_spin.value(),
-            'gain_master': self.gain_spin.value(),
-        }
-    
-    def on_exposure_changed(self, value):
-        """Handle exposure spinbox change."""
-        self.exposure_slider.blockSignals(True)
-        self.exposure_slider.setValue(int(value * 10))  # Scale for slider
-        self.exposure_slider.blockSignals(False)
-        self.apply_setting('exposure_ms', value)
-    
-    def on_exposure_slider_changed(self, value):
-        """Handle exposure slider change."""
-        exposure_value = value / 10.0  # Scale back from slider
-        self.exposure_spin.blockSignals(True)
-        self.exposure_spin.setValue(exposure_value)
-        self.exposure_spin.blockSignals(False)
-        self.apply_setting('exposure_ms', exposure_value)
-    
-    def on_gain_changed(self, value):
-        """Handle gain change."""
-        self.gain_slider.blockSignals(True)
-        self.gain_slider.setValue(value)
-        self.gain_slider.blockSignals(False)
-        self.apply_setting('gain_master', value)
-    
-    def on_gain_slider_changed(self, value):
-        """Handle gain slider change."""
-        self.gain_spin.blockSignals(True)
-        self.gain_spin.setValue(value)
-        self.gain_spin.blockSignals(False)
-        self.apply_setting('gain_master', value)
-    
-
-    
-
-    
-
-    
-    def apply_setting(self, setting_name, value):
-        """Apply a single setting to the camera."""
-        if not self.camera_controller:
-            return
-        
-        try:
-            # Apply the setting using controller methods
-            success = False
-            if setting_name == 'exposure_ms':
-                success = self.camera_controller.set_exposure(value)
-            elif setting_name == 'gain_master':
-                success = self.camera_controller.set_gain(value)
-            else:
-                logger.warning(f"Unknown setting: {setting_name}")
-                return
+            try:
+                settings['brightness'] = int(self.brightness_input.text() or "50")
+            except ValueError:
+                settings['brightness'] = 50
             
-            if success:
-                logger.info(f"Successfully applied {setting_name} = {value}")
-            else:
-                logger.warning(f"Failed to apply {setting_name} = {value}")
+            try:
+                settings['contrast'] = int(self.contrast_input.text() or "75")
+            except ValueError:
+                settings['contrast'] = 75
             
-            # Emit signal for other components
-            settings = {setting_name: value}
-            self.settings_changed.emit(settings)
+            try:
+                settings['saturation'] = int(self.saturation_input.text() or "70")
+            except ValueError:
+                settings['saturation'] = 70
+            
+            return settings
             
         except Exception as e:
-            logger.error(f"Error applying setting {setting_name}: {e}")
-            QMessageBox.warning(self, "Setting Error", 
-                              f"Failed to apply {setting_name}: {str(e)}")
+            logger.error(f"Error parsing settings: {e}")
+            return self.default_settings.copy()
     
-    def apply_all_settings(self):
-        """Apply all current settings to the camera."""
-        if not self.camera_controller:
-            QMessageBox.warning(self, "No Camera", "No camera controller available")
-            return
+    def apply_settings(self):
+        """Apply settings to camera with improved feedback."""
+        settings = self.get_settings_from_ui()
+        self.current_settings = settings
         
-        settings = self.get_current_settings()
+        logger.info(f"Applying camera settings: {settings}")
         
-        try:
-            # Apply each setting
-            for key, value in settings.items():
-                self.apply_setting(key, value)
-            
-            QMessageBox.information(self, "Settings Applied", 
-                                  "All camera settings have been applied successfully.")
-            
-        except Exception as e:
-            logger.error(f"Failed to apply settings: {e}")
-            QMessageBox.warning(self, "Apply Error", 
-                              f"Failed to apply settings: {str(e)}")
+        # Apply to camera if available
+        if self.camera and hasattr(self.camera, 'apply_settings'):
+            try:
+                result = self.camera.apply_settings(settings)
+                logger.info(f"Camera settings applied: {result}")
+                # Update UI to show rounded values
+                self.update_ui_from_settings()
+            except Exception as e:
+                logger.error(f"Failed to apply camera settings: {e}")
+        else:
+            logger.warning("Camera controller not available for settings application")
+        
+        # Emit signal for other components
+        self.settings_applied.emit(settings)
+    
+    def save_and_close(self):
+        """Save settings and close dialog."""
+        self.apply_settings()
+        self.accept()
     
     def closeEvent(self, event):
-        """Handle dialog close."""
-        self.refresh_timer.stop()
-        super().closeEvent(event)
+        """Handle close event."""
+        event.accept()

@@ -1,7 +1,14 @@
+"""
+Simplified Camera Widget for the AFS Tracking System.
+Clean, minimal design without side controls.
+"""
+
 import time
 import cv2
 import os
+import numpy as np
 from datetime import datetime
+from typing import Optional
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QFrame, QSizePolicy
@@ -14,276 +21,172 @@ from src.controllers.camera_controller import CameraController, FrameData
 from src.utils.status_display import StatusDisplay
 from src.utils.hdf5_video_recorder import HDF5VideoRecorder
 
-logger = get_logger("camera_gui")
-
+logger = get_logger("camera_widget")
 
 
 class CameraWidget(QGroupBox):
-    """Camera widget with status indicator."""
-
+    """
+    Simplified camera widget with clean design.
+    Features:
+    - Large camera display area
+    - Basic control buttons only
+    - No side controls panel
+    - Minimal, clean interface
+    """
+    
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
-
-        logger.info("Camera initialized")
         
-        # Camera state - using high-performance controller
-        self.camera: CameraController = None
+        logger.info("Simplified camera widget initialized")
+        
+        # Camera state
+        self.camera: Optional[CameraController] = None
         self.is_running = False
         self.is_live = False
         self.camera_error = None
         
-        # Frame data with performance optimization
-        self.current_frame_data: FrameData = None
+        # Frame data
+        self.current_frame_data: Optional[FrameData] = None
         self.last_frame_timestamp = 0
-        # Removed complex frame control variables
         
         # Performance monitoring
         self.display_fps_counter = 0
         self.display_fps_start_time = time.time()
         self.last_display_fps = 0
         
-
-
-        # Display + timers
-        self.display_label = QLabel()
-        self.display_label.setAlignment(Qt.AlignCenter)
-        
-        # Video recording state with robustness
+        # Recording state
         self.is_recording = False
         self.hdf5_recorder = None
-        self.recording_errors = 0
-        self.max_recording_errors = 50
         self.recording_path = ""
         self.recording_start_time = None
         self.recorded_frames = 0
         
-        # Recording control
-        self.target_recording_fps = 25.0
-        self.recording_start_timestamp = 0
+        # Image processing settings for live view (start with standard values)
+        self.image_settings = {
+            'brightness': 50,  # Standard brightness
+            'contrast': 50,    # Standard contrast
+            'saturation': 50   # Standard saturation
+        }
         
-
-        
-        # Maximize camera view - set size policy to strongly expand in both directions
+        # UI components
+        self.display_label = QLabel()
+        self.display_label.setAlignment(Qt.AlignCenter)
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.display_label.setMinimumSize(320, 240)  # Set minimum size
+        self.display_label.setMinimumSize(320, 240)
         
-        # Set the widget to strongly prefer expanding
+        # Status display
+        self.status_display = StatusDisplay()
+        
+        # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
+        
         # High-frequency timer for frame capture
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(10)  # 100Hz for optimal frame capture
+        self.update_timer.setInterval(33)  # ~30 FPS display
         
-        # Image processing toggles
-        self.mono_enabled = False
-        self.auto_contrast = False
-
-        # Status display
-        self.status_display = StatusDisplay()
-
         self.init_ui()
-
-        # Set initial status to show initialization is starting
         self.update_status("Initializing...")
-
-        # Auto-connect shortly after startup with shorter delay
+        
+        # Auto-connect shortly after startup
         QTimer.singleShot(100, self.connect_camera)
-
+    
     def init_ui(self):
-        main = QVBoxLayout(self)
-        main.setContentsMargins(8, 24, 8, 8)
-
-        # Create a frame to wrap camera view and controls
-        camera_frame = QFrame()
-        camera_frame.setFrameShape(QFrame.StyledPanel)
-        camera_frame.setFrameShadow(QFrame.Raised)
-        camera_frame.setLineWidth(1)
-        camera_layout = QVBoxLayout(camera_frame)
-        camera_layout.setContentsMargins(5, 5, 5, 5)
+        """Initialize the simplified UI layout."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(8, 24, 8, 8)
+        main_layout.setSpacing(8)
         
-        # Camera display area
-        camera_layout.addWidget(self.display_label, 1)
-
-        # Bottom section with controls on left, status on right
-        bottom_row = QHBoxLayout()
+        # Camera display frame
+        display_frame = QFrame()
+        display_frame.setFrameShape(QFrame.StyledPanel)
+        display_frame.setFrameShadow(QFrame.Raised)
+        display_frame.setLineWidth(1)
+        display_layout = QVBoxLayout(display_frame)
+        display_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Left side: Camera control buttons
-        button_layout = QHBoxLayout()
-        self.play_button = QPushButton("▶️ Play"); self.play_button.clicked.connect(self.set_live_mode)
-        self.pause_button = QPushButton("⏸️ Pause"); self.pause_button.clicked.connect(self.set_pause_mode)
-        self.reconnect_button = QPushButton("🔄 Re-initialize"); self.reconnect_button.clicked.connect(self.reconnect_camera)
-        button_layout.addWidget(self.play_button)
-        button_layout.addWidget(self.pause_button)
-        button_layout.addWidget(self.reconnect_button)
+        # Add camera display (takes most of the space)
+        display_layout.addWidget(self.display_label, 1)
         
-
+        # Bottom control bar (compact)
+        control_layout = QHBoxLayout()
         
-        button_layout.addStretch(1)
+        # Basic control buttons
+        self.play_button = QPushButton("▶️")
+        self.play_button.setToolTip("Start live view")
+        self.play_button.setMaximumWidth(40)
+        self.play_button.clicked.connect(self.set_live_mode)
         
-        # Right side: Status display
-        status_layout = QHBoxLayout()
-        status_layout.addStretch(1)
-        status_layout.addWidget(self.status_display)
+        self.pause_button = QPushButton("⏸️")
+        self.pause_button.setToolTip("Pause live view") 
+        self.pause_button.setMaximumWidth(40)
+        self.pause_button.clicked.connect(self.set_pause_mode)
         
-        # Add both sides to bottom row
-        bottom_row.addLayout(button_layout, 3)  # Buttons take 3/4 of space
-        bottom_row.addLayout(status_layout, 1)  # Status takes 1/4 of space
+        self.reconnect_button = QPushButton("🔄")
+        self.reconnect_button.setToolTip("Reconnect camera")
+        self.reconnect_button.setMaximumWidth(40)
+        self.reconnect_button.clicked.connect(self.reconnect_camera)
         
-        # Add bottom row to camera layout
-        camera_layout.addLayout(bottom_row)
+        control_layout.addWidget(self.play_button)
+        control_layout.addWidget(self.pause_button)
+        control_layout.addWidget(self.reconnect_button)
+        control_layout.addStretch()
+        control_layout.addWidget(self.status_display)
         
-        # Add camera frame to main layout
-        main.addWidget(camera_frame)
-
+        display_layout.addLayout(control_layout)
+        main_layout.addWidget(display_frame)
+        
         self.update_button_states()
-
+    
     def update_button_states(self):
+        """Update button enabled states."""
         self.play_button.setEnabled(self.is_running and not self.is_live and self.camera is not None)
         self.pause_button.setEnabled(self.is_running and self.is_live)
-        # Reconnect button is always enabled as long as we're running
-        self.reconnect_button.setEnabled(self.is_running)
-        
-    def try_reconnect(self):
-        """
-        Try to reconnect the camera with a 5-second timeout.
-        Shows countdown in the status indicator and gives up after timeout.
-        """
-        # Check if we've exceeded the 5-second timeout
-        elapsed_time = time.time() - self.reconnection_start_time
-        self.reconnection_attempts += 1
-        
-        # Calculate remaining time and update status with countdown
-        remaining_time = max(0, int(5.0 - elapsed_time))
-        self.update_status(f"Initializing ({remaining_time}s)...")
-        
-        if elapsed_time > 5.0:  # 5-second timeout (reduced from 10)
-            # Give up after 5 seconds and fall back to test pattern
-            logger.info("Camera hardware not found - using test pattern")
-            self.use_test_pattern = True
-            self.camera = None
-            self.is_running = True
-            self.is_live = False
-            self.update_status("Test Pattern Mode")
-            self.update_button_states()
-            if not self.update_timer.isActive():
-                self.update_timer.start()
-            self.set_live_mode()  # Start test pattern
-            # Re-enable initialize button (text stays the same)
-            self.reconnect_button.setEnabled(True)
-            return
-            
-        # Try to connect using high-performance controller
-        try:
-            self.camera = CameraController(camera_id=0, max_queue_size=10)
-            if self.camera.initialize():
-                if self.camera.start_capture():
-                    # Success!
-                    self.is_running = True
-                    self.is_live = False
-                    self.update_status("Connected")
-                    self.update_button_states()
-                    if not self.update_timer.isActive():
-                        self.update_timer.start()
-                    self.set_live_mode()  # Auto start live view
-                    logger.info("Camera connected")
-                    # Re-enable initialize button (text stays the same)
-                    self.reconnect_button.setEnabled(True)
-                    return
-                else:
-                    # Start capture failed
-                    if self.camera:
-                        self.camera.close()
-                        self.camera = None
-            else:
-                # Initialization failed
-                if self.camera:
-                    self.camera.close()
-                    self.camera = None
-            
-            QTimer.singleShot(300, self.try_reconnect)  # Faster retry
-            
-        except Exception as e:
-            # Silent retry - only log if it becomes a persistent issue
-            if self.camera:
-                try:
-                    self.camera.close()
-                except:
-                    pass
-                self.camera = None
-            QTimer.singleShot(300, self.try_reconnect)
-        
-    def reconnect_camera(self):
-        """Attempt to initialize/reconnect the camera hardware."""
-        self.update_status("Initializing...")
-        
-        # Stop current camera operations
-        self.stop_camera()
-        
-        # Reset error states
-        self.camera_error = None
-        self.warning_count = 0
-        
-        # Disable initialize button during attempt (but keep the text the same)
-        self.reconnect_button.setEnabled(False)
-        
-        # Start initialization attempt with timeout
-        self.reconnection_start_time = time.time()
-        self.reconnection_attempts = 0
-        
-        # Small delay to ensure cleanup is complete
-        QTimer.singleShot(100, self.try_reconnect)
-
-    def update_status(self, text):
+        self.reconnect_button.setEnabled(True)  # Always enabled
+    
+    def update_status(self, text: str):
+        """Update status display."""
         self.status_display.set_status(text)
-
-    def connect_camera(self, camera_id=0):
-        """
-        Connect to the camera with the specified ID.
-        
-        This method is called automatically at startup. For manual reconnection
-        with timeout handling, use reconnect_camera() instead.
-        
-        Args:
-            camera_id (int): ID of the camera to connect to (default: 0)
-        """
+    
+    def connect_camera(self, camera_id: int = 0):
+        """Connect to camera with improved error handling."""
         if self.is_running:
             return
         
         self.update_status("Initializing...")
         
-        # Create high-performance camera controller
         try:
-            self.update_status("Connecting...")
+            # Use the advanced camera controller from controllers directory
             self.camera = CameraController(camera_id=camera_id, max_queue_size=10)
             
-            # Initialize and start capture
             if self.camera.initialize():
                 if self.camera.start_capture():
-                    # Camera started successfully
-                    logger.info("Camera connected")
+                    # Apply brighter default settings immediately
+                    self._apply_default_camera_settings()
+                    
                     self.is_running = True
                     self.is_live = False
+                    
                     self.update_status("Connected")
                     self.update_button_states()
                     self.update_timer.start()
                     self.set_live_mode()  # Auto start live view
+                    
+                    logger.info("Camera connected successfully")
                     return
                 else:
-                    # Start capture failed
                     logger.warning("Failed to start camera capture")
                     if self.camera:
                         self.camera.close()
                         self.camera = None
             else:
-                # Hardware initialization failed
                 logger.warning("Camera hardware initialization failed")
                 if self.camera:
                     self.camera.close()
                     self.camera = None
             
             # Fall through to test pattern mode
-            self._start_test_pattern_mode("Hardware Not Found - Test Pattern")
+            self._start_test_pattern_mode("Test Pattern Mode")
             
         except Exception as e:
             logger.warning(f"Camera initialization error: {e}")
@@ -293,22 +196,21 @@ class CameraWidget(QGroupBox):
                 except:
                     pass
                 self.camera = None
-            self._start_test_pattern_mode("Hardware Error - Test Pattern")
+            self._start_test_pattern_mode("Error - Test Pattern")
     
-    def _start_test_pattern_mode(self, status_text):
-        """Helper method to start test pattern mode with the given status text"""
+    def _start_test_pattern_mode(self, status_text: str):
+        """Start test pattern mode."""
         try:
-            # Create camera controller in test pattern mode
             self.camera = CameraController(camera_id=0, max_queue_size=5)
             if self.camera.initialize() and self.camera.start_capture():
                 self.is_running = True
                 self.is_live = False
+                
                 self.update_status(status_text)
                 self.update_button_states()
                 self.update_timer.start()
-                self.set_live_mode()  # Auto start test pattern
+                self.set_live_mode()
             else:
-                # Even test pattern failed
                 self.camera = None
                 self.is_running = False
                 self.update_status("Camera Error")
@@ -319,69 +221,66 @@ class CameraWidget(QGroupBox):
             self.is_running = False
             self.update_status("Camera Error")
             self.update_button_states()
-
+    
+    def reconnect_camera(self):
+        """Reconnect camera."""
+        self.update_status("Reconnecting...")
+        self.stop_camera()
+        QTimer.singleShot(500, self.connect_camera)
+    
     def stop_camera(self):
+        """Stop camera operations."""
         if self.update_timer.isActive():
             self.update_timer.stop()
+        
         self.is_running = False
         self.is_live = False
-        if self.camera is not None:
+        
+        if self.camera:
             try:
                 self.camera.close()
-            except Exception:
+            except:
                 pass
             self.camera = None
+        
         self.current_frame_data = None
-        self.update_status("Initialize")
+        self.update_status("Disconnected")
         self.update_button_states()
-
+    
     def set_live_mode(self):
-        if not self.is_running:
-            logger.warning("Cannot set live mode - camera not running")
-            return
-            
-        if not self.camera:
-            logger.warning("Cannot set live mode - no camera")
-            self.update_status("Camera not found")
+        """Start live view."""
+        if not self.is_running or not self.camera:
             return
         
-        # Check if camera is using test pattern
-        stats = self.camera.get_statistics()
-        if stats.get('use_test_pattern', False):
-            self.is_live = True
-            self.update_status("Test Pattern Active")
-            self.update_button_states()
+        self.is_live = True
+        
+        # Check if using test pattern
+        if hasattr(self.camera, 'get_statistics'):
+            stats = self.camera.get_statistics()
+            if stats.get('use_test_pattern', False):
+                self.update_status("Test Pattern Active")
+            else:
+                self.update_status("Live")
         else:
-            # Regular camera live mode
-            self.is_live = True
             self.update_status("Live")
-            self.update_button_states()
-
+        
+        self.update_button_states()
+    
     def set_pause_mode(self):
+        """Pause live view."""
         if not self.is_running:
             return
+        
         self.is_live = False
         self.update_status("Paused")
         self.update_button_states()
-
-
-
-
-
+    
     def update_frame(self):
-        """
-        Process frames from camera and handle recording.
-        """
-        if not self.is_running or not self.is_live:
+        """Update display with latest camera frame."""
+        if not self.is_running or not self.is_live or not self.camera:
             return
-            
-        if not self.camera:
-            return
-            
-
-            
+        
         try:
-            # Get latest frame
             frame_data = self.camera.get_latest_frame(timeout=0.001)
             
             if frame_data is None:
@@ -394,118 +293,117 @@ class CameraWidget(QGroupBox):
             if self.is_recording:
                 self._record_frame(frame_data.frame)
             
-            # Always update display (keep it simple)
-            processed_frame = self.process_frame(frame_data.frame)
-            self.display_frame(processed_frame)
+            # Display frame
+            self.display_frame(frame_data.frame)
             
-            # Update performance monitoring
+            # Update performance stats
             self.display_fps_counter += 1
             current_time = time.time()
-            if current_time - self.display_fps_start_time >= 2.0:  # Update every 2 seconds
+            if current_time - self.display_fps_start_time >= 1.0:  # Update every 1 second instead of 2
                 display_fps = self.display_fps_counter / (current_time - self.display_fps_start_time)
                 self.last_display_fps = display_fps
                 self.display_fps_counter = 0
                 self.display_fps_start_time = current_time
-            
-            # Update status with performance info (less frequently for better performance)
-            if frame_data.frame_number % 150 == 0:  # Update stats every 150 frames (5 seconds at 30fps)
-                try:
+                
+                # Update status with FPS info more frequently
+                if self.is_recording:
+                    self.update_status(f"Recording @ {display_fps:.1f} FPS")
+                elif hasattr(self.camera, 'get_statistics'):
                     stats = self.camera.get_statistics()
-                    display_info = f"Display: {self.last_display_fps:.1f} FPS"
-                    if self.is_recording:
-                        status_text = f"Recording - {display_info}"
-                    elif stats['use_test_pattern']:
-                        status_text = f"Test Pattern - {display_info}"
+                    if stats.get('use_test_pattern', False):
+                        self.update_status(f"Test Pattern @ {display_fps:.1f} FPS")
                     else:
-                        status_text = f"Live - {display_info}"
-                    self.update_status(status_text)
-                except:
-                    pass  # Don't let stats errors affect display performance
-            
+                        self.update_status(f"Live @ {display_fps:.1f} FPS")
+                else:
+                    self.update_status(f"Live @ {display_fps:.1f} FPS")
+        
         except Exception as e:
-            # Log unique errors only
             if str(e) != self.camera_error:
                 logger.error(f"Update frame error: {e}")
                 self.camera_error = str(e)
                 self.update_status("Error")
-
-
-
-    def process_frame(self, frame):
-        """
-        Minimal frame processing optimized for recording performance.
-        
-        Args:
-            frame: Input frame to process
-            
-        Returns:
-            Processed frame ready for display
-        """
-        # Skip processing during recording for maximum performance
-        if self.is_recording:
-            return frame
-            
-        # Skip processing if no effects are enabled
-        if not (self.mono_enabled or self.auto_contrast):
-            return frame
-        
-        # Apply mono conversion if enabled
-        if self.mono_enabled:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                
-        return frame
-
+    
     def display_frame(self, frame):
-        """
-        Ultra-optimized frame display for maximum performance.
-        
-        Args:
-            frame: BGR frame to display
-        """
-        # Skip RGB conversion for test patterns that might already be RGB
+        """Display frame in the widget with image processing."""
+        # Convert BGR to RGB for Qt display
         if frame.shape[2] == 3:
-            # Convert BGR to RGB - required for proper display
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
             rgb_frame = frame
-            
+        
+        # Apply image processing settings (optimized for performance)
+        rgb_frame = self._apply_image_processing(rgb_frame)
+        
         h, w = rgb_frame.shape[:2]
         
-        # Create QImage directly from the data buffer for zero-copy operation
+        # Create QImage
         bytes_per_line = 3 * w
         qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         
-        # Get current display size
+        # Scale to fit display
         display_width = self.display_label.width()
         display_height = self.display_label.height()
         
-        # Only scale if display size is valid and significantly different from frame size
-        scale_threshold = 50  # Don't rescale for small differences
-        if (display_width > 1 and display_height > 1 and 
-            (abs(w - display_width) > scale_threshold or abs(h - display_height) > scale_threshold)):
-            
-            # Use FastTransformation for maximum performance during live view
+        if display_width > 1 and display_height > 1:
             pix = QPixmap.fromImage(qimg).scaled(
-                display_width, display_height, 
-                Qt.KeepAspectRatio, Qt.FastTransformation
+                display_width, display_height,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
         else:
             pix = QPixmap.fromImage(qimg)
-            
-        self.display_label.setPixmap(pix)
-
-    def start_recording(self, file_path, metadata=None):
-        """
-        Start recording video to the specified HDF5 file path.
         
-        Args:
-            file_path (str): Full path where the video should be saved (with .hdf5 extension)
-            metadata (dict): Optional metadata to include in the recording
+        self.display_label.setPixmap(pix)
+    
+    def _apply_image_processing(self, frame):
+        """Apply brightness, contrast, and saturation to frame (optimized)."""
+        try:
+            # Skip processing if settings are at default values for performance
+            if (self.image_settings['brightness'] == 50 and 
+                self.image_settings['contrast'] == 50 and 
+                self.image_settings['saturation'] == 50):
+                return frame
             
-        Returns:
-            bool: True if recording started successfully, False otherwise
-        """
+            # Log when processing is applied (for debugging)
+            # logger.debug(f"Applying image processing: {self.image_settings}")
+            
+            # Fast processing using OpenCV functions
+            processed_frame = frame.copy()
+            
+            # Apply brightness and contrast together (much faster)
+            brightness = (self.image_settings['brightness'] - 50) * 2.0  # -100 to +100
+            contrast = self.image_settings['contrast'] / 50.0  # 0 to 2.0
+            
+            # Use OpenCV's convertScaleAbs for fast brightness/contrast
+            processed_frame = cv2.convertScaleAbs(processed_frame, alpha=contrast, beta=brightness)
+            
+            # Apply saturation only if needed and only for color images
+            if (len(frame.shape) == 3 and self.image_settings['saturation'] != 50):
+                # Fast saturation adjustment using HSV
+                hsv = cv2.cvtColor(processed_frame, cv2.COLOR_RGB2HSV)
+                saturation_factor = self.image_settings['saturation'] / 50.0
+                hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
+                processed_frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+            
+            return processed_frame
+            
+        except Exception as e:
+            logger.warning(f"Image processing error: {e}")
+            return frame  # Return original frame on error
+    
+    def update_image_settings(self, settings):
+        """Update image processing settings."""
+        if 'brightness' in settings:
+            self.image_settings['brightness'] = settings['brightness']
+        if 'contrast' in settings:
+            self.image_settings['contrast'] = settings['contrast']
+        if 'saturation' in settings:
+            self.image_settings['saturation'] = settings['saturation']
+        
+        logger.info(f"Updated image settings: {self.image_settings}")
+    
+    # Recording methods (preserved from original)
+    def start_recording(self, file_path: str, metadata=None) -> bool:
+        """Start HDF5 video recording."""
         if self.is_recording:
             logger.warning("Recording already in progress")
             return False
@@ -515,36 +413,30 @@ class CameraWidget(QGroupBox):
             return False
         
         try:
-            # Ensure file path has .hdf5 extension
+            # Ensure .hdf5 extension
             if not file_path.lower().endswith('.hdf5'):
                 file_path = file_path + '.hdf5'
             
-            # Ensure directory exists
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # Get frame shape from threaded camera
+            # Get frame shape
             if self.camera:
                 frame_shape = self.camera.frame_shape
             else:
-                frame_shape = (480, 640, 3)  # Default shape
+                frame_shape = (480, 640, 3)
             
-            # Create HDF5 recorder with LZF compression for speed
+            # Create recorder
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
-                fps=25.0  # Target recording FPS to match live performance
+                fps=30.0
             )
             
-            # Get camera statistics for metadata
-            stats = self.camera.get_statistics() if self.camera else {}
-            
-            # Start recording with metadata
+            # Prepare metadata
             recording_metadata = {
                 'operator': os.getenv('USERNAME', 'Unknown'),
                 'system_name': 'AFS_tracking'
             }
-            
-            # Add user-provided metadata
             if metadata:
                 recording_metadata.update(metadata)
             
@@ -552,50 +444,30 @@ class CameraWidget(QGroupBox):
                 logger.error("Failed to start HDF5 recording")
                 return False
             
-            # Extract and save camera settings as metadata
+            # Save camera settings
             if self.camera and hasattr(self.camera, 'get_camera_settings'):
                 try:
                     camera_settings = self.camera.get_camera_settings()
-                    # Add image processing settings
-                    camera_settings['mono_enabled'] = self.mono_enabled
-                    camera_settings['auto_contrast'] = self.auto_contrast
+                    
+                    # Add image processing settings to camera settings
+                    camera_settings.update({
+                        'image_brightness': self.image_settings['brightness'],
+                        'image_contrast': self.image_settings['contrast'],
+                        'image_saturation': self.image_settings['saturation']
+                    })
                     
                     self.hdf5_recorder.add_camera_settings(camera_settings)
-                    logger.info(f"Saved camera settings to HDF5: {len(camera_settings)} parameters")
+                    logger.info(f"Saved camera settings: {len(camera_settings)} parameters (including image processing)")
                 except Exception as e:
-                    logger.warning(f"Failed to save camera settings to HDF5: {e}")
-            else:
-                # Save image processing settings even if camera settings unavailable
-                try:
-                    image_settings = {
-                        'mono_enabled': self.mono_enabled,
-                        'auto_contrast': self.auto_contrast
-                    }
-                    self.hdf5_recorder.add_camera_settings(image_settings)
-                    logger.info(f"Saved image processing settings to HDF5: {len(image_settings)} parameters")
-                except Exception as e:
-                    logger.warning(f"Failed to save image processing settings to HDF5: {e}")
-            
-            # Extract and save stage settings as metadata
-            try:
-                from src.controllers.stage_manager import StageManager
-                stage_manager = StageManager.get_instance()
-                stage_settings = stage_manager.get_stage_settings()
-                self.hdf5_recorder.add_stage_settings(stage_settings)
-                logger.info(f"Saved stage settings to HDF5: {len(stage_settings)} parameters")
-            except Exception as e:
-                logger.warning(f"Failed to save stage settings to HDF5: {e}")
+                    logger.warning(f"Failed to save camera settings: {e}")
             
             # Set recording state
             self.is_recording = True
             self.recording_path = file_path
             self.recording_start_time = datetime.now()
-            self.recording_start_timestamp = time.time()
             self.recorded_frames = 0
             
             logger.info(f"Started HDF5 recording: {file_path}")
-            
-            # Signal that recording started - main window can log initial FG state
             return True
             
         except Exception as e:
@@ -607,33 +479,23 @@ class CameraWidget(QGroupBox):
                     pass
                 self.hdf5_recorder = None
             return False
-
-    def stop_recording(self):
-        """
-        Stop recording video and close the HDF5 file.
-        
-        Returns:
-            str: Path to the saved HDF5 file, or None if recording failed
-        """
+    
+    def stop_recording(self) -> Optional[str]:
+        """Stop HDF5 recording."""
         if not self.is_recording:
-            logger.warning("No recording in progress")
             return None
         
         try:
-            # Stop recording
             self.is_recording = False
             
             if self.hdf5_recorder:
-                success = self.hdf5_recorder.stop_recording()
-                if not success:
-                    logger.warning("HDF5 recorder reported failure during stop")
+                self.hdf5_recorder.stop_recording()
                 self.hdf5_recorder = None
             
-            # Calculate recording duration
             if self.recording_start_time:
                 duration = datetime.now() - self.recording_start_time
-                logger.info(f"HDF5 recording stopped. Duration: {duration.total_seconds():.1f}s, "
-                           f"Frames: {self.recorded_frames}, Path: {self.recording_path}")
+                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
+                           f"Frames: {self.recorded_frames}")
             
             saved_path = self.recording_path
             self.recording_path = ""
@@ -643,13 +505,11 @@ class CameraWidget(QGroupBox):
             return saved_path
             
         except Exception as e:
-            logger.error(f"Error stopping HDF5 recording: {e}")
+            logger.error(f"Error stopping recording: {e}")
             return None
-
+    
     def _record_frame(self, frame):
-        """
-        Record frame with minimal overhead.
-        """
+        """Record a single frame."""
         if not self.is_recording or not self.hdf5_recorder:
             return
         
@@ -658,19 +518,11 @@ class CameraWidget(QGroupBox):
                 self.recorded_frames += 1
         except Exception as e:
             logger.error(f"Recording error: {e}")
-            self.recording_errors += 1
-
-    def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
+    
+    # Function generator logging methods (preserved)
+    def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float,
                                    output_enabled: bool = True, event_type: str = 'parameter_change'):
-        """
-        Log function generator events to the HDF5 recorder timeline.
-        
-        Args:
-            frequency_mhz: Frequency in MHz
-            amplitude_vpp: Amplitude in Vpp
-            output_enabled: Whether output is enabled
-            event_type: Type of event ('parameter_change', 'output_on', 'output_off')
-        """
+        """Log function generator events."""
         if self.hdf5_recorder and self.is_recording:
             try:
                 self.hdf5_recorder.log_function_generator_event(
@@ -680,15 +532,9 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.error(f"Failed to log function generator event: {e}")
     
-    def log_function_generator_toggle(self, enabled: bool, frequency_mhz: float = 1.0, amplitude_vpp: float = 1.0):
-        """
-        Log function generator on/off events.
-        
-        Args:
-            enabled: Whether the function generator was turned on or off
-            frequency_mhz: Current frequency in MHz
-            amplitude_vpp: Current amplitude in Vpp
-        """
+    def log_function_generator_toggle(self, enabled: bool, frequency_mhz: float = 1.0, 
+                                    amplitude_vpp: float = 1.0):
+        """Log function generator toggle events."""
         if self.hdf5_recorder and self.is_recording:
             try:
                 event_type = 'output_on' if enabled else 'output_off'
@@ -696,37 +542,48 @@ class CameraWidget(QGroupBox):
                     frequency_mhz, amplitude_vpp,
                     output_enabled=enabled, event_type=event_type
                 )
-                logger.debug(f"Logged function generator toggle: {'ON' if enabled else 'OFF'} "
-                           f"({frequency_mhz:.3f} MHz, {amplitude_vpp:.2f} Vpp)")
             except Exception as e:
                 logger.error(f"Failed to log function generator toggle: {e}")
     
-    def log_initial_function_generator_state(self, frequency_mhz: float, amplitude_vpp: float, enabled: bool):
-        """
-        Log the initial function generator state when recording starts.
-        
-        Args:
-            frequency_mhz: Current frequency in MHz
-            amplitude_vpp: Current amplitude in Vpp
-            enabled: Whether output is currently enabled
-        """
+    def log_initial_function_generator_state(self, frequency_mhz: float, 
+                                           amplitude_vpp: float, enabled: bool):
+        """Log initial function generator state."""
         if self.hdf5_recorder and self.is_recording:
             try:
                 self.hdf5_recorder.log_function_generator_event(
                     frequency_mhz, amplitude_vpp,
                     output_enabled=enabled, event_type='initial_state'
                 )
-                logger.debug(f"Logged initial function generator state: "
-                           f"{'ON' if enabled else 'OFF'} ({frequency_mhz:.3f} MHz, {amplitude_vpp:.2f} Vpp)")
             except Exception as e:
                 logger.error(f"Failed to log initial function generator state: {e}")
-
-    # Basic keyboard shortcuts for tests
-    def keyPressEvent(self, event):
-        key = event.key()
-        if key == Qt.Key_Space:
-            if self.is_live:
-                self.set_pause_mode()
-            else:
-                self.set_live_mode()
-        super().keyPressEvent(event)
+    
+    def _apply_default_camera_settings(self):
+        """Apply brighter default camera settings."""
+        if not self.camera or not hasattr(self.camera, 'apply_settings'):
+            return
+        
+        # Brighter default settings (optimized for performance)
+        default_settings = {
+            'exposure_ms': 15.0,
+            'gain_master': 2,  # Use integer for gain
+            'frame_rate_fps': 30.0,
+            'brightness': 50,   # Standard brightness
+            'contrast': 50,     # No contrast change initially  
+            'saturation': 50    # No saturation change initially
+        }
+        
+        try:
+            result = self.camera.apply_settings(default_settings)
+            logger.info(f"Applied default brighter camera settings: {result}")
+            
+            # Also update image processing settings for live view
+            self.update_image_settings(default_settings)
+        except Exception as e:
+            logger.warning(f"Failed to apply default camera settings: {e}")
+    
+    def close(self):
+        """Clean shutdown."""
+        if self.is_recording:
+            self.stop_recording()
+        self.stop_camera()
+        logger.info("Simplified camera widget closed")
