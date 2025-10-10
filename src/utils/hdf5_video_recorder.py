@@ -415,7 +415,7 @@ class HDF5VideoRecorder:
             if len(self.fg_timeline_buffer) >= self.fg_timeline_buffer_size:
                 self._flush_fg_timeline_buffer()
             
-            logger.debug(f"FG timeline: {relative_time:.3f}s - {frequency_mhz:.3f}MHz, {amplitude_vpp:.2f}Vpp, {event_type}")
+            # Removed debug logging to reduce performance overhead
             return True
             
         except Exception as e:

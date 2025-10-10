@@ -296,26 +296,21 @@ class CameraWidget(QGroupBox):
             # Display frame
             self.display_frame(frame_data.frame)
             
-            # Update performance stats
+            # Update performance stats (optimized)
             self.display_fps_counter += 1
             current_time = time.time()
-            if current_time - self.display_fps_start_time >= 1.0:  # Update every 1 second instead of 2
-                display_fps = self.display_fps_counter / (current_time - self.display_fps_start_time)
+            time_elapsed = current_time - self.display_fps_start_time
+            
+            # Update FPS display every 2 seconds to reduce overhead
+            if time_elapsed >= 2.0:
+                display_fps = self.display_fps_counter / time_elapsed
                 self.last_display_fps = display_fps
                 self.display_fps_counter = 0
                 self.display_fps_start_time = current_time
                 
-                # Update status with FPS info more frequently
-                if self.is_recording:
-                    self.update_status(f"Recording @ {display_fps:.1f} FPS")
-                elif hasattr(self.camera, 'get_statistics'):
-                    stats = self.camera.get_statistics()
-                    if stats.get('use_test_pattern', False):
-                        self.update_status(f"Test Pattern @ {display_fps:.1f} FPS")
-                    else:
-                        self.update_status(f"Live @ {display_fps:.1f} FPS")
-                else:
-                    self.update_status(f"Live @ {display_fps:.1f} FPS")
+                # Simplified status update (less string processing)
+                status_prefix = "Recording" if self.is_recording else "Live"
+                self.update_status(f"{status_prefix} @ {display_fps:.0f} FPS")
         
         except Exception as e:
             if str(e) != self.camera_error:
@@ -355,40 +350,37 @@ class CameraWidget(QGroupBox):
         self.display_label.setPixmap(pix)
     
     def _apply_image_processing(self, frame):
-        """Apply brightness, contrast, and saturation to frame (optimized)."""
+        """Apply brightness, contrast, and saturation to frame (highly optimized)."""
+        # Skip processing if all settings are at default values
+        if (self.image_settings['brightness'] == 50 and 
+            self.image_settings['contrast'] == 50 and 
+            self.image_settings['saturation'] == 50):
+            return frame
+        
         try:
-            # Skip processing if settings are at default values for performance
-            if (self.image_settings['brightness'] == 50 and 
-                self.image_settings['contrast'] == 50 and 
-                self.image_settings['saturation'] == 50):
-                return frame
+            # Only apply needed transformations to minimize operations
+            needs_brightness = self.image_settings['brightness'] != 50
+            needs_contrast = self.image_settings['contrast'] != 50
+            needs_saturation = (len(frame.shape) == 3 and self.image_settings['saturation'] != 50)
             
-            # Log when processing is applied (for debugging)
-            # logger.debug(f"Applying image processing: {self.image_settings}")
+            # Apply brightness/contrast together if needed (in-place when possible)
+            if needs_brightness or needs_contrast:
+                brightness = (self.image_settings['brightness'] - 50) * 2.0
+                contrast = self.image_settings['contrast'] / 50.0
+                frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
             
-            # Fast processing using OpenCV functions
-            processed_frame = frame.copy()
-            
-            # Apply brightness and contrast together (much faster)
-            brightness = (self.image_settings['brightness'] - 50) * 2.0  # -100 to +100
-            contrast = self.image_settings['contrast'] / 50.0  # 0 to 2.0
-            
-            # Use OpenCV's convertScaleAbs for fast brightness/contrast
-            processed_frame = cv2.convertScaleAbs(processed_frame, alpha=contrast, beta=brightness)
-            
-            # Apply saturation only if needed and only for color images
-            if (len(frame.shape) == 3 and self.image_settings['saturation'] != 50):
-                # Fast saturation adjustment using HSV
-                hsv = cv2.cvtColor(processed_frame, cv2.COLOR_RGB2HSV)
+            # Apply saturation only if needed (most expensive operation)
+            if needs_saturation:
+                hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
                 saturation_factor = self.image_settings['saturation'] / 50.0
                 hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
-                processed_frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+                frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
             
-            return processed_frame
+            return frame
             
         except Exception as e:
             logger.warning(f"Image processing error: {e}")
-            return frame  # Return original frame on error
+            return frame
     
     def update_image_settings(self, settings):
         """Update image processing settings."""
@@ -399,7 +391,7 @@ class CameraWidget(QGroupBox):
         if 'saturation' in settings:
             self.image_settings['saturation'] = settings['saturation']
         
-        logger.info(f"Updated image settings: {self.image_settings}")
+        # Reduce logging frequency to prevent performance issues
     
     # Recording methods (preserved from original)
     def start_recording(self, file_path: str, metadata=None) -> bool:
