@@ -48,11 +48,13 @@ python -m src.main
 ### File Structure
 ```
 📁 recording.hdf5
-├── 📹 video/              # 4D dataset: (frames, height, width, channels)
-├── 📝 metadata/           # Sample info, notes, operator
-└── 🔧 hardware_settings/  # Camera & stage parameters
-    ├── camera/            # Real camera settings (23+ parameters)
-    └── xy_stage/          # Stage position and configuration
+├── 📹 video/                           # 4D dataset: (frames, height, width, channels)
+├── 📝 metadata/                        # Sample info, notes, operator
+├── 🔧 hardware_settings/               # Camera & stage parameters
+│   ├── camera/                         # Real camera settings (23+ parameters)
+│   └── xy_stage/                       # Stage position and configuration
+└── 📊 function_generator_timeline/     # Function generator event timeline
+    └── timeline/                       # Timestamped frequency/voltage changes
 ```
 
 ### Python Analysis Example
@@ -80,10 +82,52 @@ with h5py.File("measurement.hdf5", 'r') as f:
     exposure = camera.attrs['exposure_time_us']
     gain = camera.attrs['hardware_gain']
     
+    # Function generator timeline - COMPLETE recreation possible!
+    fg_timeline = f['function_generator_timeline/timeline']
+    print(f"Function generator events: {len(fg_timeline)}")
+    
+    # Recreate complete function generator state over time (13-15 MHz)
+    fg_state = {'frequency': 14.0, 'voltage': 4.0, 'enabled': False}  # Default: 14MHz
+    
+    for event in fg_timeline:
+        time_s = event['timestamp']     # Relative time from recording start
+        freq_mhz = event['frequency_mhz']  # 13-15 MHz range
+        amp_vpp = event['amplitude_vpp'] 
+        enabled = event['output_enabled']
+        event_type = event['event_type'].decode('utf-8').strip()
+        
+        # Update recreated state
+        fg_state.update({'frequency': freq_mhz, 'voltage': amp_vpp, 'enabled': enabled})
+        
+        print(f"{time_s:.3f}s: {freq_mhz:.1f}MHz, {amp_vpp:.1f}Vpp, "
+              f"{'ON' if enabled else 'OFF'} ({event_type})")
+    
     print(f"Sample: {sample}")
     print(f"Frames: {video.shape[0]} at {fps:.1f} FPS")
     print(f"Resolution: {video.shape[1]}x{video.shape[2]}")
 ```
+
+### Function Generator Timeline Features
+**Complete State Recreation**: The timeline captures EVERY function generator operation:
+- ✅ **Initial State**: Starting frequency/voltage/on-off status when recording begins
+- ✅ **Frequency Changes**: Every MHz adjustment logged with precise timing (13-15 MHz range)
+- ✅ **Voltage Changes**: Every Vpp adjustment logged independently
+- ✅ **Output Toggle**: ON/OFF events with current settings preserved
+- ✅ **Combined Changes**: Simultaneous frequency + voltage modifications
+- ✅ **Rapid Changes**: Debounced but complete capture of user adjustments
+
+**Default Settings**:
+- 🎯 **Default Frequency**: 14.0 MHz (optimal frequency)
+- 📏 **Valid Range**: 13.0 - 15.0 MHz (enforced in UI and validation)
+- ⚡ **Default Voltage**: 4.0 Vpp
+
+**Event Types Logged**:
+- `initial_state`: Function generator state when recording starts
+- `output_on`: Output enabled with current frequency/voltage
+- `output_off`: Output disabled with settings preserved  
+- `parameter_change`: Frequency and/or voltage modified while running
+
+**Simplified Timeline Structure**: Only essential data stored (no absolute timestamps or channel info for efficiency)
 
 ### Metadata Utility
 ```powershell

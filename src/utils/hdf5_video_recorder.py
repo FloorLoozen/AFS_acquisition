@@ -73,6 +73,11 @@ class HDF5VideoRecorder:
         self.settings_group = None
         self._closed = False
         
+        # Function generator timeline logging
+        self.fg_timeline_dataset = None
+        self.fg_timeline_buffer = []
+        self.fg_timeline_buffer_size = 1000  # Buffer entries before writing to disk
+        
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
         Calculate optimal chunk size for the dataset.
@@ -160,6 +165,9 @@ class HDF5VideoRecorder:
             
             # Create groups for additional data
             self.settings_group = self.h5_file.create_group('hardware_settings')
+            
+            # Create function generator timeline dataset
+            self._create_fg_timeline_dataset()
             
             # Set recording state
             self.is_recording = True
@@ -370,10 +378,114 @@ class HDF5VideoRecorder:
             
             logger.debug(f"Saved stage settings: {len(settings)} parameters")
             return True
+        except Exception as e:
+            logger.error(f"Failed to save stage settings: {e}")
+            return False
+    
+    def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
+                                   output_enabled: bool = True, 
+                                   event_type: str = 'parameter_change'):
+        """Log a function generator timeline event.
+        
+        Args:
+            frequency_mhz: Frequency in MHz (13-15 MHz range)
+            amplitude_vpp: Amplitude in volts peak-to-peak
+            output_enabled: Whether output is enabled
+            event_type: Type of event ('parameter_change', 'output_on', 'output_off', etc.)
+        """
+        if not self.is_recording or not self.fg_timeline_dataset:
+            return False
+            
+        try:
+            current_time = time.time()
+            # Convert start_time to timestamp if it's a datetime object
+            start_timestamp = self.start_time.timestamp() if isinstance(self.start_time, datetime) else self.start_time
+            relative_time = current_time - start_timestamp
+            
+            # Create timeline entry (simplified structure)
+            timeline_entry = np.array([
+                (relative_time, frequency_mhz, amplitude_vpp, 
+                 output_enabled, event_type.encode('utf-8')[:20])
+            ], dtype=self.fg_timeline_dataset.dtype)
+            
+            # Add to buffer
+            self.fg_timeline_buffer.extend(timeline_entry)
+            
+            # Flush buffer if it's getting full
+            if len(self.fg_timeline_buffer) >= self.fg_timeline_buffer_size:
+                self._flush_fg_timeline_buffer()
+            
+            logger.debug(f"FG timeline: {relative_time:.3f}s - {frequency_mhz:.3f}MHz, {amplitude_vpp:.2f}Vpp, {event_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error logging FG timeline event: {e}")
+            return False
+    
+    def _flush_fg_timeline_buffer(self):
+        """Flush the function generator timeline buffer to disk."""
+        if not self.fg_timeline_buffer or not self.fg_timeline_dataset:
+            return
+            
+        try:
+            # Current dataset size
+            current_size = self.fg_timeline_dataset.shape[0]
+            new_entries = len(self.fg_timeline_buffer)
+            
+            # Resize dataset to accommodate new entries
+            self.fg_timeline_dataset.resize((current_size + new_entries,))
+            
+            # Write buffer to dataset
+            self.fg_timeline_dataset[current_size:] = self.fg_timeline_buffer
+            
+            # Clear buffer
+            self.fg_timeline_buffer.clear()
+            
+            logger.debug(f"Flushed {new_entries} FG timeline entries to HDF5")
+            
+        except Exception as e:
+            logger.error(f"Error flushing FG timeline buffer: {e}")
             
         except Exception as e:
             logger.error(f"Error saving stage settings: {e}")
             return False
+    
+    def _create_fg_timeline_dataset(self):
+        """Create the function generator timeline dataset."""
+        try:
+            # Create timeline group
+            timeline_group = self.h5_file.create_group('function_generator_timeline')
+            
+            # Define compound datatype for timeline entries (simplified)
+            timeline_dtype = np.dtype([
+                ('timestamp', 'f8'),        # Relative time from recording start (seconds)
+                ('frequency_mhz', 'f4'),     # Frequency in MHz (13-15 MHz range)
+                ('amplitude_vpp', 'f4'),     # Amplitude in Vpp
+                ('output_enabled', '?'),     # Boolean: output on/off
+                ('event_type', 'S20')        # Event type: 'parameter_change', 'output_on', 'output_off', etc.
+            ])
+            
+            # Create extensible dataset for timeline data
+            self.fg_timeline_dataset = timeline_group.create_dataset(
+                'timeline',
+                shape=(0,),
+                maxshape=(None,),
+                dtype=timeline_dtype,
+                chunks=True,
+                compression='lzf'
+            )
+            
+            # Add metadata about the timeline
+            timeline_group.attrs['description'] = b'Function generator parameter timeline'
+            timeline_group.attrs['timestamp_reference'] = b'Relative to recording start'
+            timeline_group.attrs['frequency_units'] = b'MHz'
+            timeline_group.attrs['amplitude_units'] = b'Volts peak-to-peak'
+            
+            logger.debug("Function generator timeline dataset created")
+            
+        except Exception as e:
+            logger.error(f"Error creating FG timeline dataset: {e}")
+            self.fg_timeline_dataset = None
     
 
     
@@ -453,6 +565,12 @@ class HDF5VideoRecorder:
                             self.video_dataset.attrs['compression_ratio'] = compression_ratio
                     except Exception as e:
                         logger.debug(f"Could not calculate file size: {e}")
+            
+            # Flush any remaining function generator timeline events
+            try:
+                self._flush_fg_timeline_buffer()
+            except Exception as e:
+                logger.warning(f"Error flushing timeline buffer: {e}")
             
             # Final flush before closing
             if self.h5_file:

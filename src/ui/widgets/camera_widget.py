@@ -594,6 +594,8 @@ class CameraWidget(QGroupBox):
             self.recorded_frames = 0
             
             logger.info(f"Started HDF5 recording: {file_path}")
+            
+            # Signal that recording started - main window can log initial FG state
             return True
             
         except Exception as e:
@@ -657,6 +659,67 @@ class CameraWidget(QGroupBox):
         except Exception as e:
             logger.error(f"Recording error: {e}")
             self.recording_errors += 1
+
+    def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
+                                   output_enabled: bool = True, event_type: str = 'parameter_change'):
+        """
+        Log function generator events to the HDF5 recorder timeline.
+        
+        Args:
+            frequency_mhz: Frequency in MHz
+            amplitude_vpp: Amplitude in Vpp
+            output_enabled: Whether output is enabled
+            event_type: Type of event ('parameter_change', 'output_on', 'output_off')
+        """
+        if self.hdf5_recorder and self.is_recording:
+            try:
+                self.hdf5_recorder.log_function_generator_event(
+                    frequency_mhz, amplitude_vpp,
+                    output_enabled=output_enabled, event_type=event_type
+                )
+            except Exception as e:
+                logger.error(f"Failed to log function generator event: {e}")
+    
+    def log_function_generator_toggle(self, enabled: bool, frequency_mhz: float = 1.0, amplitude_vpp: float = 1.0):
+        """
+        Log function generator on/off events.
+        
+        Args:
+            enabled: Whether the function generator was turned on or off
+            frequency_mhz: Current frequency in MHz
+            amplitude_vpp: Current amplitude in Vpp
+        """
+        if self.hdf5_recorder and self.is_recording:
+            try:
+                event_type = 'output_on' if enabled else 'output_off'
+                self.hdf5_recorder.log_function_generator_event(
+                    frequency_mhz, amplitude_vpp,
+                    output_enabled=enabled, event_type=event_type
+                )
+                logger.debug(f"Logged function generator toggle: {'ON' if enabled else 'OFF'} "
+                           f"({frequency_mhz:.3f} MHz, {amplitude_vpp:.2f} Vpp)")
+            except Exception as e:
+                logger.error(f"Failed to log function generator toggle: {e}")
+    
+    def log_initial_function_generator_state(self, frequency_mhz: float, amplitude_vpp: float, enabled: bool):
+        """
+        Log the initial function generator state when recording starts.
+        
+        Args:
+            frequency_mhz: Current frequency in MHz
+            amplitude_vpp: Current amplitude in Vpp
+            enabled: Whether output is currently enabled
+        """
+        if self.hdf5_recorder and self.is_recording:
+            try:
+                self.hdf5_recorder.log_function_generator_event(
+                    frequency_mhz, amplitude_vpp,
+                    output_enabled=enabled, event_type='initial_state'
+                )
+                logger.debug(f"Logged initial function generator state: "
+                           f"{'ON' if enabled else 'OFF'} ({frequency_mhz:.3f} MHz, {amplitude_vpp:.2f} Vpp)")
+            except Exception as e:
+                logger.error(f"Failed to log initial function generator state: {e}")
 
     # Basic keyboard shortcuts for tests
     def keyPressEvent(self, event):

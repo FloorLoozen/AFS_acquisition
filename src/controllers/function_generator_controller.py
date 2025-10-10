@@ -30,7 +30,7 @@ class FunctionGeneratorController:
 
     def connect(self) -> bool:
         """
-        Connect to the function generator.
+        Connect to the function generator with timeout and error recovery.
         
         Returns:
             True if connection successful, False otherwise
@@ -38,13 +38,29 @@ class FunctionGeneratorController:
         try:
             rm = pyvisa.ResourceManager()
             self.function_generator = rm.open_resource(self.visa_address)
+            
+            # Set reasonable timeout for smoother operation
+            self.function_generator.timeout = 2000  # 2 second timeout
+            
+            # Test connection with ID query
             fg_id = self.function_generator.query('*IDN?').strip()
+            
+            # Reset to known state for consistent behavior
+            self.function_generator.write("*RST")
+            time.sleep(0.1)  # Brief pause after reset
+            
             self._is_connected = True
             logger.info(f"Function Generator connected ({fg_id})")
             return True
         except Exception as e:
             logger.error(f"Function Generator connection failed: {e}")
             self._is_connected = False
+            if hasattr(self, 'function_generator') and self.function_generator:
+                try:
+                    self.function_generator.close()
+                except:
+                    pass
+                self.function_generator = None
             return False
 
     def is_connected(self) -> bool:
@@ -68,20 +84,40 @@ class FunctionGeneratorController:
             return False
             
         try:
-            # Deduplicate: skip if no change and already on
+            # Improved caching: check if settings actually changed
             current = (round(frequency_mhz, 6), round(amplitude, 6), int(channel))
             if self._output_on and self._last_sine == current:
-                return True
+                return True  # No change needed
                 
-            logger.info(f"Function Generator: sine ({frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp)")
+            # Only log significant changes to reduce log spam
+            freq_changed = not self._last_sine or abs(self._last_sine[0] - current[0]) > 0.001
+            amp_changed = not self._last_sine or abs(self._last_sine[1] - current[1]) > 0.01
+            
+            if freq_changed or amp_changed or not self._output_on:
+                logger.info(f"Function Generator: sine ({frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp)")
             
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
-            self.function_generator.write(f"{channel_str}:BSWV SHAPE,SINE")
-            self.function_generator.write(f"{channel_str}:BSWV FRQ,{frequency_hz}")
-            self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
-            self.function_generator.write(f"{channel_str}:OUTP ON")
+            # Batch commands for better performance
+            commands = []
+            
+            # Only send commands that are needed
+            if not self._last_sine or self._last_sine[2] != channel:
+                commands.append(f"{channel_str}:BSWV SHAPE,SINE")
+            
+            if freq_changed:
+                commands.append(f"{channel_str}:BSWV FRQ,{frequency_hz}")
+                
+            if amp_changed:
+                commands.append(f"{channel_str}:BSWV AMP,{amplitude}")
+            
+            if not self._output_on:
+                commands.append(f"{channel_str}:OUTP ON")
+            
+            # Send all commands efficiently
+            for cmd in commands:
+                self.function_generator.write(cmd)
             
             self._output_on = True
             self._last_sine = current

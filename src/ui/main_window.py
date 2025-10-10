@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QAction, 
     QMessageBox, QSizePolicy, QApplication, QMenuBar, QMenu
 )
-from PyQt5.QtCore import QTimer, QCloseEvent
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QCloseEvent
 
 from src.utils.logger import get_logger
@@ -170,6 +170,11 @@ class MainWindow(QMainWindow):
     def _create_measurement_controls_widget(self, layout, row, col):
         """Create and add measurement controls widget."""
         self.measurement_controls_widget = MeasurementControlsWidget()
+        
+        # Connect function generator signals to HDF5 timeline logging
+        self.measurement_controls_widget.function_generator_toggled.connect(self._on_function_generator_toggled)
+        self.measurement_controls_widget.function_generator_settings_changed.connect(self._on_function_generator_settings_changed)
+        
         layout.addWidget(self.measurement_controls_widget, row, col)
 
     # Menu handlers
@@ -354,6 +359,26 @@ class MainWindow(QMainWindow):
                 
                 success = self.camera_widget.start_recording(file_path, metadata)
                 if success:
+                    # Log initial function generator state
+                    if self.measurement_controls_widget and hasattr(self.camera_widget, 'log_initial_function_generator_state'):
+                        try:
+                            # Get current function generator settings
+                            frequency = 1.0  # Default
+                            amplitude = 1.0  # Default
+                            enabled = False  # Default
+                            
+                            # Try to get actual current settings
+                            try:
+                                frequency = float(self.measurement_controls_widget.frequency_edit.text())
+                                amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
+                                enabled = self.measurement_controls_widget.fg_toggle_button.isChecked()
+                            except (ValueError, AttributeError):
+                                pass  # Use defaults
+                            
+                            self.camera_widget.log_initial_function_generator_state(frequency, amplitude, enabled)
+                        except Exception as e:
+                            logger.warning(f"Failed to log initial function generator state: {e}")
+                    
                     self.acquisition_controls_widget.recording_started_successfully()
                     self.statusBar().showMessage(f"HDF5 recording started: {file_path}")
 # Success already logged by acquisition controls
@@ -411,6 +436,36 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error saving recording: {e}")
             self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
+    
+    def _on_function_generator_toggled(self, enabled: bool):
+        """Handle function generator on/off events for timeline logging."""
+        if self.camera_widget and hasattr(self.camera_widget, 'log_function_generator_toggle'):
+            # Get current settings from measurement controls
+            frequency = 1.0  # Default
+            amplitude = 1.0  # Default
+            
+            if self.measurement_controls_widget:
+                try:
+                    frequency = float(self.measurement_controls_widget.frequency_edit.text())
+                    amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
+                except (ValueError, AttributeError):
+                    pass  # Use defaults
+            
+            self.camera_widget.log_function_generator_toggle(enabled, frequency, amplitude)
+    
+    def _on_function_generator_settings_changed(self, frequency_mhz: float, amplitude_vpp: float):
+        """Handle function generator settings changes for timeline logging."""
+        if self.camera_widget and hasattr(self.camera_widget, 'log_function_generator_event'):
+            # Determine if output is currently enabled
+            output_enabled = False
+            if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'fg_toggle_button'):
+                output_enabled = self.measurement_controls_widget.fg_toggle_button.isChecked()
+            
+            self.camera_widget.log_function_generator_event(
+                frequency_mhz, amplitude_vpp, 
+                output_enabled=output_enabled, 
+                event_type='parameter_change'
+            )
         
     def _initialize_hardware(self):
         """Initialize all hardware components at startup."""
