@@ -1,18 +1,26 @@
-# Core dependencies for AFS tracking system
-numpy>=1.24.0
-h5py>=3.8.0
-PyQt5>=5.15.0
-opencv-python>=4.7.0
+# AFS Tracking System Dependencies
+# Install with: pip install -r requirements.txt
 
-# System monitoring and performance optimization
-psutil>=5.9.0
+# Core scientific computing and data handling
+numpy>=1.24.0                 # Numerical arrays, mathematical operations, frame processing
+h5py>=3.8.0                   # HDF5 file format for efficient video/data storage
+opencv-python>=4.7.0          # Computer vision, image processing, camera operations
 
-# Optional hardware support
-# pyueye>=4.1.0  # IDS camera support - install manually from IDS website
+# User interface framework
+PyQt5>=5.15.0                 # GUI framework for main application window and controls
 
-# Utilities
-colorama>=0.4.0
-python-dateutil>=2.8.0
+# System monitoring and optimization
+psutil>=5.9.0                 # System resource monitoring (CPU, memory, disk usage)
 
-# Optional for development/analysis
-# matplotlib>=3.7.0  # For plotting and visualization
+# Hardware communication
+pyvisa>=1.13.0                # VISA instrument communication (oscilloscope, function generators)
+pyueye>=4.1.0                 # IDS uEye camera SDK support
+
+
+# Utility libraries
+colorama>=0.4.0               # Cross-platform colored terminal text output
+python-dateutil>=2.8.0       # Enhanced date/time parsing and manipulation
+
+# Analysis and visualization
+matplotlib>=3.7.0             # Plotting and data visualization for analysis tools
+  
