@@ -147,7 +147,11 @@ class HDF5VideoRecorder:
                 swmr=False  # Single writer mode for better performance
             )
             
-            # Create main video dataset with compression and chunking
+            # Create main folder structure
+            data_group = self.h5_file.create_group('data')
+            meta_data_group = self.h5_file.create_group('meta_data')
+            
+            # Create main video dataset under data/video
             # Shape: (n_frames, height, width, channels)
             initial_shape = (self.initial_size, *self.frame_shape)
             max_shape = (None, *self.frame_shape)  # Unlimited frames
@@ -168,20 +172,23 @@ class HDF5VideoRecorder:
             # LZF doesn't use compression_opts - it's optimized for speed
             dataset_kwargs['fletcher32'] = True  # Add checksum for data integrity
             
-            self.video_dataset = self.h5_file.create_dataset('video', **dataset_kwargs)
+            self.video_dataset = data_group.create_dataset('video', **dataset_kwargs)
             
             # Add dataset-level metadata
             self._add_dataset_metadata()
             
             # Add user-provided metadata
             if metadata:
-                self._add_user_metadata(metadata)
+                self._add_user_metadata(metadata, meta_data_group)
             
-            # Create groups for additional data
-            self.settings_group = self.h5_file.create_group('hardware_settings')
+            # Create hardware settings group under meta_data
+            self.settings_group = meta_data_group.create_group('hardware_settings')
             
-            # Create function generator timeline dataset
-            self._create_fg_timeline_dataset()
+            # Create placeholder groups for future implementation
+            self._create_placeholder_groups(data_group, meta_data_group)
+            
+            # Create function generator timeline dataset under data
+            self._create_fg_timeline_dataset(data_group)
             
             # Set recording state
             self.is_recording = True
@@ -251,13 +258,13 @@ class HDF5VideoRecorder:
         # AFS-specific metadata
         self.video_dataset.attrs['system'] = 'AFS_tracking'
         
-    def _add_user_metadata(self, metadata: Dict[str, Any]):
-        """Add user-provided metadata to the file."""
-        if not self.h5_file:
+    def _add_user_metadata(self, metadata: Dict[str, Any], meta_data_group: h5py.Group):
+        """Add user-provided metadata directly to the meta_data group."""
+        if not meta_data_group:
             return
             
-        # Create a metadata group for user data
-        meta_group = self.h5_file.create_group('metadata')
+        # Add user metadata directly to meta_data group
+        meta_group = meta_data_group
         
         for key, value in metadata.items():
             if value is not None and value != "":
@@ -275,6 +282,51 @@ class HDF5VideoRecorder:
                         
                 except Exception as e:
                     logger.warning(f"Could not save metadata '{key}': {e}")
+    
+    def _create_placeholder_groups(self, data_group: h5py.Group, meta_data_group: h5py.Group):
+        """Create placeholder groups for future functionality."""
+        try:
+            # Data placeholders (function_generator_timeline is already implemented, so skip it)
+            if 'look_up_table' not in data_group:
+                lut_group = data_group.create_group('look_up_table')
+                lut_group.attrs['description'] = 'Lookup table data'
+                lut_group.attrs['status'] = 'placeholder'
+            
+            # Meta data placeholders under hardware_settings
+            if 'hardware_settings' in meta_data_group:
+                hw_settings = meta_data_group['hardware_settings']
+                
+                # Add other hardware settings placeholders
+                if 'stage' not in hw_settings:
+                    stage_group = hw_settings.create_group('stage')
+                    stage_group.attrs['description'] = 'Stage controller settings'
+                    stage_group.attrs['status'] = 'placeholder'
+                
+                if 'function_generator' not in hw_settings:
+                    fg_hw_group = hw_settings.create_group('function_generator')
+                    fg_hw_group.attrs['description'] = 'Function generator hardware settings'
+                    fg_hw_group.attrs['status'] = 'placeholder'
+                
+                if 'oscilloscope' not in hw_settings:
+                    osc_group = hw_settings.create_group('oscilloscope')
+                    osc_group.attrs['description'] = 'Oscilloscope hardware settings'
+                    osc_group.attrs['status'] = 'placeholder'
+            
+            # Resonance frequency data under meta_data
+            if 'resonance_frequency' not in meta_data_group:
+                resonance_group = meta_data_group.create_group('resonance_frequency')
+                resonance_group.attrs['description'] = 'Resonance frequency analysis data'
+                resonance_group.attrs['status'] = 'placeholder'
+                
+                # Create subgroups
+                figure_group = resonance_group.create_group('figure')
+                figure_group.attrs['description'] = 'Resonance frequency figures/plots'
+                
+                list_group = resonance_group.create_group('list')
+                list_group.attrs['description'] = 'Resonance frequency lists/tables'
+                
+        except Exception as e:
+            logger.warning(f"Could not create placeholder groups: {e}")
     
     def record_frame(self, frame: np.ndarray) -> bool:
         """
@@ -467,12 +519,9 @@ class HDF5VideoRecorder:
             logger.error(f"Error saving stage settings: {e}")
             return False
     
-    def _create_fg_timeline_dataset(self):
-        """Create the function generator timeline dataset."""
+    def _create_fg_timeline_dataset(self, data_group: h5py.Group):
+        """Create the function generator timeline dataset directly in data group."""
         try:
-            # Create timeline group
-            timeline_group = self.h5_file.create_group('function_generator_timeline')
-            
             # Define compound datatype for timeline entries (simplified)
             timeline_dtype = np.dtype([
                 ('timestamp', 'f8'),        # Relative time from recording start (seconds)
@@ -482,9 +531,9 @@ class HDF5VideoRecorder:
                 ('event_type', 'S20')        # Event type: 'parameter_change', 'output_on', 'output_off', etc.
             ])
             
-            # Create extensible dataset for timeline data
-            self.fg_timeline_dataset = timeline_group.create_dataset(
-                'timeline',
+            # Create extensible dataset directly in data group
+            self.fg_timeline_dataset = data_group.create_dataset(
+                'function_generator_timeline',
                 shape=(0,),
                 maxshape=(None,),
                 dtype=timeline_dtype,
@@ -492,11 +541,12 @@ class HDF5VideoRecorder:
                 compression='lzf'
             )
             
-            # Add metadata about the timeline
-            timeline_group.attrs['description'] = b'Function generator parameter timeline'
-            timeline_group.attrs['timestamp_reference'] = b'Relative to recording start'
-            timeline_group.attrs['frequency_units'] = b'MHz'
-            timeline_group.attrs['amplitude_units'] = b'Volts peak-to-peak'
+            # Add metadata about the timeline dataset
+            self.fg_timeline_dataset.attrs['description'] = b'Function generator parameter timeline'
+            self.fg_timeline_dataset.attrs['timestamp_reference'] = b'Relative to recording start'
+            self.fg_timeline_dataset.attrs['frequency_units'] = b'MHz'
+            self.fg_timeline_dataset.attrs['amplitude_units'] = b'Volts peak-to-peak'
+            self.fg_timeline_dataset.attrs['status'] = b'implemented'
             
             logger.debug("Function generator timeline dataset created")
             
@@ -810,8 +860,8 @@ def load_hdf5_video_info(file_path: str) -> Dict[str, Any]:
             info = {}
             
             # Dataset information
-            if 'video' in f:
-                video_ds = f['video']
+            if 'data' in f and 'video' in f['data']:
+                video_ds = f['data/video']
                 info['shape'] = video_ds.shape
                 info['dtype'] = str(video_ds.dtype)
                 info['compression'] = video_ds.compression
@@ -824,16 +874,18 @@ def load_hdf5_video_info(file_path: str) -> Dict[str, Any]:
                     else:
                         info[key] = value
             
-            # User metadata
-            if 'metadata' in f:
-                meta_group = f['metadata']
+            # User metadata (directly in meta_data group)
+            if 'meta_data' in f:
+                meta_group = f['meta_data']
                 metadata = {}
                 for key, value in meta_group.attrs.items():
                     if isinstance(value, bytes):
                         metadata[key] = value.decode('utf-8')
                     else:
                         metadata[key] = value
-                info['user_metadata'] = metadata
+                # Only include user metadata if there are any user-defined attributes
+                if metadata:
+                    info['user_metadata'] = metadata
             
             return info
             
@@ -855,10 +907,10 @@ def load_hdf5_frame(file_path: str, frame_index: int) -> Optional[np.ndarray]:
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'video' not in f:
+            if 'data' not in f or 'video' not in f['data']:
                 return None
                 
-            video_ds = f['video']
+            video_ds = f['data/video']
             if frame_index >= video_ds.shape[0]:
                 return None
                 
@@ -883,10 +935,10 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'video' not in f:
+            if 'data' not in f or 'video' not in f['data']:
                 return None
                 
-            video_ds = f['video']
+            video_ds = f['data/video']
             if end_frame > video_ds.shape[0]:
                 end_frame = video_ds.shape[0]
                 
