@@ -204,13 +204,13 @@ class CameraSettingsWidget(QDialog):
         settings = self.get_settings_from_ui()
         self.current_settings = settings
         
-        logger.info(f"Applying camera settings: {settings}")
+        logger.debug(f"Applying camera settings: {settings}")
         
         # Apply to camera if available
         if self.camera and hasattr(self.camera, 'apply_settings'):
             try:
                 result = self.camera.apply_settings(settings)
-                logger.info(f"Camera settings applied: {result}")
+                logger.debug(f"Camera settings applied: {result}")
                 # Update UI to show rounded values
                 self.update_ui_from_settings()
             except Exception as e:

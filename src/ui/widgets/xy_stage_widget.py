@@ -282,7 +282,7 @@ class XYStageWidget(QDialog):
             move_info.append(f"Y{'+' if dy > 0 else '-'}: {abs(dy):.3f} mm")
             
         if move_info:
-            logger.info(f"Moving: {', '.join(move_info)}")
+            logger.debug(f"Moving: {', '.join(move_info)}")
             
         # Execute the move
         self.manager.move_relative(dx=dx if dx else None, dy=dy if dy else None)
@@ -294,22 +294,22 @@ class XYStageWidget(QDialog):
     
     def move_up(self):
         # UP arrow button pressed - need to move LEFT relative to camera view
-        logger.info("UP button pressed -> Moving LEFT relative to camera view")
+        logger.debug("UP button pressed -> Moving LEFT relative to camera view")
         self._move_relative(dx=-self.step_size.value())  # Move LEFT (negative X)
 
     def move_down(self):
         # DOWN arrow button pressed - need to move RIGHT relative to camera view
-        logger.info("DOWN button pressed -> Moving RIGHT relative to camera view")
+        logger.debug("DOWN button pressed -> Moving RIGHT relative to camera view")
         self._move_relative(dx=self.step_size.value())  # Move RIGHT (positive X)
 
     def move_left(self):
         # LEFT arrow button pressed - need to move UP relative to camera view
-        logger.info("LEFT button pressed -> Moving UP relative to camera view")
+        logger.debug("LEFT button pressed -> Moving UP relative to camera view")
         self._move_relative(dy=self.step_size.value())  # Move UP (positive Y)
 
     def move_right(self):
         # RIGHT arrow button pressed - need to move DOWN relative to camera view
-        logger.info("RIGHT button pressed -> Moving DOWN relative to camera view")
+        logger.debug("RIGHT button pressed -> Moving DOWN relative to camera view")
         self._move_relative(dy=-self.step_size.value())  # Move DOWN (negative Y)
 
     def go_to_position(self):

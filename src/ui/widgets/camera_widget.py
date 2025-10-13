@@ -73,13 +73,16 @@ class CameraWidget(QGroupBox):
         self.display_label.setAlignment(Qt.AlignCenter)
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.display_label.setMinimumSize(800, 600)  # Larger minimum for fullscreen
-        self.display_label.setStyleSheet("border: 1px solid gray;")  # Visual frame
+        self.display_label.setStyleSheet("border: none;")  # No border for clean look
         
         # Status display
         self.status_display = StatusDisplay()
         
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Remove group box border for clean appearance
+        self.setStyleSheet("QGroupBox { border: none; }")
         
         # High-frequency timer for smooth fullscreen video
         self.update_timer = QTimer(self)
@@ -98,13 +101,13 @@ class CameraWidget(QGroupBox):
         main_layout.setContentsMargins(8, 24, 8, 8)
         main_layout.setSpacing(8)
         
-        # Camera display frame
+        # Camera display frame - clean, no borders
         display_frame = QFrame()
-        display_frame.setFrameShape(QFrame.StyledPanel)
-        display_frame.setFrameShadow(QFrame.Raised)
-        display_frame.setLineWidth(1)
+        display_frame.setFrameShape(QFrame.NoFrame)
+        display_frame.setFrameShadow(QFrame.Plain)
+        display_frame.setLineWidth(0)
         display_layout = QVBoxLayout(display_frame)
-        display_layout.setContentsMargins(5, 5, 5, 5)
+        display_layout.setContentsMargins(0, 0, 0, 0)  # No margins for seamless display
         
         # Add camera display (takes most of the space)
         display_layout.addWidget(self.display_label, 1)
@@ -569,7 +572,7 @@ class CameraWidget(QGroupBox):
         
         try:
             result = self.camera.apply_settings(default_settings)
-            logger.info(f"Applied default brighter camera settings: {result}")
+            logger.debug(f"Applied default brighter camera settings: {result}")
             
             # Also update image processing settings for live view
             self.update_image_settings(default_settings)

@@ -27,24 +27,51 @@ class Colors:
     RESET = Style.RESET_ALL
 
 
-class RepetitiveFilter(logging.Filter):
+class SmartVerbosityFilter(logging.Filter):
     """
-    Filter that suppresses repetitive log messages.
-    Tracks message frequency and limits repeat messages to avoid log spam.
-    Shows only the first N instances of a message, then a summary.
+    Smart filter that reduces verbosity while keeping important messages.
+    Suppresses repetitive messages and reduces noise from frequent operations.
     """
     
     def __init__(self, name=''):
         super().__init__(name)
         self.last_log = {}
         self.repeat_count = {}
-        self.max_repeats = 5  # Only show the first 5 instances of a repeated message
+        self.max_repeats = 2  # Only show first 2 instances of repeated messages
+        
+        # Patterns for messages to suppress or reduce frequency
+        self.suppress_patterns = [
+            'Loaded camera settings',
+            'Camera settings updated from dialog', 
+            'Applied default brighter camera settings',
+            'Moving:',  # Stage movement details
+            'button pressed',  # Button press details
+        ]
+        
+        # Messages to show only occasionally (every Nth occurrence)  
+        self.throttle_patterns = {
+            'Exposure set to': 5,  # Show every 5th exposure change
+            'Gain set to': 5,     # Show every 5th gain change
+        }
         
     def filter(self, record):
-        # Create a message key that includes the logger name, level, and message
-        msg_key = f"{record.name}:{record.levelno}:{record.getMessage()}"
+        message = record.getMessage()
         
-        # Check if this is a repeat message
+        # Check if message should be suppressed based on patterns
+        for pattern in self.suppress_patterns:
+            if pattern in message:
+                return False  # Suppress these messages completely
+                
+        # Check for throttled messages (show only every Nth occurrence)
+        for pattern, frequency in self.throttle_patterns.items():
+            if pattern in message:
+                msg_key = f"{record.name}:{pattern}"
+                self.repeat_count[msg_key] = self.repeat_count.get(msg_key, 0) + 1
+                return self.repeat_count[msg_key] % frequency == 1  # Show 1st, 6th, 11th, etc.
+        
+        # Handle general repetitive messages
+        msg_key = f"{record.name}:{record.levelno}:{message}"
+        
         if msg_key in self.last_log:
             self.repeat_count[msg_key] += 1
             
@@ -52,16 +79,11 @@ class RepetitiveFilter(logging.Filter):
             if self.repeat_count[msg_key] <= self.max_repeats:
                 return True
                 
-            # If we've hit the threshold exactly, add a summary message
-            if self.repeat_count[msg_key] == self.max_repeats + 1:
-                record.msg = f"Previous message repeating, further instances will be suppressed"
-                return True
-                
-            # Suppress any further repeats beyond the threshold
+            # Suppress further repeats
             return False
         else:
             # New message, record it
-            self.last_log[msg_key] = record.getMessage()
+            self.last_log[msg_key] = message
             self.repeat_count[msg_key] = 1
             return True
 
@@ -148,9 +170,9 @@ class AFSLogger:
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(self.LEVELS.get(console_level.upper(), logging.INFO))
         
-        # Temporarily disable repetitive filter until we resolve the initialization issue
-        # repetitive_filter = RepetitiveFilter('repetitive')
-        # console_handler.addFilter(repetitive_filter)
+        # Add smart verbosity filter to reduce log noise
+        verbosity_filter = SmartVerbosityFilter('smart_verbosity')
+        console_handler.addFilter(verbosity_filter)
         
         # Create file handler
         file_handler = logging.FileHandler(log_file)

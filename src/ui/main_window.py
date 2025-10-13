@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("Tools")
         self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
-        self._add_action(tools_menu, "Function Generator", None, self._focus_function_generator)
+        self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
         self._add_action(tools_menu, "Resonance Finder", None, self._show_not_implemented)
         self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
 
@@ -276,19 +276,11 @@ class MainWindow(QMainWindow):
     
     def _on_camera_settings_applied(self, settings: dict):
         """Handle camera settings being applied."""
-        logger.info(f"Camera settings updated from dialog: {settings}")
+        logger.debug(f"Camera settings updated from dialog: {settings}")
         # The settings have already been applied to the camera controller
         # Also update image processing settings in the camera widget
         if self.camera_widget and hasattr(self.camera_widget, 'update_image_settings'):
             self.camera_widget.update_image_settings(settings)
-
-    def _focus_function_generator(self):
-        """Focus on the function generator controls in the measurement controls widget."""
-        if self.measurement_controls_widget:
-            # Scroll to and highlight the measurement controls widget
-            self.measurement_controls_widget.setFocus()
-            # Show a brief message to guide the user
-            self.statusBar().showMessage("Function Generator controls are in the Measurement Controls panel", 3000)
 
     def _toggle_fullscreen(self):
         """Toggle between maximized and normal window size."""
