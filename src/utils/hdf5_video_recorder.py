@@ -11,6 +11,10 @@ import os
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, Union, List
 from pathlib import Path
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
+import gc
 
 from src.utils.logger import get_logger
 from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
@@ -77,6 +81,16 @@ class HDF5VideoRecorder:
         self.fg_timeline_dataset = None
         self.fg_timeline_buffer = []
         self.fg_timeline_buffer_size = 1000  # Buffer entries before writing to disk
+        
+        # Asynchronous write optimization
+        self._write_queue = queue.Queue(maxsize=100)  # Limit memory usage
+        self._write_thread = None
+        self._stop_writing = threading.Event()
+        self._write_executor = None
+        
+        # Frame batching for better I/O performance
+        self._frame_batch = []
+        self._batch_size = 10  # Batch frames before writing
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
@@ -173,6 +187,9 @@ class HDF5VideoRecorder:
             self.is_recording = True
             self.frame_count = 0
             self.start_time = datetime.now()
+            
+            # Start async write thread for better performance
+            self._start_async_writer()
             
             logger.info(f"Started HDF5 recording: {self.file_path}")
             logger.info(f"Frame shape: {self.frame_shape}, FPS: {self.fps}, Compression: lzf")
@@ -487,6 +504,128 @@ class HDF5VideoRecorder:
             logger.error(f"Error creating FG timeline dataset: {e}")
             self.fg_timeline_dataset = None
     
+    def _start_async_writer(self):
+        """Start the asynchronous frame writer thread."""
+        if self._write_thread is None or not self._write_thread.is_alive():
+            self._stop_writing.clear()
+            self._write_thread = threading.Thread(
+                target=self._async_write_worker, 
+                name="HDF5Writer",
+                daemon=True
+            )
+            self._write_thread.start()
+            logger.debug("Async HDF5 writer thread started")
+    
+    def _async_write_worker(self):
+        """Background worker thread for writing frames to HDF5."""
+        batch_frames = []
+        batch_indices = []
+        
+        while not self._stop_writing.is_set() or not self._write_queue.empty():
+            try:
+                # Get frame data with timeout
+                try:
+                    frame_data = self._write_queue.get(timeout=0.1)
+                    if frame_data is None:  # Shutdown signal
+                        break
+                    
+                    frame, index = frame_data
+                    batch_frames.append(frame)
+                    batch_indices.append(index)
+                    
+                    # Write batch when full or queue is empty
+                    if len(batch_frames) >= self._batch_size or self._write_queue.empty():
+                        if batch_frames:
+                            self._write_frame_batch(batch_frames, batch_indices)
+                            batch_frames.clear()
+                            batch_indices.clear()
+                            
+                except queue.Empty:
+                    # Write any remaining frames in batch
+                    if batch_frames:
+                        self._write_frame_batch(batch_frames, batch_indices)
+                        batch_frames.clear()
+                        batch_indices.clear()
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Error in async write worker: {e}")
+                
+        # Final batch write
+        if batch_frames:
+            self._write_frame_batch(batch_frames, batch_indices)
+            
+        logger.debug("Async HDF5 writer thread stopped")
+    
+    def _write_frame_batch(self, frames: List[np.ndarray], indices: List[int]):
+        """Write a batch of frames to the dataset efficiently."""
+        if not frames or not self.video_dataset:
+            return
+            
+        try:
+            # Check if we need to grow the dataset
+            max_index = max(indices)
+            if max_index >= self.video_dataset.shape[0]:
+                self._grow_dataset_to_size(max_index + 1)
+            
+            # Write all frames in batch
+            for frame, index in zip(frames, indices):
+                self.video_dataset[index] = frame
+                
+        except Exception as e:
+            logger.error(f"Error writing frame batch: {e}")
+    
+    def _grow_dataset_to_size(self, required_size: int):
+        """Grow dataset to at least the required size."""
+        current_size = self.video_dataset.shape[0]
+        if required_size <= current_size:
+            return
+            
+        # Grow by at least the growth factor, but ensure we have enough space
+        new_size = max(int(current_size * self.growth_factor), required_size)
+        
+        logger.debug(f"Growing dataset from {current_size} to {new_size} frames")
+        
+        # Resize dataset
+        new_shape = (new_size, *self.frame_shape)
+        self.video_dataset.resize(new_shape)
+    
+    def record_frame_async(self, frame: np.ndarray) -> bool:
+        """
+        Record a frame asynchronously for better performance.
+        
+        Args:
+            frame: Frame data as numpy array
+            
+        Returns:
+            True if frame queued successfully
+        """
+        if not self.is_recording or self._closed:
+            return False
+            
+        try:
+            # Validate frame
+            if frame.shape != self.frame_shape:
+                logger.warning(f"Frame shape mismatch: expected {self.frame_shape}, got {frame.shape}")
+                return False
+                
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            
+            # Queue frame for async writing
+            frame_copy = frame.copy()  # Make copy to avoid race conditions
+            try:
+                self._write_queue.put((frame_copy, self.frame_count), block=False)
+                self.frame_count += 1
+                return True
+            except queue.Full:
+                logger.warning("Write queue full, dropping frame")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error queuing frame for async write: {e}")
+            return False
+    
 
     
     def _grow_dataset(self):
@@ -528,6 +667,9 @@ class HDF5VideoRecorder:
         
         # Set closed flag to prevent further writes
         self._closed = True
+        
+        # Stop async writer and wait for queue to drain
+        self._stop_async_writer()
         
         try:
             logger.info(f"Stopping HDF5 recording after {self.frame_count} frames...")
@@ -602,6 +744,25 @@ class HDF5VideoRecorder:
         except Exception as e:
             logger.error(f"Error stopping HDF5 recording: {e}")
             return False
+    
+    def _stop_async_writer(self):
+        """Stop the async writer thread and wait for completion."""
+        if self._write_thread and self._write_thread.is_alive():
+            # Signal shutdown
+            self._stop_writing.set()
+            
+            # Send shutdown signal to queue
+            try:
+                self._write_queue.put(None, timeout=1.0)
+            except queue.Full:
+                pass
+            
+            # Wait for thread to finish (with timeout)
+            self._write_thread.join(timeout=5.0)
+            if self._write_thread.is_alive():
+                logger.warning("Async writer thread did not stop gracefully")
+            
+            logger.debug("Async writer stopped")
     
     def get_recording_info(self) -> Dict[str, Any]:
         """Get current recording information."""

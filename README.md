@@ -43,6 +43,8 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
+The application will automatically optimize itself for your system on first run!
+
 ## 📊 HDF5 Video Recording
 
 ### File Structure
@@ -140,12 +142,20 @@ python src/utils/read_hdf5_metadata.py recording.hdf5
 ### Software Dependencies
 - **Python 3.9+** (tested with 3.13)
 - **PyQt5**: Modern UI framework
-- **h5py**: HDF5 scientific data format
-- **NumPy**: Numerical computing foundation  
+- **h5py**: HDF5 scientific data format  
+- **NumPy**: Numerical computing foundation
 - **OpenCV**: Image processing and display
+- **psutil**: System performance monitoring
 - **colorama**: Enhanced console output
 
-### Optional Hardware
+### Performance Optimizations
+- **Multi-threaded**: Camera capture, HDF5 writing, and UI run independently
+- **Memory pooling**: Reduces garbage collection overhead
+- **Async HDF5 writes**: Non-blocking data recording with batching
+- **Auto-configuration**: Automatically optimizes for your system
+- **Frame pooling**: Efficient memory reuse for high frame rates
+
+### Optional Hardware  
 - **IDS uEye Camera**: High-performance scientific imaging
 - **MCL MicroDrive XY Stage**: Precision positioning system
 
@@ -158,6 +168,43 @@ python src/utils/read_hdf5_metadata.py recording.hdf5
 3. **Position Sample**: Use Ctrl+Arrow keys for stage movement  
 4. **Start Recording**: Click record button or use keyboard shortcut
 5. **Analyze Data**: Load HDF5 files directly in Python scripts
+
+## ⚡ Performance Optimization
+
+### Automatic Optimization
+The system automatically optimizes itself based on your hardware:
+- **CPU cores**: Adjusts thread pool size
+- **RAM amount**: Configures frame buffers and queue sizes  
+- **Disk space**: Selects optimal compression settings
+
+### Manual Performance Presets
+Access through configuration or programmatically:
+
+```python
+from src.utils.config_manager import apply_performance_preset
+
+# Maximum performance (high CPU/RAM usage)
+apply_performance_preset("max_performance")
+
+# Balanced performance (recommended)
+apply_performance_preset("balanced") 
+
+# Memory efficient (low RAM systems)
+apply_performance_preset("memory_efficient")
+```
+
+### Performance Monitoring
+Real-time performance metrics available:
+- Frame rates and drop statistics
+- Memory usage and garbage collection
+- CPU and disk usage
+- Function timing and bottlenecks
+
+View performance reports in logs or programmatically:
+```python
+from src.utils.performance_monitor import get_performance_report
+print(get_performance_report())
+```
 
 ## 🔧 Configuration
 

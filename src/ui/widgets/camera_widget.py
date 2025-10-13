@@ -68,11 +68,12 @@ class CameraWidget(QGroupBox):
             'saturation': 50   # Standard saturation
         }
         
-        # UI components
+        # UI components - optimized for fullscreen viewing
         self.display_label = QLabel()
         self.display_label.setAlignment(Qt.AlignCenter)
         self.display_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.display_label.setMinimumSize(320, 240)
+        self.display_label.setMinimumSize(800, 600)  # Larger minimum for fullscreen
+        self.display_label.setStyleSheet("border: 1px solid gray;")  # Visual frame
         
         # Status display
         self.status_display = StatusDisplay()
@@ -80,10 +81,10 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # High-frequency timer for frame capture
+        # High-frequency timer for smooth fullscreen video
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(33)  # ~30 FPS display
+        self.update_timer.setInterval(16)  # 60 FPS display for smoother fullscreen viewing
         
         self.init_ui()
         self.update_status("Initializing...")
@@ -335,14 +336,16 @@ class CameraWidget(QGroupBox):
         bytes_per_line = 3 * w
         qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         
-        # Scale to fit display
+        # Scale to fit display - optimized for fullscreen viewing
         display_width = self.display_label.width()
         display_height = self.display_label.height()
         
         if display_width > 1 and display_height > 1:
+            # Use faster scaling for high resolution displays (fullscreen)
+            scaling_mode = Qt.SmoothTransformation if min(display_width, display_height) < 800 else Qt.FastTransformation
             pix = QPixmap.fromImage(qimg).scaled(
                 display_width, display_height,
-                Qt.KeepAspectRatio, Qt.SmoothTransformation
+                Qt.KeepAspectRatio, scaling_mode
             )
         else:
             pix = QPixmap.fromImage(qimg)

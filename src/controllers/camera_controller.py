@@ -7,9 +7,12 @@ import threading
 import time
 import queue
 import numpy as np
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Tuple, Any, Dict, List
 from dataclasses import dataclass
 from datetime import datetime
+import gc
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 from src.utils.logger import get_logger
 
@@ -33,6 +36,43 @@ class FrameData:
     timestamp: float
     frame_number: int
     camera_id: int
+
+
+class FramePool:
+    """Memory pool for reusing frame buffers to reduce GC pressure."""
+    
+    def __init__(self, frame_shape: Tuple[int, int, int], pool_size: int = 5):
+        """Initialize frame pool.
+        
+        Args:
+            frame_shape: (height, width, channels) of frames
+            pool_size: Number of frames to pre-allocate
+        """
+        self.frame_shape = frame_shape
+        self.pool_size = pool_size
+        self._available_frames: queue.Queue = queue.Queue()
+        self._lock = threading.Lock()
+        
+        # Pre-allocate frame buffers
+        for _ in range(pool_size):
+            frame = np.zeros(frame_shape, dtype=np.uint8)
+            self._available_frames.put(frame)
+    
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Get a frame buffer from the pool."""
+        try:
+            return self._available_frames.get_nowait()
+        except queue.Empty:
+            # Pool exhausted, create new frame (will be GC'd)
+            return np.zeros(self.frame_shape, dtype=np.uint8)
+    
+    def return_frame(self, frame: np.ndarray) -> None:
+        """Return a frame buffer to the pool."""
+        if frame.shape == self.frame_shape and self._available_frames.qsize() < self.pool_size:
+            try:
+                self._available_frames.put_nowait(frame)
+            except queue.Full:
+                pass  # Pool full, let frame be garbage collected
 
 
 class CameraController:
@@ -91,6 +131,12 @@ class CameraController:
         # Error tracking
         self.last_error = None
         self.consecutive_errors = 0
+        
+        # Frame pool for memory optimization (initialized later when we know frame size)
+        self.frame_pool: Optional[FramePool] = None
+        
+        # Thread pool for parallel operations
+        self._thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="camera_worker")
         
         logger.debug(f"CameraController created (ID: {camera_id}, queue_size: {max_queue_size})")
     
@@ -255,6 +301,11 @@ class CameraController:
         
         # Fall back to test pattern mode
         self.is_initialized = True
+        
+        # Initialize frame pool for test pattern (standard resolution)
+        if self.frame_pool is None:
+            self.frame_pool = FramePool((480, 640, 3), pool_size=3)
+        
         logger.info("Using test pattern mode")
         return True
     
@@ -283,8 +334,9 @@ class CameraController:
                 self._cleanup_hardware()
                 return False
             
-            self.width = sensor_info.nMaxWidth
-            self.height = sensor_info.nMaxHeight
+            # Convert to regular integers to avoid ctypes issues
+            self.width = int(sensor_info.nMaxWidth)
+            self.height = int(sensor_info.nMaxHeight)
             
             # Set color mode
             ret = ueye.is_SetColorMode(self.h_cam, ueye.IS_CM_BGR8_PACKED)
@@ -335,6 +387,10 @@ class CameraController:
                 logger.error(f"CaptureVideo failed: {ret}")
                 self._cleanup_hardware()
                 return False
+            
+            # Initialize frame pool with actual camera dimensions
+            if self.frame_pool is None:
+                self.frame_pool = FramePool((self.height, self.width, 3), pool_size=3)
             
             logger.debug("Camera hardware fully initialized and capturing")
             return True
@@ -404,7 +460,7 @@ class CameraController:
     
     def get_latest_frame(self, timeout: float = 0.1) -> Optional[FrameData]:
         """
-        Get the most recent frame from the queue.
+        Get the most recent frame from the queue with frame pooling optimization.
         
         Args:
             timeout: Maximum time to wait for a frame (seconds)
@@ -416,6 +472,7 @@ class CameraController:
             # Get the most recent frame (may discard older frames)
             latest_frame = None
             frames_discarded = 0
+            discarded_frames_list = []
             
             # Keep getting frames until queue is empty, keeping only the latest
             while True:
@@ -423,9 +480,17 @@ class CameraController:
                     frame_data = self.frame_queue.get(timeout=timeout if latest_frame is None else 0.0)
                     if latest_frame is not None:
                         frames_discarded += 1
+                        # Keep track of discarded frames for pool return
+                        discarded_frames_list.append(latest_frame)
                     latest_frame = frame_data
                 except queue.Empty:
                     break
+            
+            # Return discarded frames to pool to reduce memory allocation
+            if self.frame_pool and discarded_frames_list:
+                for discarded_frame in discarded_frames_list:
+                    if hasattr(discarded_frame, 'frame'):
+                        self.frame_pool.return_frame(discarded_frame.frame)
             
             # Update statistics for discarded frames (this is normal for real-time display)
             if frames_discarded > 0:
@@ -566,11 +631,21 @@ class CameraController:
             return None
     
     def _generate_test_pattern(self) -> np.ndarray:
-        """Generate test pattern frame."""
+        """Generate test pattern frame with frame pooling for better performance."""
         import cv2  # Import here to avoid dependency when not needed
         
         width, height = 640, 480
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Try to get frame from pool for memory efficiency
+        if self.frame_pool:
+            frame = self.frame_pool.get_frame()
+            if frame is None:
+                frame = np.zeros((height, width, 3), dtype=np.uint8)
+            else:
+                # Clear the frame for reuse
+                frame.fill(0)
+        else:
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
         
         # Grid pattern
         for i in range(0, height, 50):
@@ -699,7 +774,7 @@ class CameraController:
         return results
 
     def close(self) -> None:
-        """Close camera and clean up all resources."""
+        """Close camera and clean up all resources efficiently."""
         logger.debug("Closing camera controller")
         
         # Stop capture thread
@@ -708,15 +783,32 @@ class CameraController:
         # Clean up hardware
         self._cleanup_hardware()
         
-        # Clear queue
+        # Clear queue and return frames to pool
+        frames_returned = 0
         while not self.frame_queue.empty():
             try:
-                self.frame_queue.get_nowait()
+                frame_data = self.frame_queue.get_nowait()
+                if self.frame_pool and hasattr(frame_data, 'frame'):
+                    self.frame_pool.return_frame(frame_data.frame)
+                    frames_returned += 1
             except queue.Empty:
                 break
         
+        if frames_returned > 0:
+            logger.debug(f"Returned {frames_returned} frames to pool during cleanup")
+        
+        # Shutdown thread pool
+        if hasattr(self, '_thread_pool'):
+            self._thread_pool.shutdown(wait=False)
+        
+        # Clear frame pool
+        self.frame_pool = None
+        
+        # Force garbage collection to free memory
+        gc.collect()
+        
         self.is_initialized = False
-        logger.info("Camera controller closed")
+        logger.info("Camera controller closed and resources freed")
 
 
 # Example usage

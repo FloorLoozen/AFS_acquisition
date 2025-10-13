@@ -1,6 +1,6 @@
 """Main application window for the AFS Tracking System."""
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QAction, 
     QMessageBox, QSizePolicy, QApplication, QMenuBar, QMenu
@@ -9,11 +9,14 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QCloseEvent
 
 from src.utils.logger import get_logger
-from src.ui.widgets.camera_widget import CameraWidget
-from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
-from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
-from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
-from src.utils.keyboard_shortcuts import KeyboardShortcutManager
+
+# Import type annotations without importing the actual classes for runtime
+if TYPE_CHECKING:
+    from src.ui.widgets.camera_widget import CameraWidget
+    from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
+    from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
+    from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
+    from src.utils.keyboard_shortcuts import KeyboardShortcutManager
 
 logger = get_logger("ui")
 
@@ -40,23 +43,41 @@ class MainWindow(QMainWindow):
         and configures keyboard shortcuts for efficient operation.
         """
         super().__init__()
-        logger.info("AFS Tracking started")
+        logger.info("Main window initialization started")
         
-        # Initialize widget references with proper type hints
-        self.camera_widget: Optional[CameraWidget] = None
-        self.measurement_settings_widget: Optional[MeasurementSettingsWidget] = None
-        self.acquisition_controls_widget: Optional[AcquisitionControlsWidget] = None
-        self.measurement_controls_widget: Optional[MeasurementControlsWidget] = None
-        self.keyboard_shortcuts: Optional[KeyboardShortcutManager] = None
+        # Initialize widget references with proper type hints (using TYPE_CHECKING imports)
+        self.camera_widget: Optional['CameraWidget'] = None
+        self.measurement_settings_widget: Optional['MeasurementSettingsWidget'] = None
+        self.acquisition_controls_widget: Optional['AcquisitionControlsWidget'] = None
+        self.measurement_controls_widget: Optional['MeasurementControlsWidget'] = None
+        self.keyboard_shortcuts: Optional['KeyboardShortcutManager'] = None
         
-        self._init_ui()
-        
-        # Initialize hardware first, then set up keyboard shortcuts
-        self._initialize_hardware()
-        self.keyboard_shortcuts = KeyboardShortcutManager(self)
-        
-        # Delay focus setting to ensure everything is loaded
-        QTimer.singleShot(100, self._ensure_main_window_focus)
+        try:
+            self._init_ui()
+            logger.debug("UI initialization completed")
+            
+            # Initialize hardware with performance monitoring
+            from src.utils.performance_monitor import measure_time
+            with measure_time("hardware_initialization"):
+                self._initialize_hardware()
+            
+            # Set up keyboard shortcuts (lazy import)
+            from src.utils.keyboard_shortcuts import KeyboardShortcutManager
+            self.keyboard_shortcuts = KeyboardShortcutManager(self)
+            
+            # Delay focus setting to ensure everything is loaded
+            QTimer.singleShot(100, self._ensure_main_window_focus)
+            
+            # Start status updates for real-time camera info
+            QTimer.singleShot(2000, self.start_status_updates)  # Start after 2 seconds
+            
+            logger.info("Main window initialization completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error during main window initialization: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
 
     def _init_ui(self) -> None:
         """Initialize the user interface layout and appearance.
@@ -65,14 +86,12 @@ class MainWindow(QMainWindow):
         layout, and ensures proper focus for keyboard shortcuts.
         """
         self.setWindowTitle("AFS Tracking System")
-        self.setGeometry(100, 100, 1280, 800)
-        self.showMaximized()
 
         self._create_menu_bar()
         self._create_central_layout()
 
         QApplication.restoreOverrideCursor()
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage("Ready - Press F11 to toggle maximize")
         
         # Ensure main window has focus to capture keyboard shortcuts
         self.setFocus()
@@ -89,6 +108,8 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("File")
+        self._add_action(file_menu, "Toggle Maximize", "F11", self._toggle_fullscreen)
+        file_menu.addSeparator()
         self._add_action(file_menu, "Exit", "Ctrl+Q", self.close)
         
         # Tools menu
@@ -132,11 +153,17 @@ class MainWindow(QMainWindow):
         self._create_acquisition_controls_widget(layout, 1, 0)
         self._create_measurement_controls_widget(layout, 2, 0)
         
-        # Right column camera (spans all 3 rows)
-        self.camera_widget = CameraWidget()
-        self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.camera_widget.setMinimumWidth(400)
-        layout.addWidget(self.camera_widget, 0, 1, 3, 1)
+        # Right column camera (spans all 3 rows) - lazy import for heavy camera module
+        try:
+            from src.ui.widgets.camera_widget import CameraWidget
+            self.camera_widget = CameraWidget()
+            self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.camera_widget.setMinimumWidth(400)
+            layout.addWidget(self.camera_widget, 0, 1, 3, 1)
+            logger.debug("Camera widget created successfully")
+        except Exception as e:
+            logger.error(f"Error creating camera widget: {e}")
+            raise
         
         # Set proportions: 45% controls, 55% camera
         layout.setColumnStretch(0, 45)
@@ -149,33 +176,53 @@ class MainWindow(QMainWindow):
         
     def _create_measurement_settings_widget(self, layout, row, col):
         """Create and add measurement settings widget."""
-        self.measurement_settings_widget = MeasurementSettingsWidget()
-        layout.addWidget(self.measurement_settings_widget, row, col)
+        try:
+            from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
+            self.measurement_settings_widget = MeasurementSettingsWidget()
+            layout.addWidget(self.measurement_settings_widget, row, col)
+            logger.debug("Measurement settings widget created successfully")
+        except Exception as e:
+            logger.error(f"Error creating measurement settings widget: {e}")
+            raise
         
     def _create_acquisition_controls_widget(self, layout, row, col):
         """Create and add acquisition controls widget."""
-        self.acquisition_controls_widget = AcquisitionControlsWidget()
-        
-        # Set measurement settings reference
-        if self.measurement_settings_widget:
-            self.acquisition_controls_widget.set_measurement_settings_widget(self.measurement_settings_widget)
-        
-        # Connect recording signals
-        self.acquisition_controls_widget.start_recording_requested.connect(self._handle_start_recording)
-        self.acquisition_controls_widget.stop_recording_requested.connect(self._handle_stop_recording)
-        self.acquisition_controls_widget.save_recording_requested.connect(self._handle_save_recording)
-        
-        layout.addWidget(self.acquisition_controls_widget, row, col)
+        try:
+            from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
+            self.acquisition_controls_widget = AcquisitionControlsWidget()
+            
+            # Set measurement settings reference
+            if self.measurement_settings_widget:
+                self.acquisition_controls_widget.set_measurement_settings_widget(self.measurement_settings_widget)
+            
+            # Connect recording signals
+            self.acquisition_controls_widget.start_recording_requested.connect(self._handle_start_recording)
+            self.acquisition_controls_widget.stop_recording_requested.connect(self._handle_stop_recording)
+            self.acquisition_controls_widget.save_recording_requested.connect(self._handle_save_recording)
+            
+            layout.addWidget(self.acquisition_controls_widget, row, col)
+            logger.debug("Acquisition controls widget created successfully")
+            
+        except Exception as e:
+            logger.error(f"Error creating acquisition controls widget: {e}")
+            raise
     
     def _create_measurement_controls_widget(self, layout, row, col):
         """Create and add measurement controls widget."""
-        self.measurement_controls_widget = MeasurementControlsWidget()
-        
-        # Connect function generator signals to HDF5 timeline logging
-        self.measurement_controls_widget.function_generator_toggled.connect(self._on_function_generator_toggled)
-        self.measurement_controls_widget.function_generator_settings_changed.connect(self._on_function_generator_settings_changed)
-        
-        layout.addWidget(self.measurement_controls_widget, row, col)
+        try:
+            from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
+            self.measurement_controls_widget = MeasurementControlsWidget()
+            
+            # Connect function generator signals to HDF5 timeline logging
+            self.measurement_controls_widget.function_generator_toggled.connect(self._on_function_generator_toggled)
+            self.measurement_controls_widget.function_generator_settings_changed.connect(self._on_function_generator_settings_changed)
+            
+            layout.addWidget(self.measurement_controls_widget, row, col)
+            logger.debug("Measurement controls widget created successfully")
+            
+        except Exception as e:
+            logger.error(f"Error creating measurement controls widget: {e}")
+            raise
 
     # Menu handlers
     def _show_not_implemented(self):
@@ -243,6 +290,15 @@ class MainWindow(QMainWindow):
             # Show a brief message to guide the user
             self.statusBar().showMessage("Function Generator controls are in the Measurement Controls panel", 3000)
 
+    def _toggle_fullscreen(self):
+        """Toggle between maximized and normal window size."""
+        if self.isMaximized():
+            self.showNormal()
+            logger.info("Switched to normal window mode")
+        else:
+            self.showMaximized()
+            logger.info("Switched to maximized mode")
+    
     def _open_about(self):
         """Show about dialog."""
         QMessageBox.information(self, "About", 
@@ -283,7 +339,7 @@ class MainWindow(QMainWindow):
         
         event.accept()
     
-    def get_measurement_settings(self) -> Optional[MeasurementSettingsWidget]:
+    def get_measurement_settings(self) -> Optional['MeasurementSettingsWidget']:
         """Get the measurement settings widget instance.
         
         Returns:
@@ -682,3 +738,25 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         self.raise_()
         logger.debug("Main window focus set for keyboard shortcuts")
+    
+    def update_camera_status(self):
+        """Update status bar with camera information."""
+        try:
+            if self.camera_widget and hasattr(self.camera_widget, 'camera') and self.camera_widget.camera:
+                stats = self.camera_widget.camera.get_statistics()
+                fps = stats.get('fps', 0)
+                mode = "Hardware" if not stats.get('use_test_pattern', True) else "Test Pattern"
+                total_frames = stats.get('total_frames', 0)
+                
+                status_msg = f"Camera: {mode} | FPS: {fps:.1f} | Frames: {total_frames} | Press F11 to toggle maximize"
+                self.statusBar().showMessage(status_msg)
+            else:
+                self.statusBar().showMessage("Camera: Initializing... | Press F11 to toggle maximize")
+        except Exception as e:
+            logger.debug(f"Error updating camera status: {e}")
+    
+    def start_status_updates(self):
+        """Start periodic status updates."""
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_camera_status)
+        self.status_timer.start(2000)  # Update every 2 seconds

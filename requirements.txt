@@ -4,6 +4,9 @@ h5py>=3.8.0
 PyQt5>=5.15.0
 opencv-python>=4.7.0
 
+# System monitoring and performance optimization
+psutil>=5.9.0
+
 # Optional hardware support
 # pyueye>=4.1.0  # IDS camera support - install manually from IDS website
 
