@@ -312,21 +312,8 @@ class HDF5VideoRecorder:
                     osc_group.attrs['description'] = 'Oscilloscope hardware settings'
                     osc_group.attrs['status'] = 'placeholder'
             
-            # Resonance frequency data under meta_data
-            if 'resonance_frequency' not in meta_data_group:
-                resonance_group = meta_data_group.create_group('resonance_frequency')
-                resonance_group.attrs['description'] = 'Resonance frequency analysis data'
-                resonance_group.attrs['status'] = 'placeholder'
-                
-                # Create subgroups
-                figure_group = resonance_group.create_group('figure')
-                figure_group.attrs['description'] = 'Resonance frequency figures/plots'
-                
-                list_group = resonance_group.create_group('list')
-                list_group.attrs['description'] = 'Resonance frequency lists/tables'
-                
         except Exception as e:
-            logger.warning(f"Could not create placeholder groups: {e}")
+            logger.warning(f"Could not create hardware metadata groups: {e}")
     
     def record_frame(self, frame: np.ndarray) -> bool:
         """

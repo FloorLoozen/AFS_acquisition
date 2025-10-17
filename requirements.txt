@@ -16,11 +16,6 @@ psutil>=5.9.0                 # System resource monitoring (CPU, memory, disk us
 pyvisa>=1.13.0                # VISA instrument communication (oscilloscope, function generators)
 pyueye>=4.1.0                 # IDS uEye camera SDK support
 
-
 # Utility libraries
 colorama>=0.4.0               # Cross-platform colored terminal text output
-python-dateutil>=2.8.0       # Enhanced date/time parsing and manipulation
-
-# Analysis and visualization
-matplotlib>=3.7.0             # Plotting and data visualization for analysis tools
   

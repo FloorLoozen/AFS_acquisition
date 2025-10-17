@@ -12,10 +12,11 @@ from src.utils.logger import get_logger
 
 # Import type annotations without importing the actual classes for runtime
 if TYPE_CHECKING:
-    from src.ui.widgets.camera_widget import CameraWidget
-    from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
-    from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
-    from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
+    from src.ui.camera_widget import CameraWidget
+    from src.ui.measurement_settings_widget import MeasurementSettingsWidget
+    from src.ui.acquisition_controls_widget import AcquisitionControlsWidget
+    from src.ui.measurement_controls_widget import MeasurementControlsWidget
+    from src.ui.resonance_finder_widget import ResonanceFinderWidget
     from src.utils.keyboard_shortcuts import KeyboardShortcutManager
 
 logger = get_logger("ui")
@@ -56,10 +57,8 @@ class MainWindow(QMainWindow):
             self._init_ui()
             logger.debug("UI initialization completed")
             
-            # Initialize hardware with performance monitoring
-            from src.utils.performance_monitor import measure_time
-            with measure_time("hardware_initialization"):
-                self._initialize_hardware()
+            # Initialize hardware
+            self._initialize_hardware()
             
             # Set up keyboard shortcuts (lazy import)
             from src.utils.keyboard_shortcuts import KeyboardShortcutManager
@@ -117,7 +116,7 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
         self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
-        self._add_action(tools_menu, "Resonance Finder", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Resonance Finder", None, self._open_resonance_finder)
         self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
 
         # Help menu
@@ -155,7 +154,7 @@ class MainWindow(QMainWindow):
         
         # Right column camera (spans all 3 rows) - lazy import for heavy camera module
         try:
-            from src.ui.widgets.camera_widget import CameraWidget
+            from src.ui.camera_widget import CameraWidget
             self.camera_widget = CameraWidget()
             self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.camera_widget.setMinimumWidth(400)
@@ -177,7 +176,7 @@ class MainWindow(QMainWindow):
     def _create_measurement_settings_widget(self, layout, row, col):
         """Create and add measurement settings widget."""
         try:
-            from src.ui.widgets.measurement_settings_widget import MeasurementSettingsWidget
+            from src.ui.measurement_settings_widget import MeasurementSettingsWidget
             self.measurement_settings_widget = MeasurementSettingsWidget()
             layout.addWidget(self.measurement_settings_widget, row, col)
             logger.debug("Measurement settings widget created successfully")
@@ -188,7 +187,7 @@ class MainWindow(QMainWindow):
     def _create_acquisition_controls_widget(self, layout, row, col):
         """Create and add acquisition controls widget."""
         try:
-            from src.ui.widgets.acquisition_controls_widget import AcquisitionControlsWidget
+            from src.ui.acquisition_controls_widget import AcquisitionControlsWidget
             self.acquisition_controls_widget = AcquisitionControlsWidget()
             
             # Set measurement settings reference
@@ -210,7 +209,7 @@ class MainWindow(QMainWindow):
     def _create_measurement_controls_widget(self, layout, row, col):
         """Create and add measurement controls widget."""
         try:
-            from src.ui.widgets.measurement_controls_widget import MeasurementControlsWidget
+            from src.ui.measurement_controls_widget import MeasurementControlsWidget
             self.measurement_controls_widget = MeasurementControlsWidget()
             
             # Connect function generator signals to HDF5 timeline logging
@@ -234,11 +233,11 @@ class MainWindow(QMainWindow):
         try:
             QApplication.restoreOverrideCursor()
             
-            from src.ui.widgets.xy_stage_widget import XYStageWidget
+            from src.ui.stages_widget import StagesWidget
             
             # Store reference to prevent garbage collection
             if not hasattr(self, '_stage_dialog') or not self._stage_dialog.isVisible():
-                self._stage_dialog = XYStageWidget(self)
+                self._stage_dialog = StagesWidget(self)
                 self._stage_dialog.show()
             else:
                 self._stage_dialog.activateWindow()
@@ -250,7 +249,7 @@ class MainWindow(QMainWindow):
     def _open_camera_settings(self):
         """Open camera settings dialog."""
         try:
-            from src.ui.widgets.camera_settings_widget import CameraSettingsWidget
+            from src.ui.camera_settings_widget import CameraSettingsWidget
             
             # Get camera controller from camera widget
             camera_controller = None
@@ -290,6 +289,32 @@ class MainWindow(QMainWindow):
         else:
             self.showMaximized()
             logger.info("Switched to maximized mode")
+    
+    def _open_resonance_finder(self):
+        """Open resonance finder window with oscilloscope display."""
+        try:
+            from src.ui.resonance_finder_widget import ResonanceFinderWidget
+            
+            # Create or show resonance finder window
+            if not hasattr(self, '_resonance_finder_window') or not self._resonance_finder_window:
+                self._resonance_finder_window = ResonanceFinderWidget()
+                self._resonance_finder_window.setWindowTitle("Resonance Finder - Oscilloscope Display")
+                self._resonance_finder_window.resize(1200, 600)
+                
+            # Show and bring to front
+            self._resonance_finder_window.show()
+            self._resonance_finder_window.activateWindow()
+            self._resonance_finder_window.raise_()
+            
+            logger.info("Opened resonance finder window")
+            
+        except Exception as e:
+            logger.error(f"Failed to open resonance finder: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Error", 
+                f"Failed to open resonance finder:\n{e}\n\nCheck the log for details.")
+            logger.error(f"Resonance finder error details:\n{error_details}")
     
     def _open_about(self):
         """Show about dialog."""
@@ -616,7 +641,7 @@ class MainWindow(QMainWindow):
     def _show_hardware_status_warning(self, hardware_status):
         """Show hardware status warning dialog if there are connection issues."""
         try:
-            from src.ui.dialogs.hardware_status_dialog import show_hardware_status_warning
+            from src.ui.hardware_status_dialog import show_hardware_status_warning
             
             result = show_hardware_status_warning(hardware_status, self)
             

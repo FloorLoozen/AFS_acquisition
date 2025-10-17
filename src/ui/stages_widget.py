@@ -9,12 +9,12 @@ from PyQt5.QtGui import QCloseEvent, QCursor
 from src.utils.logger import get_logger
 from src.controllers.stage_manager import StageManager
 
-logger = get_logger("xy_stage_gui")
+logger = get_logger("stages_gui")
 
 
-class XYStageWidget(QDialog):
+class StagesWidget(QDialog):
     """
-    XY stage control popup dialog:
+    Stages control popup dialog:
     - Arrow buttons for intuitive relative movement
     - Step size spinbox (syncs with global shortcuts)
     - Absolute position entry (Enter triggers move)

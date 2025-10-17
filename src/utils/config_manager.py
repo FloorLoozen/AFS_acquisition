@@ -37,10 +37,6 @@ class PerformanceConfig:
     # Memory settings
     enable_frame_pooling: bool = True
     force_gc_interval: int = 1000  # Force garbage collection every N frames
-    
-    # System monitoring
-    enable_performance_monitoring: bool = True
-    monitor_interval_seconds: float = 1.0
 
 
 @dataclass
@@ -175,36 +171,25 @@ class ConfigManager:
     
     def apply_performance_preset(self, preset_name: str):
         """Apply a performance optimization preset."""
+        # Streamlined presets - focus on essential performance settings
         presets = {
             'max_performance': {
-                'camera_queue_size': 20,
-                'camera_frame_pool_size': 10,
-                'camera_max_fps': 120,
-                'hdf5_write_batch_size': 20,
-                'hdf5_flush_interval': 10.0,
+                'camera_queue_size': 15,
+                'hdf5_write_batch_size': 15, 
                 'max_worker_threads': 6,
-                'ui_update_interval_ms': 16,  # 60 FPS UI
-                'force_gc_interval': 2000,
+                'ui_update_interval_ms': 25
             },
             'balanced': {
                 'camera_queue_size': 10,
-                'camera_frame_pool_size': 5,
-                'camera_max_fps': 60,
                 'hdf5_write_batch_size': 10,
-                'hdf5_flush_interval': 5.0,
-                'max_worker_threads': 4,
-                'ui_update_interval_ms': 33,  # 30 FPS UI
-                'force_gc_interval': 1000,
+                'max_worker_threads': 4, 
+                'ui_update_interval_ms': 33
             },
             'memory_efficient': {
-                'camera_queue_size': 3,
-                'camera_frame_pool_size': 2,
-                'camera_max_fps': 30,
+                'camera_queue_size': 5,
                 'hdf5_write_batch_size': 5,
-                'hdf5_flush_interval': 2.0,
                 'max_worker_threads': 2,
-                'ui_update_interval_ms': 50,  # 20 FPS UI
-                'force_gc_interval': 500,
+                'ui_update_interval_ms': 50
             },
         }
         

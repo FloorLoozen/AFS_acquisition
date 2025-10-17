@@ -30,7 +30,7 @@ class FunctionGeneratorController:
 
     def connect(self) -> bool:
         """
-        Connect to the function generator with timeout and error recovery.
+        Connect to function generator efficiently.
         
         Returns:
             True if connection successful, False otherwise
@@ -38,22 +38,24 @@ class FunctionGeneratorController:
         try:
             rm = pyvisa.ResourceManager()
             self.function_generator = rm.open_resource(self.visa_address)
-            
-            # Set reasonable timeout for smoother operation
             self.function_generator.timeout = 2000  # 2 second timeout
             
-            # Test connection with ID query
+            # Test connection and get ID
             fg_id = self.function_generator.query('*IDN?').strip()
             
-            # Reset to known state for consistent behavior
+            # Quick reset and setup
             self.function_generator.write("*RST")
-            time.sleep(0.1)  # Brief pause after reset
+            time.sleep(0.1)
+            
+            # Enable SYNC and trigger output for external triggering
+            self.ensure_sync_enabled(force_redundant=False)
             
             self._is_connected = True
-            logger.info(f"Function Generator connected ({fg_id})")
+            logger.info(f"Function Generator connected: {fg_id.split(',')[0]}")
             return True
+            
         except Exception as e:
-            logger.error(f"Function Generator connection failed: {e}")
+            logger.error(f"Connection failed: {e}")
             self._is_connected = False
             if hasattr(self, 'function_generator') and self.function_generator:
                 try:
@@ -69,7 +71,7 @@ class FunctionGeneratorController:
 
     def output_sine_wave(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
         """
-        Output sine wave with specified parameters.
+        Output sine wave with efficient parameter caching.
         
         Args:
             amplitude: Peak-to-peak voltage in volts
@@ -80,57 +82,55 @@ class FunctionGeneratorController:
             True if successful, False otherwise
         """
         if not self.is_connected():
-            logger.error("Function Generator: not connected")
             return False
             
         try:
-            # Improved caching: check if settings actually changed
+            # Smart caching with rounded values for stability
             current = (round(frequency_mhz, 6), round(amplitude, 6), int(channel))
             if self._output_on and self._last_sine == current:
-                return True  # No change needed
-                
-            # Only log significant changes to reduce log spam
-            freq_changed = not self._last_sine or abs(self._last_sine[0] - current[0]) > 0.001
-            amp_changed = not self._last_sine or abs(self._last_sine[1] - current[1]) > 0.01
+                return True  # No change needed - very efficient
             
-            if freq_changed or amp_changed or not self._output_on:
-                logger.info(f"Function Generator: sine ({frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp)")
+            # Determine what needs updating
+            needs_freq = not self._last_sine or abs(self._last_sine[0] - current[0]) > 0.001
+            needs_amp = not self._last_sine or abs(self._last_sine[1] - current[1]) > 0.01
+            needs_channel = not self._last_sine or self._last_sine[2] != channel
             
-            channel_str = f"C{channel}"
-            frequency_hz = frequency_mhz * 1_000_000
-            
-            # Batch commands for better performance
+            # Build minimal command list
             commands = []
+            channel_str = f"C{channel}"
             
-            # Only send commands that are needed
-            if not self._last_sine or self._last_sine[2] != channel:
+            if needs_channel:
                 commands.append(f"{channel_str}:BSWV SHAPE,SINE")
-            
-            if freq_changed:
-                commands.append(f"{channel_str}:BSWV FRQ,{frequency_hz}")
-                
-            if amp_changed:
+            if needs_freq:
+                commands.append(f"{channel_str}:BSWV FRQ,{frequency_mhz * 1_000_000}")
+            if needs_amp:
                 commands.append(f"{channel_str}:BSWV AMP,{amplitude}")
-            
             if not self._output_on:
                 commands.append(f"{channel_str}:OUTP ON")
             
-            # Send all commands efficiently
+            # Send commands efficiently
             for cmd in commands:
                 self.function_generator.write(cmd)
+            
+            # Ensure SYNC stays on after any output configuration
+            self.ensure_sync_enabled()
+            
+            # Log only significant changes
+            if commands and (needs_freq or needs_amp or not self._output_on):
+                logger.info(f"Function Generator: sine {frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp")
             
             self._output_on = True
             self._last_sine = current
             return True
             
         except Exception as e:
-            logger.error(f"Function Generator: failed to output sine wave: {e}")
+            logger.error(f"Sine wave output failed: {e}")
             return False
 
     def sine_frequency_sweep(self, amplitude: float, freq_start: float, freq_end: float, 
                            sweep_time: float, channel: int = 1) -> bool:
         """
-        Perform frequency sweep with sine wave.
+        Configure and start frequency sweep efficiently.
         
         Args:
             amplitude: Peak-to-peak voltage in volts
@@ -143,40 +143,130 @@ class FunctionGeneratorController:
             True if successful, False otherwise
         """
         if not self.is_connected():
-            logger.error("Function Generator: not connected")
             return False
             
         try:
-            logger.info(f"Function Generator: sweep ({freq_start:.3f}-{freq_end:.3f} MHz, {sweep_time:.1f}s)")
+            logger.info(f"Sweep: {freq_start:.1f}-{freq_end:.1f} MHz, {sweep_time:.1f}s")
             
             channel_str = f"C{channel}"
             start_freq_hz = freq_start * 1_000_000
+            end_freq_hz = freq_end * 1_000_000
             
-            self.function_generator.write(f"{channel_str}:BSWV SHAPE,SINE")
-            self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
-            self.function_generator.write(f"{channel_str}:BSWV FRQ,{start_freq_hz}")
-            self.function_generator.write(f"{channel_str}:SWWV STATE,ON")
-            self.function_generator.write(f"{channel_str}:SWWV TIME,{sweep_time}")
-            self.function_generator.write(f"{channel_str}:SWWV START,{start_freq_hz}")
-            self.function_generator.write(f"{channel_str}:SWWV STOP,{freq_end * 1_000_000}")
-            self.function_generator.write(f"{channel_str}:SWWV DIR,UP")
-            self.function_generator.write(f"{channel_str}:SWWV SOURCE,TIME")
-            self.function_generator.write(f"{channel_str}:SWWV SWMD,LINEAR")
+            # Batch all configuration commands for efficiency
+            config_commands = [
+
+                f"{channel_str}:SWWV STATE,OFF",
+                f"{channel_str}:BSWV SHAPE,SINE",
+                f"{channel_str}:BSWV AMP,{amplitude}",
+                f"{channel_str}:BSWV FRQ,{start_freq_hz}",
+                f"{channel_str}:BSWV OFST,0",
+                f"{channel_str}:OUTP PLRT,NOR",
+                f"{channel_str}:OUTP IMPD,HZ",
+                "SYNC:OUTP ON",
+                "SYNC:PLRT NOR",
+                ":TRIGger:OUTPut ON",
+                f"{channel_str}:SWWV STATE,ON",
+                f"{channel_str}:SWWV TIME,{sweep_time}",
+                f"{channel_str}:SWWV START,{start_freq_hz}",
+                f"{channel_str}:SWWV STOP,{end_freq_hz}",
+                f"{channel_str}:SWWV DIR,UP",
+                f"{channel_str}:SWWV SOURCE,MAN",
+                f"{channel_str}:SWWV SWMD,LINEAR",
+                f"{channel_str}:SWWV DLAY,0"
+            ]
+            
+            # Send all configuration commands
+            for cmd in config_commands:
+                self.function_generator.write(cmd)
+            time.sleep(0.1)  # Minimal stabilization time
+            
+            # Start sweep
             self.function_generator.write(f"C{channel}:OUTP ON")
+            time.sleep(0.1)
             self.function_generator.write(f"{channel_str}:SWWV SWST")
             
-            time.sleep(sweep_time + 2)
+            # Ensure SYNC stays on after starting sweep
+            self.ensure_sync_enabled(force_redundant=True)
             
+            logger.info(f"Sweep started: {freq_start:.1f}-{freq_end:.1f} MHz")
+            
+            self._output_on = True
+            self._last_sine = (freq_start, amplitude, channel)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Sweep configuration failed: {e}")
+            # Simple cleanup on error
+            try:
+                self.function_generator.write(f"C{channel}:OUTP OFF")
+                self.ensure_sync_enabled(force_redundant=True)
+            except:
+                pass  # Continue even if cleanup fails
+            return False
+
+    def ensure_sync_enabled(self, force_redundant: bool = False) -> bool:
+        """
+        Ensure SYNC and trigger outputs are enabled for external triggering.
+        
+        Args:
+            force_redundant: If True, applies commands multiple times for critical operations
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected():
+            return False
+            
+        try:
+            commands = [
+                "SYNC:OUTP ON",
+                "SYNC:PLRT NOR", 
+                ":TRIGger:OUTPut ON"
+            ]
+            
+            # Apply commands once or multiple times for critical operations
+            iterations = 3 if force_redundant else 1
+            for _ in range(iterations):
+                for cmd in commands:
+                    self.function_generator.write(cmd)
+                    
+            log_msg = "SYNC/trigger output enabled" + (" (force redundant)" if force_redundant else "")
+            logger.info(f"Function Generator: {log_msg}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to enable SYNC/trigger: {e}")
+            return False
+
+    def stop_sweep(self, channel: int = 1) -> bool:
+        """
+        Stop active frequency sweep but keep SYNC output enabled.
+        
+        Args:
+            channel: Channel to stop sweep on
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.is_connected():
+            return False
+            
+        try:
+            channel_str = f"C{channel}"
             self.function_generator.write(f"{channel_str}:SWWV STATE,OFF")
             self.function_generator.write(f"C{channel}:OUTP OFF")
             
-            # Reset state after sweep
+            # Ensure SYNC stays ON after stopping sweep
+            self.ensure_sync_enabled(force_redundant=True)
+            logger.info(f"Function Generator: sweep stopped on channel {channel} (SYNC output kept ON)")
+            
+            # Reset state
             self._output_on = False
             self._last_sine = None
             return True
             
         except Exception as e:
-            logger.error(f"Function Generator: sweep failed: {e}")
+            logger.error(f"Function Generator: failed to stop sweep: {e}")
             return False
 
     def stop_all_outputs(self) -> bool:
@@ -198,7 +288,9 @@ class FunctionGeneratorController:
                 self.function_generator.write(f"C{channel}:SWWV STATE,OFF")
                 self.function_generator.write(f"C{channel}:OUTP OFF")
                 
-            logger.info("Function Generator: outputs off")
+            # Ensure SYNC stays ON after stopping all outputs
+            self.ensure_sync_enabled(force_redundant=True)
+            logger.info("Function Generator: all outputs off (sync output kept enabled)")
             self._output_on = False
             self._last_sine = None
             return True
@@ -209,11 +301,14 @@ class FunctionGeneratorController:
 
     def get_output_status(self) -> dict:
         """
-        Get current output status.
+        Get current output status and ensure SYNC stays on.
         
         Returns:
             Dictionary with output status information
         """
+        # Automatically maintain SYNC whenever status is checked
+        self.ensure_sync_enabled()
+        
         return {
             'connected': self.is_connected(),
             'output_on': self._output_on,
