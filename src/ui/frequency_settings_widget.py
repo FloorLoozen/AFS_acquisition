@@ -1,5 +1,5 @@
 """
-Measurement Settings Widget for the AFS Tracking System.
+Frequency Settings Widget for the AFS Tracking System.
 Provides configuration options for measurement paths and settings.
 """
 
@@ -12,16 +12,16 @@ from PyQt5.QtWidgets import (
 
 from src.utils.logger import get_logger
 
-logger = get_logger("measurement_settings")
+logger = get_logger("frequency_settings")
 
 
-class MeasurementSettingsWidget(QGroupBox):
-    """Widget for configuring measurement settings including save paths."""
+class FrequencySettingsWidget(QGroupBox):
+    """Widget for configuring frequency measurement settings including save paths."""
 
     def __init__(self, parent=None):
-        super().__init__("Measurement Settings", parent)
+        super().__init__("Frequency Settings", parent)
         
-# Measurement settings initialized
+# Frequency settings initialized
         
         # Initialize paths
         self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"  # Default save path
@@ -235,6 +235,6 @@ if __name__ == "__main__":
     from PyQt5.QtWidgets import QApplication
     
     app = QApplication(sys.argv)
-    widget = MeasurementSettingsWidget()
+    widget = FrequencySettingsWidget()
     widget.show()
     sys.exit(app.exec_())

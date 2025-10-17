@@ -108,7 +108,7 @@ class MeasurementControlsWidget(QGroupBox):
         """Add frequency control row."""
         row_layout = QHBoxLayout()
         
-        label = QLabel("Frequency:")
+        label = QLabel("Frequency (MHz):")
         label.setMinimumWidth(150)
         
         self.frequency_edit = QLineEdit()
@@ -119,14 +119,10 @@ class MeasurementControlsWidget(QGroupBox):
         self.frequency_edit.textChanged.connect(self._on_frequency_changed)
         self.frequency_edit.editingFinished.connect(self._on_frequency_enter)
         
-        mhz_label = QLabel("mhz")
-        mhz_label.setMinimumWidth(40)
-        
         spacer = QLabel("")
         
         row_layout.addWidget(label)
         row_layout.addWidget(self.frequency_edit)
-        row_layout.addWidget(mhz_label)
         row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
@@ -135,7 +131,7 @@ class MeasurementControlsWidget(QGroupBox):
         """Add amplitude control row."""
         row_layout = QHBoxLayout()
         
-        label = QLabel("Amplitude:")
+        label = QLabel("Amplitude (Vpp):")
         label.setMinimumWidth(150)
         
         self.amplitude_edit = QLineEdit()
@@ -146,14 +142,10 @@ class MeasurementControlsWidget(QGroupBox):
         self.amplitude_edit.textChanged.connect(self._on_amplitude_changed)
         self.amplitude_edit.editingFinished.connect(self._on_amplitude_enter)
         
-        vpp_label = QLabel("vpp")
-        vpp_label.setMinimumWidth(40)
-        
         spacer = QLabel("")
         
         row_layout.addWidget(label)
         row_layout.addWidget(self.amplitude_edit)
-        row_layout.addWidget(vpp_label)
         row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)

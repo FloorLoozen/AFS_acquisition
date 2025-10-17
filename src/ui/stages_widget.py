@@ -126,16 +126,13 @@ class StagesWidget(QDialog):
         # Step size with grid layout to match position controls
         step_grid = QGridLayout()
         step_grid.setColumnMinimumWidth(0, 30)  # Fixed width for label column
-        step_grid.addWidget(QLabel("Step:"), 0, 0, Qt.AlignLeft)
+        step_grid.addWidget(QLabel("Step (mm):"), 0, 0, Qt.AlignLeft)
         
-        self.step_size = QDoubleSpinBox()
-        self.step_size.setRange(0.001, 10.0)
-        self.step_size.setDecimals(3)
-        self.step_size.setSingleStep(0.001)
-        self.step_size.setSuffix(" mm")
-        self.step_size.setFixedWidth(80)  # Make spinbox even narrower
-        self.step_size.setValue(self.manager.default_step_size)
-        self.step_size.valueChanged.connect(self._on_step_changed)
+        self.step_size = QLineEdit()
+        self.step_size.setFixedWidth(80)
+        self.step_size.setText(f"{self.manager.default_step_size:.3f}")
+        self.step_size.setPlaceholderText("0.001-10.0")
+        self.step_size.editingFinished.connect(self._on_step_changed)
         step_grid.addWidget(self.step_size, 0, 1, Qt.AlignLeft)
         
         main.addLayout(step_grid)
@@ -159,21 +156,19 @@ class StagesWidget(QDialog):
         abs_group.setColumnMinimumWidth(0, 30)  # Fixed width for label column
         
         # X position
-        abs_group.addWidget(QLabel("X:"), 0, 0, Qt.AlignLeft)
-        self.x_abs = QDoubleSpinBox()
-        self.x_abs.setRange(-100.0, 100.0)
-        self.x_abs.setDecimals(3)
-        self.x_abs.setSuffix(" mm")
-        self.x_abs.setFixedWidth(80)  # Make spinbox narrower (same as step_size)
+        abs_group.addWidget(QLabel("X (mm):"), 0, 0, Qt.AlignLeft)
+        self.x_abs = QLineEdit()
+        self.x_abs.setFixedWidth(80)
+        self.x_abs.setText("0.000")
+        self.x_abs.setPlaceholderText("-100.0 to 100.0")
         abs_group.addWidget(self.x_abs, 0, 1, Qt.AlignLeft)
         
         # Y position
-        abs_group.addWidget(QLabel("Y:"), 1, 0, Qt.AlignLeft)
-        self.y_abs = QDoubleSpinBox()
-        self.y_abs.setRange(-100.0, 100.0) 
-        self.y_abs.setDecimals(3)
-        self.y_abs.setSuffix(" mm")
-        self.y_abs.setFixedWidth(80)  # Make spinbox narrower (same as step_size)
+        abs_group.addWidget(QLabel("Y (mm):"), 1, 0, Qt.AlignLeft)
+        self.y_abs = QLineEdit()
+        self.y_abs.setFixedWidth(80)
+        self.y_abs.setText("0.000")
+        self.y_abs.setPlaceholderText("-100.0 to 100.0")
         abs_group.addWidget(self.y_abs, 1, 1, Qt.AlignLeft)
         
         # Go button (simplified text)
@@ -259,11 +254,11 @@ class StagesWidget(QDialog):
             return
         self.x_pos_label.setText(f"{x:.3f} mm")
         self.y_pos_label.setText(f"{y:.3f} mm")
-        # Only update spinboxes if the user isn't editing
+        # Only update text fields if the user isn't editing
         if not self.x_abs.hasFocus():
-            self.x_abs.setValue(x)
+            self.x_abs.setText(f"{x:.3f}")
         if not self.y_abs.hasFocus():
-            self.y_abs.setValue(y)
+            self.y_abs.setText(f"{y:.3f}")
 
     def _move_relative(self, dx: float = 0.0, dy: float = 0.0):
         if not self.is_connected:
@@ -292,25 +287,32 @@ class StagesWidget(QDialog):
     # Since the camera view is rotated, we need to map the buttons
     # differently from the actual hardware directions
     
+    def _get_step_size(self):
+        """Get current step size from text field, fallback to manager default."""
+        try:
+            return float(self.step_size.text())
+        except ValueError:
+            return self.manager.default_step_size
+
     def move_up(self):
         # UP arrow button pressed - need to move LEFT relative to camera view
         logger.debug("UP button pressed -> Moving LEFT relative to camera view")
-        self._move_relative(dx=-self.step_size.value())  # Move LEFT (negative X)
+        self._move_relative(dx=-self._get_step_size())  # Move LEFT (negative X)
 
     def move_down(self):
         # DOWN arrow button pressed - need to move RIGHT relative to camera view
         logger.debug("DOWN button pressed -> Moving RIGHT relative to camera view")
-        self._move_relative(dx=self.step_size.value())  # Move RIGHT (positive X)
+        self._move_relative(dx=self._get_step_size())  # Move RIGHT (positive X)
 
     def move_left(self):
         # LEFT arrow button pressed - need to move UP relative to camera view
         logger.debug("LEFT button pressed -> Moving UP relative to camera view")
-        self._move_relative(dy=self.step_size.value())  # Move UP (positive Y)
+        self._move_relative(dy=self._get_step_size())  # Move UP (positive Y)
 
     def move_right(self):
         # RIGHT arrow button pressed - need to move DOWN relative to camera view
         logger.debug("RIGHT button pressed -> Moving DOWN relative to camera view")
-        self._move_relative(dy=-self.step_size.value())  # Move DOWN (negative Y)
+        self._move_relative(dy=-self._get_step_size())  # Move DOWN (negative Y)
 
     def go_to_position(self):
         if not self.is_connected:
@@ -319,14 +321,28 @@ class StagesWidget(QDialog):
         # Ensure normal cursor during movement
         QApplication.restoreOverrideCursor()
         
-        target_x = self.x_abs.value()
-        target_y = self.y_abs.value()
+        try:
+            target_x = float(self.x_abs.text())
+            target_y = float(self.y_abs.text())
+        except ValueError:
+            logger.warning("Invalid position values entered")
+            return
         self.manager.move_to(x=target_x, y=target_y)
         self.update_position_display()
 
-    def _on_step_changed(self, value: float):
-        # Keep global shortcuts (Ctrl+Arrows) in sync with widget step
-        self.manager.default_step_size = value
+    def _on_step_changed(self):
+        """Handle step size change."""
+        try:
+            value = float(self.step_size.text())
+            if 0.001 <= value <= 10.0:
+                # Keep global shortcuts (Ctrl+Arrows) in sync with widget step
+                self.manager.default_step_size = value
+            else:
+                # Reset to previous valid value
+                self.step_size.setText(f"{self.manager.default_step_size:.3f}")
+        except ValueError:
+            # Reset to previous valid value
+            self.step_size.setText(f"{self.manager.default_step_size:.3f}")
         
     def showEvent(self, event):
         """Override showEvent to ensure proper display and auto-connect when shown"""

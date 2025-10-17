@@ -13,7 +13,7 @@ from src.utils.logger import get_logger
 # Import type annotations without importing the actual classes for runtime
 if TYPE_CHECKING:
     from src.ui.camera_widget import CameraWidget
-    from src.ui.measurement_settings_widget import MeasurementSettingsWidget
+    from src.ui.frequency_settings_widget import FrequencySettingsWidget
     from src.ui.acquisition_controls_widget import AcquisitionControlsWidget
     from src.ui.measurement_controls_widget import MeasurementControlsWidget
     from src.ui.resonance_finder_widget import ResonanceFinderWidget
@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
     
     Attributes:
         camera_widget: Live camera display and recording controls
-        measurement_settings_widget: File paths and sample information
+        frequency_settings_widget: File paths and sample information
         acquisition_controls_widget: Recording parameters and controls
         measurement_controls_widget: Measurement execution controls
         keyboard_shortcuts: Global keyboard shortcut manager
@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         
         # Initialize widget references with proper type hints (using TYPE_CHECKING imports)
         self.camera_widget: Optional['CameraWidget'] = None
-        self.measurement_settings_widget: Optional['MeasurementSettingsWidget'] = None
+        self.frequency_settings_widget: Optional['FrequencySettingsWidget'] = None
         self.acquisition_controls_widget: Optional['AcquisitionControlsWidget'] = None
         self.measurement_controls_widget: Optional['MeasurementControlsWidget'] = None
         self.keyboard_shortcuts: Optional['KeyboardShortcutManager'] = None
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         
         # Left column widgets
-        self._create_measurement_settings_widget(layout, 0, 0)
+        self._create_frequency_settings_widget(layout, 0, 0)
         self._create_acquisition_controls_widget(layout, 1, 0)
         self._create_measurement_controls_widget(layout, 2, 0)
         
@@ -173,12 +173,12 @@ class MainWindow(QMainWindow):
         
         self.setCentralWidget(central)
         
-    def _create_measurement_settings_widget(self, layout, row, col):
-        """Create and add measurement settings widget."""
+    def _create_frequency_settings_widget(self, layout, row, col):
+        """Create and setup the frequency settings widget."""
         try:
-            from src.ui.measurement_settings_widget import MeasurementSettingsWidget
-            self.measurement_settings_widget = MeasurementSettingsWidget()
-            layout.addWidget(self.measurement_settings_widget, row, col)
+            from src.ui.frequency_settings_widget import FrequencySettingsWidget
+            self.frequency_settings_widget = FrequencySettingsWidget()
+            layout.addWidget(self.frequency_settings_widget, row, col)
             logger.debug("Measurement settings widget created successfully")
         except Exception as e:
             logger.error(f"Error creating measurement settings widget: {e}")
@@ -191,8 +191,8 @@ class MainWindow(QMainWindow):
             self.acquisition_controls_widget = AcquisitionControlsWidget()
             
             # Set measurement settings reference
-            if self.measurement_settings_widget:
-                self.acquisition_controls_widget.set_measurement_settings_widget(self.measurement_settings_widget)
+            if self.frequency_settings_widget:
+                self.acquisition_controls_widget.set_frequency_settings_widget(self.frequency_settings_widget)
             
             # Connect recording signals
             self.acquisition_controls_widget.start_recording_requested.connect(self._handle_start_recording)
@@ -356,13 +356,13 @@ class MainWindow(QMainWindow):
         
         event.accept()
     
-    def get_measurement_settings(self) -> Optional['MeasurementSettingsWidget']:
-        """Get the measurement settings widget instance.
+    def get_frequency_settings(self) -> Optional['FrequencySettingsWidget']:
+        """Get the frequency settings widget.
         
         Returns:
-            The measurement settings widget or None if not initialized
+            The frequency settings widget instance, or None if not initialized.
         """
-        return self.measurement_settings_widget
+        return self.frequency_settings_widget
     
     def get_measurements_save_path(self) -> str:
         """Get the configured save path (compatibility method).
@@ -370,8 +370,8 @@ class MainWindow(QMainWindow):
         Returns:
             The configured save path or empty string if not set
         """
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_save_path()
+        if self.frequency_settings_widget:
+            return self.frequency_settings_widget.get_save_path()
         return ""
     
     def get_save_path(self) -> str:
@@ -380,8 +380,8 @@ class MainWindow(QMainWindow):
         Returns:
             The configured save path or empty string if not set
         """
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_save_path()
+        if self.frequency_settings_widget:
+            return self.frequency_settings_widget.get_save_path()
         return ""
     
     def get_hdf5_filename(self) -> str:
@@ -437,10 +437,10 @@ class MainWindow(QMainWindow):
             if hasattr(self.camera_widget, 'start_recording'):
                 # Gather metadata from measurement settings
                 metadata = {}
-                if self.measurement_settings_widget:
-                    metadata['sample_name'] = self.measurement_settings_widget.get_sample_information()
-                    metadata['measurement_notes'] = self.measurement_settings_widget.get_notes()
-                    metadata['save_path'] = self.measurement_settings_widget.get_save_path()
+                if self.frequency_settings_widget:
+                    metadata['sample_name'] = self.frequency_settings_widget.get_sample_information()
+                    metadata['measurement_notes'] = self.frequency_settings_widget.get_notes()
+                    metadata['save_path'] = self.frequency_settings_widget.get_save_path()
                 
                 success = self.camera_widget.start_recording(file_path, metadata)
                 if success:

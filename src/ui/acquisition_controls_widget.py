@@ -34,7 +34,7 @@ class AcquisitionControlsWidget(QGroupBox):
         self.is_recording = False
         self.current_recording_path = ""
         self.original_recording_path = ""  # Store original path for renaming
-        self.measurement_settings_widget = None  # Will be set from main window
+        self.frequency_settings_widget = None  # Will be set from main window
         
         # Timers for automatic saving workflow
         self.auto_save_timer = QTimer()
@@ -81,18 +81,18 @@ class AcquisitionControlsWidget(QGroupBox):
         main_layout.addLayout(controls_layout)
         main_layout.addStretch(1)
 
-    def set_measurement_settings_widget(self, widget):
-        """Set reference to the measurement settings widget to check paths."""
-        self.measurement_settings_widget = widget
+    def set_frequency_settings_widget(self, widget):
+        """Set reference to the frequency settings widget to check paths."""
+        self.frequency_settings_widget = widget
         # Update save button state based on current settings
         self.update_save_button_state()
 
     def update_save_button_state(self):
         """Update the save button enabled state based on path configuration."""
-        if self.measurement_settings_widget:
+        if self.frequency_settings_widget:
             has_valid_path = (
-                self.measurement_settings_widget.is_configured() and 
-                bool(self.measurement_settings_widget.get_save_path())
+                self.frequency_settings_widget.is_configured() and 
+                bool(self.frequency_settings_widget.get_save_path())
             )
             # Save button is enabled if we have a valid path AND we're not currently recording
             self.save_btn.setEnabled(has_valid_path and not self.is_recording)
@@ -103,21 +103,21 @@ class AcquisitionControlsWidget(QGroupBox):
         """Start recording measurement data and video."""
         logger.info("Recording started")
         
-        # Check if measurement settings are configured
-        if not self.measurement_settings_widget or not self.measurement_settings_widget.is_configured():
+        # Check if frequency settings are configured
+        if not self.frequency_settings_widget or not self.frequency_settings_widget.is_configured():
             QMessageBox.warning(self, "Configuration Required", 
                               "Please configure save path before starting recording.")
             return
         
         # Get the full file path for the measurement
-        if not self.measurement_settings_widget.get_save_path():
+        if not self.frequency_settings_widget.get_save_path():
             QMessageBox.warning(self, "Invalid Path", 
                               "Could not determine save file path. Please check your settings.")
             return
         
         # Generate the full path for recording
-        filename = self.measurement_settings_widget.get_filename()
-        save_path = self.measurement_settings_widget.get_save_path()
+        filename = self.frequency_settings_widget.get_filename()
+        save_path = self.frequency_settings_widget.get_save_path()
         full_path = os.path.join(save_path, filename)
         
         try:
@@ -181,7 +181,7 @@ class AcquisitionControlsWidget(QGroupBox):
                               "No recording to save. Please record something first.")
             return
         
-        if not self.measurement_settings_widget or not self.measurement_settings_widget.get_save_path():
+        if not self.frequency_settings_widget or not self.frequency_settings_widget.get_save_path():
             QMessageBox.warning(self, "No Save Path", 
                               "No valid save path configured. Please check your measurement settings.")
             return

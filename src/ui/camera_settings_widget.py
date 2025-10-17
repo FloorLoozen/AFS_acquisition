@@ -78,7 +78,7 @@ class CameraSettingsWidget(QDialog):
         self.fps_input = QLineEdit()
         self.fps_input.setFixedWidth(80)
         self.fps_input.setPlaceholderText("30.0")
-        settings_layout.addRow("FPS:", self.fps_input)
+        settings_layout.addRow("Frame Rate (fps):", self.fps_input)
         
         self.brightness_input = QLineEdit()
         self.brightness_input.setFixedWidth(80)

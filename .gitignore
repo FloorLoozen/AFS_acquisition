@@ -29,6 +29,7 @@ tests/
 test_*.py
 
 # VS Code
+.vscode/
 vscode/*
 .history/
 
