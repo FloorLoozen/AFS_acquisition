@@ -17,26 +17,26 @@ logger = get_logger("config")
 
 @dataclass
 class PerformanceConfig:
-    """Performance-related configuration options."""
-    # Camera settings
-    camera_queue_size: int = 10
-    camera_frame_pool_size: int = 5
-    camera_max_fps: int = 60
+    """Performance-related configuration options - optimized for maximum performance."""
+    # Camera settings - maximum performance defaults
+    camera_queue_size: int = 20
+    camera_frame_pool_size: int = 10
+    camera_max_fps: int = 120
     
-    # HDF5 settings
-    hdf5_chunk_size_frames: int = 16
-    hdf5_initial_size: int = 2000
-    hdf5_write_batch_size: int = 10
-    hdf5_flush_interval: float = 5.0
-    hdf5_compression: str = "lzf"  # "lzf", "gzip", or "none"
+    # HDF5 settings - maximum performance defaults
+    hdf5_chunk_size_frames: int = 32
+    hdf5_initial_size: int = 5000
+    hdf5_write_batch_size: int = 20
+    hdf5_flush_interval: float = 1.0  # Faster flushing for maximum performance
+    hdf5_compression: str = "lzf"  # Fast compression for max performance
     
-    # Threading settings
-    max_worker_threads: int = 4
-    ui_update_interval_ms: int = 33  # ~30 FPS UI updates
+    # Threading settings - maximum performance defaults
+    max_worker_threads: int = 8
+    ui_update_interval_ms: int = 16  # ~60 FPS UI updates
     
-    # Memory settings
+    # Memory settings - maximum performance defaults
     enable_frame_pooling: bool = True
-    force_gc_interval: int = 1000  # Force garbage collection every N frames
+    force_gc_interval: int = 2000  # Less frequent GC for better performance
 
 
 @dataclass
@@ -169,38 +169,7 @@ class ConfigManager:
             if hasattr(obj, key):
                 setattr(obj, key, value)
     
-    def apply_performance_preset(self, preset_name: str):
-        """Apply a performance optimization preset."""
-        # Streamlined presets - focus on essential performance settings
-        presets = {
-            'max_performance': {
-                'camera_queue_size': 15,
-                'hdf5_write_batch_size': 15, 
-                'max_worker_threads': 6,
-                'ui_update_interval_ms': 25
-            },
-            'balanced': {
-                'camera_queue_size': 10,
-                'hdf5_write_batch_size': 10,
-                'max_worker_threads': 4, 
-                'ui_update_interval_ms': 33
-            },
-            'memory_efficient': {
-                'camera_queue_size': 5,
-                'hdf5_write_batch_size': 5,
-                'max_worker_threads': 2,
-                'ui_update_interval_ms': 50
-            },
-        }
-        
-        if preset_name not in presets:
-            logger.warning(f"Unknown preset: {preset_name}")
-            return
-        
-        with self._lock:
-            preset_data = presets[preset_name]
-            self._update_dataclass(self.performance, preset_data)
-            logger.info(f"Applied performance preset: {preset_name}")
+
     
     def get_camera_config(self) -> Dict[str, Any]:
         """Get camera-related configuration."""
@@ -267,49 +236,7 @@ class ConfigManager:
             logger.debug(f"Error getting system info: {e}")
             return {}
     
-    def auto_optimize(self):
-        """Automatically optimize configuration based on system capabilities."""
-        system_info = self.get_system_info()
-        
-        if not system_info:
-            logger.warning("Could not get system info for auto-optimization")
-            return
-        
-        with self._lock:
-            # Adjust thread count based on CPU cores
-            if 'cpu_cores_logical' in system_info:
-                optimal_threads = min(6, max(2, system_info['cpu_cores_logical'] - 2))
-                self.performance.max_worker_threads = optimal_threads
-            
-            # Adjust memory settings based on available RAM
-            if 'memory_gb' in system_info:
-                memory_gb = system_info['memory_gb']
-                if memory_gb >= 16:
-                    # High memory system
-                    self.performance.camera_queue_size = 20
-                    self.performance.camera_frame_pool_size = 10
-                    self.performance.hdf5_initial_size = 5000
-                elif memory_gb >= 8:
-                    # Medium memory system
-                    self.performance.camera_queue_size = 10
-                    self.performance.camera_frame_pool_size = 5
-                    self.performance.hdf5_initial_size = 2000
-                else:
-                    # Low memory system
-                    self.performance.camera_queue_size = 5
-                    self.performance.camera_frame_pool_size = 3
-                    self.performance.hdf5_initial_size = 1000
-            
-            # Adjust based on available disk space
-            if 'disk_free_gb' in system_info:
-                disk_free = system_info['disk_free_gb']
-                if disk_free < 5:
-                    logger.warning(f"Low disk space: {disk_free:.1f}GB free")
-                    # Use more compression and smaller buffers
-                    self.performance.hdf5_compression = "gzip"
-                    self.performance.hdf5_flush_interval = 2.0
-        
-        logger.info("Configuration auto-optimized based on system capabilities")
+
 
 
 # Global configuration manager instance
@@ -328,14 +255,7 @@ def save_config():
     get_config().save_config()
 
 
-def apply_performance_preset(preset_name: str):
-    """Apply a performance preset."""
-    get_config().apply_performance_preset(preset_name)
 
-
-def auto_optimize_config():
-    """Auto-optimize configuration based on system."""
-    get_config().auto_optimize()
 
 
 # Example usage
@@ -347,13 +267,12 @@ if __name__ == "__main__":
     import json
     print(json.dumps(config.get_system_info(), indent=2))
     
-    print("\nAuto-optimizing configuration...")
-    config.auto_optimize()
+    print("\nUsing maximum performance configuration...")
     
-    print("\nCamera Config:")
+    print("\nCamera Config (Max Performance):")
     print(json.dumps(config.get_camera_config(), indent=2))
     
-    print("\nHDF5 Config:")
+    print("\nHDF5 Config (Max Performance):")
     print(json.dumps(config.get_hdf5_config(), indent=2))
     
     config.save_config()

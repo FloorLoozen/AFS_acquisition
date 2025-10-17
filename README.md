@@ -1,24 +1,15 @@
 # AFS Tracking System
 
-Scientific data acquisition system for Atomic Force Spectroscopy with **HDF5 video recording**, camera control, and XY stage positioning.
+Scientific data acquisition system for Atomic Force Spectroscopy with HDF5 video recording, camera control, and XY stage positioning.
 
 ## 🚀 Key Features
 
-### Video Recording & Data Management
-- **HDF5 Video Format**: Scientific-grade recording with frame-level access and compression
-- **Comprehensive Metadata**: Sample information, camera settings, and stage positions automatically saved
-- **Clean Data Structure**: Only relevant metadata - no placeholder values or technical noise
-
-### Hardware Integration  
-- **IDS uEye Camera Support**: Live feed with automatic reconnection and hardware optimization
+- **HDF5 Video Recording**: Scientific-grade recording with comprehensive metadata
+- **IDS uEye Camera**: Live feed with automatic reconnection
 - **MCL MicroDrive XY Stage**: Precise positioning with keyboard shortcuts (Ctrl+Arrow keys)
+- **Function Generator Control**: Real-time frequency/amplitude adjustment with timeline logging
+- **Modern PyQt5 GUI**: Intuitive controls with real-time monitoring
 - **Graceful Fallbacks**: Test pattern mode when hardware unavailable
-
-### User Interface
-- **Modern PyQt5 GUI**: Intuitive measurement setup and acquisition controls
-- **Real-time Monitoring**: Live camera feed with performance statistics
-- **Keyboard Shortcuts**: Quick stage movement and measurement controls
-- **Color-coded Logging**: Console and file logging with detailed system information
 
 ## 🏃‍♂️ Quick Start
 
@@ -42,7 +33,7 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
-The application will automatically optimize itself for your system on first run!
+
 
 ## 📊 HDF5 Video Recording
 
@@ -60,49 +51,26 @@ The application will automatically optimize itself for your system on first run!
 
 
 
-### Function Generator Timeline Features
-**Complete State Recreation**: The timeline captures EVERY function generator operation:
-- ✅ **Initial State**: Starting frequency/voltage/on-off status when recording begins
-- ✅ **Frequency Changes**: Every MHz adjustment logged with precise timing (13-15 MHz range)
-- ✅ **Voltage Changes**: Every Vpp adjustment logged independently
-- ✅ **Output Toggle**: ON/OFF events with current settings preserved
-- ✅ **Combined Changes**: Simultaneous frequency + voltage modifications
-- ✅ **Rapid Changes**: Debounced but complete capture of user adjustments
+### Function Generator Timeline
+The system logs all function generator operations during recording:
+- **Initial State**: Starting settings when recording begins
+- **Parameter Changes**: Frequency (13-15 MHz) and voltage (Vpp) adjustments  
+- **Output Events**: ON/OFF toggle events with timestamps
 
-**Default Settings**:
-- 🎯 **Default Frequency**: 14.0 MHz (optimal frequency)
-- 📏 **Valid Range**: 13.0 - 15.0 MHz (enforced in UI and validation)
-- ⚡ **Default Voltage**: 4.0 Vpp
-
-**Event Types Logged**:
-- `initial_state`: Function generator state when recording starts
-- `output_on`: Output enabled with current frequency/voltage
-- `output_off`: Output disabled with settings preserved  
-- `parameter_change`: Frequency and/or voltage modified while running
-
-**Simplified Timeline Structure**: Only essential data stored (no absolute timestamps or channel info for efficiency)
+**Defaults**: 14.0 MHz, 4.0 Vpp
 
 ## 🛠️ System Requirements
 
 ### Software Dependencies
 - **Python 3.9+** (tested with 3.13)
-- **PyQt5**: Modern UI framework
-- **h5py**: HDF5 scientific data format  
-- **NumPy**: Numerical computing foundation
-- **OpenCV**: Image processing and display
-- **psutil**: System performance monitoring
-- **colorama**: Enhanced console output
+- **PyQt5**: UI framework
+- **h5py, NumPy, OpenCV**: Core scientific libraries
+- **psutil, colorama**: System utilities
 
-### Performance Optimizations
-- **Multi-threaded**: Camera capture, HDF5 writing, and UI run independently
-- **Memory pooling**: Reduces garbage collection overhead
-- **Async HDF5 writes**: Non-blocking data recording with batching
-- **Auto-configuration**: Automatically optimizes for your system
-- **Frame pooling**: Efficient memory reuse for high frame rates
-
-### Optional Hardware  
+### Hardware (Optional)
 - **IDS uEye Camera**: High-performance scientific imaging
 - **MCL MicroDrive XY Stage**: Precision positioning system
+- **Function Generator**: Siglent or compatible VISA instrument
 
 *System works in test mode without hardware for development and testing.*
 
@@ -113,31 +81,7 @@ The application will automatically optimize itself for your system on first run!
 3. **Position Sample**: Use Ctrl+Arrow keys for stage movement  
 4. **Start Recording**: Click record button or use keyboard shortcut
 
-## ⚡ Performance Optimization
 
-### Automatic Optimization
-The system automatically optimizes itself based on your hardware:
-- **CPU cores**: Adjusts thread pool size
-- **RAM amount**: Configures frame buffers and queue sizes  
-- **Disk space**: Selects optimal compression settings
-
-### Manual Performance Presets
-Access through configuration or programmatically:
-
-```python
-from src.utils.config_manager import apply_performance_preset
-
-# Maximum performance (high CPU/RAM usage)
-apply_performance_preset("max_performance")
-
-# Balanced performance (recommended)
-apply_performance_preset("balanced") 
-
-# Memory efficient (low RAM systems)
-apply_performance_preset("memory_efficient")
-```
-
-For HDF5 data handling, use external tools and scripts.
 
 ## 🔧 Configuration
 
@@ -148,7 +92,7 @@ For HDF5 data handling, use external tools and scripts.
 
 ---
 
-**Version**: 2.0 | **Updated**: September 2025  
+**Version**: 2.1 | **Updated**: October 2025  
 **Format**: HDF5 Scientific Data | **License**: Research Use
 
 
