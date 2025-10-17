@@ -40,13 +40,17 @@ python -m src.main
 ### File Structure
 ```
 📁 recording.hdf5
-├── 📹 video/                           # 4D dataset: (frames, height, width, channels)
-├── 📝 metadata/                        # Sample info, notes, operator
-├── 🔧 hardware_settings/               # Camera & stage parameters
-│   ├── camera/                         # Real camera settings (23+ parameters)
-│   └── xy_stage/                       # Stage position and configuration
-└── 📊 function_generator_timeline/     # Function generator event timeline
-    └── timeline/                       # Timestamped frequency/voltage changes
+├── � data/
+│   ├── �📹 video/                       # 4D dataset: (frames, height, width, channels)
+│   ├── � function_generator_timeline/ # Function generator event timeline  
+│   └── 📋 look_up_table/               # (To be implemented later)
+└── 📝 meta_data/
+    ├── 🔧 hardware_settings/           # Camera & stage parameters
+    │   ├── camera/                     # Real camera settings (23+ parameters)
+    │   └── xy_stage/                   # Stage position and configuration  
+    └── � resonance_finder/            # (To be implemented later)
+        ├── figure/                     # Figure data
+        └── list/                       # List data
 ```
 
 

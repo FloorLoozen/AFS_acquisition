@@ -147,7 +147,7 @@ class HDF5VideoRecorder:
                 swmr=False  # Single writer mode for better performance
             )
             
-            # Create main folder structure
+            # Create main folder structure according to new specification
             data_group = self.h5_file.create_group('data')
             meta_data_group = self.h5_file.create_group('meta_data')
             
@@ -284,36 +284,31 @@ class HDF5VideoRecorder:
                     logger.warning(f"Could not save metadata '{key}': {e}")
     
     def _create_placeholder_groups(self, data_group: h5py.Group, meta_data_group: h5py.Group):
-        """Create placeholder groups for future functionality."""
+        """Create placeholder groups for future functionality according to new HDF5 structure."""
         try:
-            # Data placeholders (function_generator_timeline is already implemented, so skip it)
+            # Under data/ create look_up_table placeholder (to be implemented later)
             if 'look_up_table' not in data_group:
                 lut_group = data_group.create_group('look_up_table')
-                lut_group.attrs['description'] = 'Lookup table data'
+                lut_group.attrs['description'] = 'Lookup table data (to be implemented later)'
                 lut_group.attrs['status'] = 'placeholder'
             
-            # Meta data placeholders under hardware_settings
-            if 'hardware_settings' in meta_data_group:
-                hw_settings = meta_data_group['hardware_settings']
+            # Under meta_data/ create resonance_finder placeholder (to be implemented later)
+            if 'resonance_finder' not in meta_data_group:
+                resonance_group = meta_data_group.create_group('resonance_finder')
+                resonance_group.attrs['description'] = 'Resonance finder results (to be implemented later)'
+                resonance_group.attrs['status'] = 'placeholder'
                 
-                # Add other hardware settings placeholders
-                if 'stage' not in hw_settings:
-                    stage_group = hw_settings.create_group('stage')
-                    stage_group.attrs['description'] = 'Stage controller settings'
-                    stage_group.attrs['status'] = 'placeholder'
+                # Create sub-groups as specified
+                figure_group = resonance_group.create_group('figure')
+                figure_group.attrs['description'] = 'Resonance finder figure data (to be implemented later)'
+                figure_group.attrs['status'] = 'placeholder'
                 
-                if 'function_generator' not in hw_settings:
-                    fg_hw_group = hw_settings.create_group('function_generator')
-                    fg_hw_group.attrs['description'] = 'Function generator hardware settings'
-                    fg_hw_group.attrs['status'] = 'placeholder'
-                
-                if 'oscilloscope' not in hw_settings:
-                    osc_group = hw_settings.create_group('oscilloscope')
-                    osc_group.attrs['description'] = 'Oscilloscope hardware settings'
-                    osc_group.attrs['status'] = 'placeholder'
+                list_group = resonance_group.create_group('list')
+                list_group.attrs['description'] = 'Resonance finder list data (to be implemented later)'
+                list_group.attrs['status'] = 'placeholder'
             
         except Exception as e:
-            logger.warning(f"Could not create hardware metadata groups: {e}")
+            logger.warning(f"Could not create placeholder groups: {e}")
     
     def record_frame(self, frame: np.ndarray) -> bool:
         """
@@ -432,10 +427,10 @@ class HDF5VideoRecorder:
                     else:
                         stage_group.attrs[key] = str(value).encode('utf-8')
             
-            logger.debug(f"Saved stage settings: {len(settings)} parameters")
+            logger.debug(f"Saved XY stage settings: {len(settings)} parameters")
             return True
         except Exception as e:
-            logger.error(f"Failed to save stage settings: {e}")
+            logger.error(f"Failed to save XY stage settings: {e}")
             return False
     
     def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
