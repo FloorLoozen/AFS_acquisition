@@ -1,13 +1,14 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QDoubleSpinBox, QSizePolicy,
-    QDialogButtonBox, QFrame, QApplication
+    QDialogButtonBox, QFrame, QApplication, QLineEdit
 )
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QCloseEvent, QCursor
 
 from src.utils.logger import get_logger
 from src.controllers.stage_manager import StageManager
+from src.utils.status_display import StatusDisplay
 
 logger = get_logger("stages_gui")
 
@@ -49,6 +50,16 @@ class StagesWidget(QDialog):
         main = QVBoxLayout(self)
         main.setSpacing(8)  # Add more spacing between elements
         
+        # Status display at the top (most logical for connection status)
+        self.status_display = StatusDisplay()
+        main.addWidget(self.status_display)
+        
+        # Add separator line after status
+        status_separator = QFrame()
+        status_separator.setFrameShape(QFrame.HLine)
+        status_separator.setFrameShadow(QFrame.Sunken)
+        main.addWidget(status_separator)
+        
         # Section 1: Current Position
         # Add a section title
         current_pos_label = QLabel("<b>Current Position</b>")
@@ -73,7 +84,6 @@ class StagesWidget(QDialog):
         self.connect_btn.clicked.connect(self.connect_stage)
         self.disconnect_btn = QPushButton("Disconnect")
         self.disconnect_btn.clicked.connect(self.disconnect_stage)
-        self.status_label = QLabel("")  # Empty status label, not displayed
         
         # Add first separator line
         line1 = QFrame()
@@ -185,6 +195,9 @@ class StagesWidget(QDialog):
         # No close button as requested
         
         self._set_controls_enabled(False)
+        
+        # Set initial status
+        self._update_status("Initializing...")
 
     # --- Connection handling ---
     def connect_stage(self):
@@ -241,8 +254,8 @@ class StagesWidget(QDialog):
         # Connect/disconnect buttons are hidden, no need to update them
 
     def _update_status(self, text: str):
-        # Status display is disabled, but keep method for compatibility
-        pass
+        """Update status display with circle indicator."""
+        self.status_display.set_status(text)
 
     # --- Position and movement ---
     def update_position_display(self):

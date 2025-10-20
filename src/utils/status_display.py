@@ -21,7 +21,14 @@ class StatusIndicator(QLabel):
         'disconnected': QColor(255, 0, 0),   # Red
         'error': QColor(255, 0, 0),         # Red
         'ready': QColor(128, 128, 128),     # Gray
-        'test_pattern': QColor(100, 149, 237) # Cornflower blue
+        'test_pattern': QColor(100, 149, 237), # Cornflower blue
+        'on': QColor(0, 255, 0),            # Green - Function generator ON
+        'off': QColor(255, 165, 0),         # Orange - Function generator OFF (not an error)
+        'connecting': QColor(255, 165, 0),   # Orange
+        'connection_failed': QColor(255, 0, 0), # Red
+        'connection_error': QColor(255, 0, 0),  # Red
+        'camera_error': QColor(255, 0, 0),   # Red - Camera hardware error
+        'reconnecting': QColor(255, 165, 0)  # Orange - Camera reconnecting
     }
     
     def __init__(self, parent=None):
@@ -60,11 +67,11 @@ class StatusDisplay(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         
-        self.text_label = QLabel("")
         self.indicator = StatusIndicator()
+        self.text_label = QLabel("")
         
-        layout.addWidget(self.text_label)
         layout.addWidget(self.indicator)
+        layout.addWidget(self.text_label)
         layout.addStretch()
         
     def set_status(self, text):

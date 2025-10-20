@@ -104,15 +104,15 @@ class CameraSettingsWidget(QDialog):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
         
-        # Apply button
+        # Apply/Reset button
         self.apply_button = QPushButton("Apply")
         self.apply_button.setFixedWidth(70)
-        self.apply_button.clicked.connect(self.apply_settings)
+        self.apply_button.clicked.connect(self.apply_or_reset)
         
-        # Default button  
-        self.default_button = QPushButton("Default")
-        self.default_button.setFixedWidth(70)
-        self.default_button.clicked.connect(self.load_defaults)
+        # Reconnect button  
+        self.reconnect_button = QPushButton("Reconnect")
+        self.reconnect_button.setFixedWidth(70)
+        self.reconnect_button.clicked.connect(self.reconnect_camera)
         
         # Save button (close dialog)
         self.save_button = QPushButton("Save")
@@ -121,7 +121,7 @@ class CameraSettingsWidget(QDialog):
         
         button_layout.addStretch()
         button_layout.addWidget(self.apply_button)
-        button_layout.addWidget(self.default_button)
+        button_layout.addWidget(self.reconnect_button)
         button_layout.addWidget(self.save_button)
         button_layout.addStretch()
         
@@ -199,6 +199,15 @@ class CameraSettingsWidget(QDialog):
             logger.error(f"Error parsing settings: {e}")
             return self.default_settings.copy()
     
+    def apply_or_reset(self):
+        """Apply settings or reset to defaults (toggles function)."""
+        if self.apply_button.text() == "Apply":
+            self.apply_settings()
+            self.apply_button.setText("Reset")
+        else:
+            self.load_defaults()
+            self.apply_button.setText("Apply")
+    
     def apply_settings(self):
         """Apply settings to camera with improved feedback."""
         settings = self.get_settings_from_ui()
@@ -220,6 +229,21 @@ class CameraSettingsWidget(QDialog):
         
         # Emit signal for other components
         self.settings_applied.emit(settings)
+    
+    def reconnect_camera(self):
+        """Reconnect camera through main window."""
+        logger.info("Camera reconnect requested from settings")
+        # Try to get main window (parent of this dialog)
+        main_window = self.parent()
+        if main_window and hasattr(main_window, 'camera_widget'):
+            camera_widget = main_window.camera_widget
+            if hasattr(camera_widget, 'reconnect_camera'):
+                camera_widget.reconnect_camera()
+                logger.info("Camera reconnect initiated")
+            else:
+                logger.warning("Camera widget does not have reconnect_camera method")
+        else:
+            logger.warning("No main window or camera widget available for reconnect")
     
     def save_and_close(self):
         """Save settings and close dialog."""

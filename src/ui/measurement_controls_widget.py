@@ -11,6 +11,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from src.utils.logger import get_logger
 from src.controllers.function_generator_controller import FunctionGeneratorController
+from src.utils.status_display import StatusDisplay
 
 logger = get_logger("measurement_controls")
 
@@ -46,6 +47,10 @@ class MeasurementControlsWidget(QGroupBox):
         
         self._init_ui()
         self._initialize_function_generator()
+        
+        # Set initial status
+        if hasattr(self, 'fg_status_display'):
+            self.fg_status_display.set_status("Ready")
 
     def _init_ui(self):
         """Initialize the user interface."""
@@ -96,11 +101,13 @@ class MeasurementControlsWidget(QGroupBox):
         self.fg_toggle_button.setToolTip("Toggle function generator output ON/OFF")
         self.fg_toggle_button.clicked.connect(self._on_fg_toggle)
         
-        spacer = QLabel("")
+        # Add status display with circle indicator
+        self.fg_status_display = StatusDisplay()
+        self.fg_status_display.set_status("OFF")
         
         row_layout.addWidget(label)
         row_layout.addWidget(self.fg_toggle_button)
-        row_layout.addWidget(spacer, 1)
+        row_layout.addWidget(self.fg_status_display, 1)
         
         layout.addLayout(row_layout)
     
@@ -184,6 +191,7 @@ class MeasurementControlsWidget(QGroupBox):
             if not self._ensure_connection():
                 logger.warning("Function generator not available")
                 self.fg_toggle_button.setChecked(False)
+                self.fg_status_display.set_status("Connection Failed")
                 return
             
             # Turn on with current settings
@@ -199,10 +207,12 @@ class MeasurementControlsWidget(QGroupBox):
                 logger.error("Failed to enable function generator")
                 self.fg_toggle_button.setChecked(False)
                 self.fg_toggle_button.setText("OFF")
+                self.fg_status_display.set_status("Error")
                 self._output_enabled = False
             else:
                 logger.info(f"Function generator ON: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
                 self.fg_toggle_button.setText("ON")
+                self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
                 self._output_enabled = True
                 self._cached_frequency = frequency
                 self._cached_amplitude = amplitude
@@ -212,8 +222,12 @@ class MeasurementControlsWidget(QGroupBox):
                 success = self.fg_controller.stop_all_outputs()
                 if success:
                     logger.info("Function generator OFF")
+                    self.fg_status_display.set_status("OFF")
                 else:
                     logger.error("Failed to disable function generator")
+                    self.fg_status_display.set_status("Error")
+            else:
+                self.fg_status_display.set_status("OFF")
             
             self.fg_toggle_button.setText("OFF")
             self._output_enabled = False
@@ -236,6 +250,9 @@ class MeasurementControlsWidget(QGroupBox):
             success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
             if success:
                 logger.info(f"Settings: {frequency:.3f} mhz, {amplitude:.2f} vpp")
+                # Update status display with new frequency
+                if self._output_enabled:
+                    self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
         
         # Emit signal
         try:

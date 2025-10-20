@@ -112,30 +112,10 @@ class CameraWidget(QGroupBox):
         # Add camera display (takes most of the space)
         display_layout.addWidget(self.display_label, 1)
         
-        # Bottom control bar (compact)
+        # Minimal status bar (only status display)
         control_layout = QHBoxLayout()
-        
-        # Basic control buttons
-        self.play_button = QPushButton("▶️")
-        self.play_button.setToolTip("Start live view")
-        self.play_button.setMaximumWidth(40)
-        self.play_button.clicked.connect(self.set_live_mode)
-        
-        self.pause_button = QPushButton("⏸️")
-        self.pause_button.setToolTip("Pause live view") 
-        self.pause_button.setMaximumWidth(40)
-        self.pause_button.clicked.connect(self.set_pause_mode)
-        
-        self.reconnect_button = QPushButton("🔄")
-        self.reconnect_button.setToolTip("Reconnect camera")
-        self.reconnect_button.setMaximumWidth(40)
-        self.reconnect_button.clicked.connect(self.reconnect_camera)
-        
-        control_layout.addWidget(self.play_button)
-        control_layout.addWidget(self.pause_button)
-        control_layout.addWidget(self.reconnect_button)
-        control_layout.addStretch()
         control_layout.addWidget(self.status_display)
+        control_layout.addStretch()
         
         display_layout.addLayout(control_layout)
         main_layout.addWidget(display_frame)
@@ -143,10 +123,8 @@ class CameraWidget(QGroupBox):
         self.update_button_states()
     
     def update_button_states(self):
-        """Update button enabled states."""
-        self.play_button.setEnabled(self.is_running and not self.is_live and self.camera is not None)
-        self.pause_button.setEnabled(self.is_running and self.is_live)
-        self.reconnect_button.setEnabled(True)  # Always enabled
+        """Update button enabled states - minimal camera widget has no buttons."""
+        pass  # No buttons to update in minimal design
     
     def update_status(self, text: str):
         """Update status display."""
