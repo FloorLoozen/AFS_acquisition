@@ -123,6 +123,45 @@ class ColoredFormatter(logging.Formatter):
         return formatted_message
 
 
+class SafeFileHandler(logging.FileHandler):
+    """
+    A file handler that gracefully handles disk full situations.
+    Falls back to console logging when disk space is exhausted.
+    """
+    
+    def __init__(self, filename, mode='a', encoding=None, delay=False):
+        self.disk_full = False
+        try:
+            super().__init__(filename, mode, encoding, delay)
+        except OSError as e:
+            if "No space left" in str(e) or e.errno == 28:
+                self.disk_full = True
+                # Create a null handler that does nothing
+                super(logging.Handler, self).__init__()
+            else:
+                raise
+    
+    def emit(self, record):
+        """
+        Emit a record, but handle disk full gracefully.
+        """
+        if self.disk_full:
+            # Silently drop log messages when disk is full
+            return
+            
+        try:
+            super().emit(record)
+        except OSError as e:
+            if "No space left" in str(e) or e.errno == 28:
+                self.disk_full = True
+                # Stop trying to write to file
+                try:
+                    self.close()
+                except:
+                    pass
+            # Don't re-raise the error to prevent logging cascade failures
+
+
 class AFSLogger:
     """
     A custom logger for the AFS Tracking System that provides consistent formatting
@@ -174,9 +213,13 @@ class AFSLogger:
         verbosity_filter = SmartVerbosityFilter('smart_verbosity')
         console_handler.addFilter(verbosity_filter)
         
-        # Create file handler
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(self.LEVELS.get(file_level.upper(), logging.DEBUG))
+        # Create file handler with error handling for disk full situations
+        try:
+            file_handler = SafeFileHandler(log_file)
+            file_handler.setLevel(self.LEVELS.get(file_level.upper(), logging.DEBUG))
+        except OSError:
+            # If file creation fails (disk full), use console only
+            file_handler = None
         
         # Create formatters
         # Format: [HH:MM:SS] [LEVEL] [MODULE] message
@@ -191,11 +234,13 @@ class AFSLogger:
         
         # Apply formatters
         console_handler.setFormatter(console_formatter)
-        file_handler.setFormatter(file_formatter)
+        if file_handler:
+            file_handler.setFormatter(file_formatter)
         
         # Add handlers to logger
         self.logger.addHandler(console_handler)
-        self.logger.addHandler(file_handler)
+        if file_handler:
+            self.logger.addHandler(file_handler)
         
         # Store log file name
         self.log_file = os.path.basename(log_file)

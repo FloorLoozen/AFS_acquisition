@@ -5,6 +5,7 @@
 numpy>=1.24.0                 # Numerical arrays, mathematical operations, frame processing
 h5py>=3.8.0                   # HDF5 file format for efficient video/data storage
 opencv-python>=4.7.0          # Computer vision, image processing, camera operations
+matplotlib>=3.6.0             # Plotting and visualization for force path graphs
 
 # User interface framework
 PyQt5>=5.15.0                 # GUI framework for main application window and controls
@@ -13,7 +14,7 @@ PyQt5>=5.15.0                 # GUI framework for main application window and co
 psutil>=5.9.0                 # System resource monitoring (CPU, memory, disk usage)
 
 # Hardware communication
-pyvisa>=1.13.0                # VISA instrument communication (oscilloscope, function generators)
+pyvisa>=1.13.0                # VISA instrument communication (oscilloscope, function generator)
 pyueye>=4.1.0                 # IDS uEye camera SDK support
 
 # Utility libraries

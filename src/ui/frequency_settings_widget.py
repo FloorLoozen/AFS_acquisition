@@ -23,8 +23,10 @@ class FrequencySettingsWidget(QGroupBox):
         
 # Frequency settings initialized
         
-        # Initialize paths
-        self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"  # Default save path
+        # Initialize paths - restore original Floor/tmp path as requested
+        import os
+        # Use the original Floor/tmp path that user expects
+        self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"
         self.default_filename = datetime.now().strftime("%Y%m%d")
         
         # Create default directory if it doesn't exist

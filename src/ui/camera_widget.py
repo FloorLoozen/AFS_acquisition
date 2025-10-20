@@ -9,6 +9,9 @@ import os
 import numpy as np
 from datetime import datetime
 from typing import Optional
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QFrame, QSizePolicy
@@ -58,6 +61,13 @@ class CameraWidget(QGroupBox):
         self.recording_path = ""
         self.recording_start_time = None
         self.recorded_frames = 0
+        
+        # High-performance parallel processing
+        self.frame_processing_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="CameraFrameProcessor"
+        )
+        self.recording_queue = queue.Queue(maxsize=50)  # Buffer for recording
+        self.processing_lock = threading.RLock()
         
         # Image processing settings for live view (start with standard values)
         self.image_settings = {
@@ -287,12 +297,17 @@ class CameraWidget(QGroupBox):
             self.last_frame_timestamp = frame_data.timestamp
             self.current_frame_data = frame_data
             
-            # Record frame if recording
+            # Parallel processing for recording and display
             if self.is_recording:
-                self._record_frame(frame_data.frame)
+                # Submit recording task to thread pool (non-blocking)
+                self.frame_processing_executor.submit(
+                    self._record_frame_async, frame_data.frame.copy()
+                )
             
-            # Display frame
-            self.display_frame(frame_data.frame)
+            # Submit display processing to thread pool (non-blocking)
+            self.frame_processing_executor.submit(
+                self._process_display_frame, frame_data.frame.copy()
+            )
             
             # Update performance stats (optimized)
             self.display_fps_counter += 1
@@ -317,37 +332,8 @@ class CameraWidget(QGroupBox):
                 self.update_status("Error")
     
     def display_frame(self, frame):
-        """Display frame in the widget with image processing."""
-        # Convert BGR to RGB for Qt display
-        if frame.shape[2] == 3:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            rgb_frame = frame
-        
-        # Apply image processing settings (optimized for performance)
-        rgb_frame = self._apply_image_processing(rgb_frame)
-        
-        h, w = rgb_frame.shape[:2]
-        
-        # Create QImage
-        bytes_per_line = 3 * w
-        qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        # Scale to fit display - optimized for fullscreen viewing
-        display_width = self.display_label.width()
-        display_height = self.display_label.height()
-        
-        if display_width > 1 and display_height > 1:
-            # Use faster scaling for high resolution displays (fullscreen)
-            scaling_mode = Qt.SmoothTransformation if min(display_width, display_height) < 800 else Qt.FastTransformation
-            pix = QPixmap.fromImage(qimg).scaled(
-                display_width, display_height,
-                Qt.KeepAspectRatio, scaling_mode
-            )
-        else:
-            pix = QPixmap.fromImage(qimg)
-        
-        self.display_label.setPixmap(pix)
+        """Legacy display method - now delegates to parallel processing."""
+        self._process_display_frame(frame.copy())
     
     def _apply_image_processing(self, frame):
         """Apply brightness, contrast, and saturation to frame (highly optimized)."""
@@ -453,6 +439,17 @@ class CameraWidget(QGroupBox):
                 except Exception as e:
                     logger.warning(f"Failed to save camera settings: {e}")
             
+            # Add stage settings if available
+            try:
+                from src.controllers.stage_manager import StageManager
+                stage_manager = StageManager.get_instance()
+                if stage_manager:
+                    stage_settings = stage_manager.get_stage_settings()
+                    self.hdf5_recorder.add_stage_settings(stage_settings)
+                    logger.info(f"Saved stage settings: {len(stage_settings)} parameters")
+            except Exception as e:
+                logger.warning(f"Failed to save stage settings: {e}")
+            
             # Set recording state
             self.is_recording = True
             self.recording_path = file_path
@@ -473,23 +470,44 @@ class CameraWidget(QGroupBox):
             return False
     
     def stop_recording(self) -> Optional[str]:
-        """Stop HDF5 recording."""
+        """Stop HDF5 recording with non-blocking shutdown."""
         if not self.is_recording:
             return None
         
         try:
             self.is_recording = False
             
+            # Wait for any pending processing tasks (non-blocking with timeout)
+            try:
+                logger.debug("Waiting for frame processing tasks to complete...")
+                sync_future = self.frame_processing_executor.submit(lambda: True)
+                sync_future.result(timeout=0.5)  # Shorter timeout for responsiveness
+            except Exception as e:
+                logger.debug(f"Frame processing sync timeout: {e}")
+            
+            # Store paths before shutdown
+            saved_path = self.recording_path
+            
             if self.hdf5_recorder:
-                self.hdf5_recorder.stop_recording()
+                # Start non-blocking shutdown of recorder
+                logger.info("Starting recorder shutdown...")
+                
+                # Submit recorder shutdown to background thread to avoid UI freeze
+                shutdown_future = self.frame_processing_executor.submit(
+                    self._shutdown_recorder_background, self.hdf5_recorder
+                )
+                
+                # Don't wait for completion - let it finish in background
                 self.hdf5_recorder = None
+                
+                logger.info("Recorder shutdown initiated in background")
             
             if self.recording_start_time:
                 duration = datetime.now() - self.recording_start_time
-                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
+                logger.info(f"Recording UI stopped. Duration: {duration.total_seconds():.1f}s, "
                            f"Frames: {self.recorded_frames}")
             
-            saved_path = self.recording_path
+            # Reset state immediately for UI responsiveness
             self.recording_path = ""
             self.recording_start_time = None
             self.recorded_frames = 0
@@ -499,17 +517,88 @@ class CameraWidget(QGroupBox):
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
             return None
+
+    def _shutdown_recorder_background(self, recorder):
+        """Shutdown recorder in background thread to avoid UI blocking."""
+        try:
+            logger.debug("Background recorder shutdown starting...")
+            if recorder:
+                recorder.stop_recording()
+            logger.info("Background recorder shutdown completed")
+        except Exception as e:
+            logger.error(f"Error in background recorder shutdown: {e}")
     
-    def _record_frame(self, frame):
-        """Record a single frame."""
+    def _record_frame_async(self, frame):
+        """High-performance asynchronous frame recording."""
         if not self.is_recording or not self.hdf5_recorder:
             return
         
         try:
-            if self.hdf5_recorder.record_frame(frame):
-                self.recorded_frames += 1
+            # Use async recording for maximum performance
+            if self.hdf5_recorder.record_frame(frame, use_async=True):
+                with self.processing_lock:
+                    self.recorded_frames += 1
+            else:
+                # Silent failure to prevent logging errors when disk is full
+                pass
         except Exception as e:
-            logger.error(f"Recording error: {e}")
+            # Only log errors if we can write to disk safely
+            try:
+                logger.error(f"Error in async frame recording: {e}")
+            except OSError:
+                pass  # Disk full - silent failure
+    
+    def cleanup(self):
+        """Clean up resources including thread pool."""
+        try:
+            # Shutdown thread pool gracefully
+            logger.debug("Shutting down frame processing thread pool...")
+            self.frame_processing_executor.shutdown(wait=True, timeout=2.0)
+        except Exception as e:
+            logger.warning(f"Error shutting down thread pool: {e}")
+    
+    def _record_frame(self, frame):
+        """Legacy synchronous frame recording for compatibility."""
+        return self._record_frame_async(frame)
+    
+    def _process_display_frame(self, frame):
+        """Process frame for display in parallel thread."""
+        try:
+            # Convert BGR to RGB for Qt display
+            if frame.shape[2] == 3:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_frame = frame
+            
+            # Apply image processing settings (optimized for performance)
+            processed_frame = self._apply_image_processing(rgb_frame)
+            
+            # Update display in main thread
+            self._update_display_thread_safe(processed_frame)
+            
+        except Exception as e:
+            logger.error(f"Error processing display frame: {e}")
+    
+    def _update_display_thread_safe(self, processed_frame):
+        """Update display from any thread safely."""
+        h, w = processed_frame.shape[:2]
+        bytes_per_line = 3 * w
+        
+        q_image = QImage(
+            processed_frame.data, w, h, bytes_per_line, QImage.Format_RGB888
+        )
+        
+        # Scale to fit display while maintaining aspect ratio
+        display_size = self.display_label.size()
+        if display_size.width() > 0 and display_size.height() > 0:
+            scaled_pixmap = QPixmap.fromImage(q_image).scaled(
+                display_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        else:
+            scaled_pixmap = QPixmap.fromImage(q_image)
+        
+        # Thread-safe update using Qt's thread communication
+        self.display_label.setPixmap(scaled_pixmap)
     
     # Function generator logging methods (preserved)
     def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float,

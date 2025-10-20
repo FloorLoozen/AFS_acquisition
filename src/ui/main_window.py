@@ -51,6 +51,12 @@ class MainWindow(QMainWindow):
         self.acquisition_controls_widget: Optional['AcquisitionControlsWidget'] = None
         self.measurement_controls_widget: Optional['MeasurementControlsWidget'] = None
         self.keyboard_shortcuts: Optional['KeyboardShortcutManager'] = None
+        self.force_path_designer: Optional['ForcePathDesignerWindow'] = None
+        
+        # Session management and HDF5 logging
+        self.session_hdf5_file: Optional[str] = None
+        self.measurement_active: bool = False
+        self.measurement_start_time: Optional[float] = None
         
         try:
             self._init_ui()
@@ -73,6 +79,55 @@ class MainWindow(QMainWindow):
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
+
+    def _create_measurement_hdf5(self) -> bool:
+        """Create HDF5 file when measurement starts - optimized and robust."""
+        from datetime import datetime
+        import h5py
+        import os
+        
+        if self.session_hdf5_file:
+            logger.warning("Measurement HDF5 file already exists")
+            return True
+        
+        try:
+            # Create logs directory if it doesn't exist
+            logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'src', 'logs')
+            os.makedirs(logs_dir, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.session_hdf5_file = os.path.join(logs_dir, f'afs_measurement_{timestamp}.h5')
+            
+            # Check available disk space before creating file
+            import shutil
+            free_space_gb = shutil.disk_usage(logs_dir).free / (1024**3)
+            
+            # Adaptive disk space requirement (100MB minimum, prefer 1GB)
+            min_space_gb = 0.1 if free_space_gb < 1.0 else 1.0
+            
+            if free_space_gb < min_space_gb:
+                logger.error(f"Insufficient disk space ({free_space_gb:.1f}GB available, {min_space_gb:.1f}GB required)")
+                return False
+            
+            if free_space_gb < 0.5:
+                logger.warning(f"Low disk space ({free_space_gb:.1f}GB available) - recording may be limited")
+            
+            # Create file with optimized settings
+            with h5py.File(self.session_hdf5_file, 'w', libver='latest') as f:
+                # Minimal structure - only create what's needed
+                f.attrs['measurement_start'] = datetime.now().isoformat()
+                f.attrs['application'] = 'AFS Tracking System'
+                f.attrs['measurement_id'] = timestamp
+                f.attrs['free_space_gb_at_start'] = free_space_gb
+            
+            logger.info(f"Measurement HDF5 file created: {self.session_hdf5_file} ({free_space_gb:.1f}GB available)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create measurement HDF5 file: {e}")
+            self.session_hdf5_file = None
+            return False
 
     def _init_ui(self) -> None:
         """Initialize the user interface layout and appearance.
@@ -113,7 +168,7 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
         self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
         self._add_action(tools_menu, "Resonance Finder", None, self._open_resonance_finder)
-        self._add_action(tools_menu, "Force Path Designer", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Force Path Designer", None, self._open_force_path_designer)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
@@ -312,6 +367,42 @@ class MainWindow(QMainWindow):
                 f"Failed to open resonance finder:\n{e}\n\nCheck the log for details.")
             logger.error(f"Resonance finder error details:\n{error_details}")
     
+    def _open_force_path_designer(self):
+        """Open Force Path Designer window."""
+        try:
+            from src.ui.force_path_designer_widget import ForcePathDesignerWindow
+            
+            # Create or show force path designer window
+            if not hasattr(self, '_force_path_designer_window') or not self._force_path_designer_window:
+                self._force_path_designer_window = ForcePathDesignerWindow()
+                
+                # Set the main window reference for measurement-driven logging
+                self._force_path_designer_window.designer_widget.set_main_window(self)
+                
+                # Connect function generator controller if available
+                if (hasattr(self, 'measurement_controls_widget') and 
+                    self.measurement_controls_widget and 
+                    hasattr(self.measurement_controls_widget, 'fg_controller') and
+                    self.measurement_controls_widget.fg_controller):
+                    self._force_path_designer_window.set_function_generator_controller(
+                        self.measurement_controls_widget.fg_controller
+                    )
+                
+            # Show and bring to front
+            self._force_path_designer_window.show()
+            self._force_path_designer_window.activateWindow()
+            self._force_path_designer_window.raise_()
+            
+            logger.info("Opened Force Path Designer window")
+            
+        except Exception as e:
+            logger.error(f"Failed to open Force Path Designer: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Error", 
+                f"Failed to open Force Path Designer:\n{e}\n\nCheck the log for details.")
+            logger.error(f"Force Path Designer error details:\n{error_details}")
+    
     def _open_about(self):
         """Show about dialog."""
         QMessageBox.information(self, "About", 
@@ -319,6 +410,173 @@ class MainWindow(QMainWindow):
             "Automated tracking system for AFS using IDS cameras "
             "and MCL MicroDrive XY stage hardware.")
     
+    def start_measurement_session(self):
+        """Start measurement session with optimized initialization."""
+        import time
+        
+        if self.measurement_active:
+            logger.warning("Measurement session already active")
+            return
+        
+        try:
+            # Pre-flight checks for hardware availability
+            hardware_ready = self._validate_hardware_for_measurement()
+            if not hardware_ready:
+                logger.error("Hardware validation failed, cannot start measurement")
+                return
+            
+            # Create HDF5 file only when measurement starts
+            if not self._create_measurement_hdf5():
+                logger.error("Failed to create HDF5 file, cannot start measurement")
+                return
+            
+            self.measurement_active = True
+            self.measurement_start_time = time.time()
+            
+            # Log measurement start (non-blocking)
+            self._log_measurement_event_async('measurement_session_start')
+            
+            logger.info(f"Measurement session started - HDF5: {self.session_hdf5_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to start measurement session: {e}")
+            self.measurement_active = False
+    
+    def stop_measurement_session(self):
+        """Stop measurement session with optimized cleanup."""
+        if not self.measurement_active:
+            logger.warning("No measurement session active")
+            return
+        
+        try:
+            self.measurement_active = False
+            
+            # Log measurement stop with session statistics
+            if self.measurement_start_time:
+                duration = time.time() - self.measurement_start_time
+                session_stats = {
+                    'duration_seconds': duration,
+                    'hdf5_file': self.session_hdf5_file
+                }
+                self._log_measurement_event_async('measurement_session_stop', session_stats)
+            
+            # Ensure any pending data is flushed
+            self._flush_session_data()
+            
+            logger.info(f"Measurement session stopped - Duration: {duration:.1f}s - HDF5: {self.session_hdf5_file}")
+            self.measurement_start_time = None
+            # Keep HDF5 file reference for potential analysis
+            
+        except Exception as e:
+            logger.error(f"Error stopping measurement session: {e}")
+    
+    def _validate_hardware_for_measurement(self) -> bool:
+        """Quick validation of hardware readiness for measurement."""
+        try:
+            # Check camera availability
+            if not self.camera_widget or not hasattr(self.camera_widget, 'camera') or not self.camera_widget.camera:
+                logger.warning("Camera not available for measurement")
+                return False
+            
+            # Additional hardware checks can be added here
+            return True
+            
+        except Exception as e:
+            logger.error(f"Hardware validation error: {e}")
+            return False
+    
+    def _log_measurement_event_async(self, event_type: str, event_data: dict = None):
+        """Asynchronous measurement event logging to prevent UI blocking."""
+        if not self.session_hdf5_file:
+            return
+        
+        # Use thread pool for non-blocking logging
+        try:
+            import threading
+            def log_async():
+                self._log_measurement_event(event_type, event_data)
+            
+            thread = threading.Thread(target=log_async, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            logger.warning(f"Async logging failed: {e}")
+            # Fallback to synchronous logging
+            self._log_measurement_event(event_type, event_data)
+    
+    def _flush_session_data(self):
+        """Ensure all session data is flushed to disk."""
+        try:
+            # Trigger any pending HDF5 flushes
+            if self.camera_widget and hasattr(self.camera_widget, 'hdf5_recorder') and self.camera_widget.hdf5_recorder:
+                logger.debug("Flushing camera recording data...")
+                # The HDF5 recorder will handle its own flushing
+                
+        except Exception as e:
+            logger.warning(f"Error flushing session data: {e}")
+    
+    def _log_measurement_event(self, event_type: str, event_data: dict = None):
+        """Log measurement events - simple and minimal."""
+        if not self.session_hdf5_file:
+            return
+            
+        try:
+            import h5py
+            import time
+            from datetime import datetime
+            
+            with h5py.File(self.session_hdf5_file, 'a') as f:
+                # Simple event logging directly as attributes
+                timestamp = time.time()
+                event_key = f"{event_type}_at_{int(timestamp)}"
+                
+                f.attrs[event_key + '_time'] = datetime.now().isoformat()
+                f.attrs[event_key + '_timestamp'] = timestamp
+                
+                if self.measurement_start_time:
+                    f.attrs[event_key + '_relative_time'] = timestamp - self.measurement_start_time
+                
+                # Add any execution data only when provided
+                if event_data:
+                    for key, value in event_data.items():
+                        f.attrs[f"{event_key}_{key}"] = value
+                
+        except Exception as e:
+            logger.error(f"Failed to log measurement event to HDF5: {e}")
+
+    def log_execution_data(self, execution_type: str, data: dict):
+        """Log execution data only when something is actually executing."""
+        if not self.session_hdf5_file or not self.measurement_active:
+            return  # Don't log if no measurement or no HDF5 file
+            
+        try:
+            import h5py
+            import time
+            from datetime import datetime
+            
+            with h5py.File(self.session_hdf5_file, 'a') as f:
+                # Create execution group if it doesn't exist
+                if 'executions' not in f:
+                    f.create_group('executions')
+                
+                exec_group = f['executions']
+                
+                # Create timestamped execution entry
+                timestamp = int(time.time() * 1000)  # millisecond precision
+                exec_name = f"{execution_type}_{timestamp}"
+                
+                execution_entry = exec_group.create_group(exec_name)
+                execution_entry.attrs['execution_type'] = execution_type
+                execution_entry.attrs['timestamp'] = datetime.now().isoformat()
+                execution_entry.attrs['relative_time'] = time.time() - self.measurement_start_time
+                
+                # Add execution data
+                for key, value in data.items():
+                    execution_entry.attrs[key] = value
+                
+        except Exception as e:
+            logger.error(f"Failed to log execution data to HDF5: {e}")
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle application close event with proper cleanup.
         
@@ -491,31 +749,55 @@ class MainWindow(QMainWindow):
             self.acquisition_controls_widget.recording_failed(f"Error stopping recording: {str(e)}")
     
     def _handle_save_recording(self, file_path):
-        """Handle save recording request."""
+        """Handle save recording request with background finalization awareness."""
         import os
         import shutil
+        import time
         
-# Save result will be logged
+        def _perform_save():
+            """Perform the actual save operation."""
+            try:
+                # Get the original recorded file path for potential renaming
+                if hasattr(self.acquisition_controls_widget, 'original_recording_path'):
+                    actual_recorded_path = self.acquisition_controls_widget.original_recording_path
+                    if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
+                        
+                        # Wait for file to be fully written (check for file locking)
+                        max_retries = 10
+                        for retry in range(max_retries):
+                            try:
+                                # Try to open the file to check if it's still locked
+                                with open(actual_recorded_path, 'r+b') as f:
+                                    pass  # File is accessible
+                                break
+                            except (OSError, PermissionError):
+                                if retry < max_retries - 1:
+                                    time.sleep(0.5)  # Wait 500ms and retry
+                                else:
+                                    # Final retry - just proceed anyway
+                                    pass
+                        
+                        # Need to move/rename the file to the desired path
+                        shutil.move(actual_recorded_path, file_path)
+                        
+                    elif not os.path.exists(file_path):
+                        # File doesn't exist - this shouldn't happen in auto-save
+                        logger.warning(f"Expected recording file not found: {file_path}")
+                
+                self.statusBar().showMessage(f"HDF5 recording saved: {file_path}")
+                
+                # Clear status after delay
+                QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+                
+            except Exception as e:
+                logger.error(f"Error saving recording: {e}")
+                raise e
         
+        # Defer save operation slightly to allow background finalization to progress
         try:
-            # Get the original recorded file path for potential renaming
-            if hasattr(self.acquisition_controls_widget, 'original_recording_path'):
-                actual_recorded_path = self.acquisition_controls_widget.original_recording_path
-                if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
-                    # Need to move/rename the file to the desired path
-                    shutil.move(actual_recorded_path, file_path)
-# Rename handled silently
-                elif not os.path.exists(file_path):
-                    # File doesn't exist - this shouldn't happen in auto-save
-                    logger.warning(f"Expected recording file not found: {file_path}")
-            
-            self.statusBar().showMessage(f"HDF5 recording saved: {file_path}")
-# Save logged by acquisition controls
-            
-            # Clear status after delay
-            QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+            QTimer.singleShot(1500, _perform_save)  # 1.5 second delay
         except Exception as e:
-            logger.error(f"Error saving recording: {e}")
+            logger.error(f"Error setting up save operation: {e}")
             self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
     
     def _on_function_generator_toggled(self, enabled: bool):
