@@ -82,11 +82,9 @@ class StageManager:
         if self._is_connected and self._stage is not None:
             return True
         try:
-            logger.info("XY stage connecting")
             self._stage = XYStageController()
             if self._stage.connect():
                 self._is_connected = True
-                logger.info("XY stage connected")
                 return True
             logger.error("Failed to connect to XY stage via manager")
             self._stage = None
@@ -103,7 +101,6 @@ class StageManager:
             self._stage.disconnect()
             self._stage = None
             self._is_connected = False
-            logger.info("XY stage disconnected")
         except Exception as e:
             logger.error(f"Error disconnecting from XY stage: {e}")
 

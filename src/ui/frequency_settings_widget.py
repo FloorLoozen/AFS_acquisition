@@ -68,6 +68,7 @@ class FrequencySettingsWidget(QGroupBox):
         """Create the path settings section."""
         section = QWidget()
         layout = QVBoxLayout(section)
+        layout.setSpacing(8)  # Consistent spacing between rows
         
         # Create all form rows
         self._add_path_row(layout, "Save Path:", "save", 
@@ -75,7 +76,7 @@ class FrequencySettingsWidget(QGroupBox):
         
         self._add_filename_row(layout)
         
-        layout.addSpacing(20)  # Separator
+        layout.addSpacing(12)  # Separator
         
         self._add_text_row(layout, "Sample:", "sample", "")
         self._add_text_row(layout, "Notes:", "notes", "")

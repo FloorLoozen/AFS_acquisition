@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QMessageBox
+    QMessageBox, QFrame, QWidget
 )
 from PyQt5.QtCore import pyqtSignal, QTimer
 
@@ -52,6 +52,31 @@ class AcquisitionControlsWidget(QGroupBox):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 24, 8, 8)
         
+        # Create controls frame for consistent styling
+        controls_frame = self._create_controls_frame()
+        main_layout.addWidget(controls_frame)
+
+    def _create_controls_frame(self):
+        """Create the main controls frame with consistent styling."""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Add controls section
+        controls_section = self._create_controls_section()
+        layout.addWidget(controls_section)
+        layout.addStretch(1)
+        
+        return frame
+
+    def _create_controls_section(self):
+        """Create the recording controls section."""
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setSpacing(8)  # Consistent spacing between rows
+        
         # Button and status layout
         controls_layout = QHBoxLayout()
         
@@ -78,8 +103,9 @@ class AcquisitionControlsWidget(QGroupBox):
         # Save button is hidden since saving is automatic
         controls_layout.addWidget(self.status_display, 1)  # Give status display more space
         
-        main_layout.addLayout(controls_layout)
-        main_layout.addStretch(1)
+        layout.addLayout(controls_layout)
+        
+        return section
 
     def set_frequency_settings_widget(self, widget):
         """Set reference to the frequency settings widget to check paths."""

@@ -37,8 +37,6 @@ class CameraWidget(QGroupBox):
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
         
-        logger.info("Simplified camera widget initialized")
-        
         # Camera state
         self.camera: Optional[CameraController] = None
         self.is_running = False
@@ -81,9 +79,6 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Remove group box border for clean appearance
-        self.setStyleSheet("QGroupBox { border: none; }")
-        
         # High-frequency timer for smooth fullscreen video
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
@@ -96,31 +91,53 @@ class CameraWidget(QGroupBox):
         QTimer.singleShot(100, self.connect_camera)
     
     def init_ui(self):
-        """Initialize the simplified UI layout."""
+        """Initialize the simplified UI layout with consistent styling."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 24, 8, 8)
-        main_layout.setSpacing(8)
         
-        # Camera display frame - clean, no borders
-        display_frame = QFrame()
-        display_frame.setFrameShape(QFrame.NoFrame)
-        display_frame.setFrameShadow(QFrame.Plain)
-        display_frame.setLineWidth(0)
-        display_layout = QVBoxLayout(display_frame)
-        display_layout.setContentsMargins(0, 0, 0, 0)  # No margins for seamless display
+        # Create camera frame for consistent styling
+        camera_frame = self._create_camera_frame()
+        main_layout.addWidget(camera_frame)
+
+    def _create_camera_frame(self):
+        """Create the main camera frame with consistent styling."""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Add camera display section
+        camera_section = self._create_camera_section()
+        layout.addWidget(camera_section)
+        
+        return frame
+
+    def _create_camera_section(self):
+        """Create the camera display section."""
+        section = QFrame()
+        section.setFrameShape(QFrame.NoFrame)  # Inner content has no additional frame
+        
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         
         # Add camera display (takes most of the space)
-        display_layout.addWidget(self.display_label, 1)
+        self.display_label.setStyleSheet("border: none;")  # Clean display area
+        layout.addWidget(self.display_label, 1)
         
         # Minimal status bar (only status display)
         control_layout = QHBoxLayout()
         control_layout.addWidget(self.status_display)
         control_layout.addStretch()
         
-        display_layout.addLayout(control_layout)
-        main_layout.addWidget(display_frame)
+        layout.addLayout(control_layout)
         
-        self.update_button_states()
+        return section
+    
+    def update_button_states(self):
+        """Update button enabled states - minimal camera widget has no buttons."""
+        pass  # No buttons to update in minimal design
     
     def update_button_states(self):
         """Update button enabled states - minimal camera widget has no buttons."""
@@ -154,7 +171,6 @@ class CameraWidget(QGroupBox):
                     self.update_timer.start()
                     self.set_live_mode()  # Auto start live view
                     
-                    logger.info("Camera connected successfully")
                     return
                 else:
                     logger.warning("Failed to start camera capture")
@@ -562,4 +578,3 @@ class CameraWidget(QGroupBox):
         if self.is_recording:
             self.stop_recording()
         self.stop_camera()
-        logger.info("Simplified camera widget closed")

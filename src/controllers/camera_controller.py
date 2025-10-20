@@ -290,7 +290,6 @@ class CameraController:
             if self._initialize_hardware():
                 self.use_test_pattern = False
                 self.is_initialized = True
-                logger.info(f"Camera hardware initialized (ID: {self.camera_id})")
                 return True
             else:
                 logger.warning("Hardware initialization failed, falling back to test pattern")
@@ -392,7 +391,6 @@ class CameraController:
             if self.frame_pool is None:
                 self.frame_pool = FramePool((self.height, self.width, 3), pool_size=3)
             
-            logger.debug("Camera hardware fully initialized and capturing")
             return True
             
         except Exception as e:

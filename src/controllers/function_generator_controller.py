@@ -51,7 +51,6 @@ class FunctionGeneratorController:
             self.ensure_sync_enabled(force_redundant=False)
             
             self._is_connected = True
-            logger.info(f"Function Generator connected: {fg_id.split(',')[0]}")
             return True
             
         except Exception as e:
@@ -327,7 +326,6 @@ class FunctionGeneratorController:
             finally:
                 self.function_generator = None
                 self._is_connected = False
-                logger.info("Function Generator: disconnected")
 
 
 def main():

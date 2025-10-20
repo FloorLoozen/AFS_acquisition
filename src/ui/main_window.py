@@ -44,7 +44,6 @@ class MainWindow(QMainWindow):
         and configures keyboard shortcuts for efficient operation.
         """
         super().__init__()
-        logger.info("Main window initialization started")
         
         # Initialize widget references with proper type hints (using TYPE_CHECKING imports)
         self.camera_widget: Optional['CameraWidget'] = None
@@ -55,7 +54,6 @@ class MainWindow(QMainWindow):
         
         try:
             self._init_ui()
-            logger.debug("UI initialization completed")
             
             # Initialize hardware
             self._initialize_hardware()
@@ -69,8 +67,6 @@ class MainWindow(QMainWindow):
             
             # Start status updates for real-time camera info
             QTimer.singleShot(2000, self.start_status_updates)  # Start after 2 seconds
-            
-            logger.info("Main window initialization completed successfully")
             
         except Exception as e:
             logger.error(f"Error during main window initialization: {e}")
@@ -587,10 +583,8 @@ class MainWindow(QMainWindow):
                         logger.info("Camera running in test pattern mode")
                         return {"connected": False, "message": "Using test pattern (no hardware detected)"}
                     else:
-                        logger.info("Camera running with hardware")
                         return {"connected": True, "message": "Camera hardware detected"}
                 else:
-                    logger.info("Camera widget starting initialization")
                     # Camera is still initializing - this is normal and expected
                     return {"connected": False, "message": "Still initializing (this is normal - try retry in a moment)"}
             else:
@@ -608,7 +602,6 @@ class MainWindow(QMainWindow):
             from src.controllers.stage_manager import StageManager
             stage_manager = StageManager.get_instance()
             if stage_manager.connect():
-                logger.info("XY stage connected")
                 return {"connected": True, "message": "XY stage hardware connected"}
             else:
                 logger.warning("XY stage connection failed")
@@ -620,16 +613,13 @@ class MainWindow(QMainWindow):
     def _init_function_generator(self):
         """Initialize function generator hardware."""
         # Function generator initialization is handled by the measurement controls widget
-        logger.info("Checking function generator status from measurement controls widget")
         
         try:
             if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_controller'):
                 fg_controller = self.measurement_controls_widget.get_function_generator_controller()
                 if fg_controller and fg_controller.is_connected():
-                    logger.info("Function generator connected")
                     return {"connected": True, "message": "Function generator connected"}
                 else:
-                    logger.info("Function generator not connected")
                     return {"connected": False, "message": "VISA resource not found or connection failed"}
             else:
                 logger.warning("Function generator controller not available")
@@ -655,7 +645,6 @@ class MainWindow(QMainWindow):
                 logger.info("User chose to continue with hardware connection issues")
                 self._show_initialization_complete()
             elif result is None:  # No issues, dialog not shown
-                logger.info("All hardware connected successfully")
                 self._show_initialization_complete()
                 
         except ImportError as e:
@@ -671,7 +660,6 @@ class MainWindow(QMainWindow):
     
     def _retry_hardware_initialization(self):
         """Retry hardware initialization."""
-        logger.info("Retrying hardware initialization")
         
         # Collect hardware status again
         hardware_status = {}
@@ -704,7 +692,6 @@ class MainWindow(QMainWindow):
             self._check_and_show_hardware_status(hardware_status)
         else:
             # Camera is still initializing, wait for it to complete
-            logger.info("Camera initializing - waiting for completion")
             self._wait_for_camera_initialization(hardware_status, max_wait_time=8)
     
     def _wait_for_camera_initialization(self, hardware_status, max_wait_time=8):
@@ -721,7 +708,6 @@ class MainWindow(QMainWindow):
             
             if camera_status["connected"]:
                 # Camera is now connected
-                logger.info("Camera initialization completed successfully")
                 hardware_status["Camera"] = camera_status
                 self._check_and_show_hardware_status(hardware_status)
             elif self.camera_wait_elapsed >= max_wait_time:

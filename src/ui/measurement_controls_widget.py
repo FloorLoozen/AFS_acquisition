@@ -80,6 +80,7 @@ class MeasurementControlsWidget(QGroupBox):
         """Create the function generator control section."""
         section = QWidget()
         layout = QVBoxLayout(section)
+        layout.setSpacing(8)  # Consistent spacing between rows
         
         # Create simplified control rows
         self._add_enable_row(layout)
@@ -161,13 +162,12 @@ class MeasurementControlsWidget(QGroupBox):
         """Initialize the function generator controller."""
         try:
             self.fg_controller = FunctionGeneratorController()
-            logger.info("Function generator controller created")
             
             # Attempt auto-connection silently
             if self.fg_controller.connect():
-                logger.info("Function generator connected")
+                pass  # Connected successfully
             else:
-                logger.info("Function generator not available - will try when needed")
+                pass  # Not available - will try when needed
         except Exception as e:
             logger.error(f"Failed to create function generator controller: {e}")
             self.fg_controller = None
@@ -418,4 +418,3 @@ class MeasurementControlsWidget(QGroupBox):
                 self.fg_controller.stop_all_outputs()
             # Then disconnect
             self.fg_controller.disconnect()
-            logger.info("Function generator cleanup completed")
