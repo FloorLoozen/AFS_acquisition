@@ -6,7 +6,7 @@ Centralized configuration with performance tuning options.
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, ClassVar
 from dataclasses import dataclass, asdict
 import threading
 
@@ -42,7 +42,7 @@ class PerformanceConfig:
 @dataclass
 class UIConfig:
     """User interface configuration options."""
-    window_geometry: Dict[str, int] = None
+    window_geometry: Optional[Dict[str, int]] = None
     theme: str = "default"
     font_size: int = 9
     auto_save_settings: bool = True
@@ -92,10 +92,7 @@ class ConfigManager:
     """
     
     def __init__(self, config_dir: Optional[Path] = None):
-        if config_dir is None:
-            config_dir = Path.home() / ".afs_tracking"
-        
-        self.config_dir = Path(config_dir)
+        self.config_dir = Path(config_dir or Path.home() / ".afs_tracking")
         self.config_file = self.config_dir / "config.json"
         self._lock = threading.RLock()
         
@@ -108,34 +105,34 @@ class ConfigManager:
         # Load existing configuration
         self.load_config()
     
-    def load_config(self):
+    def load_config(self) -> None:
         """Load configuration from file."""
         try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
-                    data = json.load(f)
-                
-                # Update configuration sections
-                if 'performance' in data:
-                    self._update_dataclass(self.performance, data['performance'])
-                
-                if 'ui' in data:
-                    self._update_dataclass(self.ui, data['ui'])
-                
-                if 'hardware' in data:
-                    self._update_dataclass(self.hardware, data['hardware'])
-                
-                if 'logging' in data:
-                    self._update_dataclass(self.logging, data['logging'])
-                
-                logger.debug(f"Configuration loaded from {self.config_file}")
-            else:
+            if not self.config_file.exists():
                 logger.debug("No existing config file found, using defaults")
+                return
+                
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Update configuration sections using a mapping for cleaner code
+            config_mapping = {
+                'performance': self.performance,
+                'ui': self.ui,
+                'hardware': self.hardware,
+                'logging': self.logging
+            }
+            
+            for section_name, config_obj in config_mapping.items():
+                if section_name in data:
+                    self._update_dataclass(config_obj, data[section_name])
+            
+            logger.debug(f"Configuration loaded from {self.config_file}")
                 
         except Exception as e:
             logger.warning(f"Error loading config: {e}, using defaults")
     
-    def save_config(self):
+    def save_config(self) -> None:
         """Save current configuration to file."""
         try:
             with self._lock:
@@ -154,8 +151,8 @@ class ConfigManager:
                     }
                 }
                 
-                # Write to file with pretty formatting
-                with open(self.config_file, 'w') as f:
+                # Write to file with pretty formatting and UTF-8 encoding
+                with open(self.config_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, sort_keys=True)
                 
                 logger.debug(f"Configuration saved to {self.config_file}")
@@ -163,13 +160,11 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"Error saving config: {e}")
     
-    def _update_dataclass(self, obj, data: Dict[str, Any]):
+    def _update_dataclass(self, obj, data: Dict[str, Any]) -> None:
         """Update dataclass fields from dictionary."""
         for key, value in data.items():
             if hasattr(obj, key):
                 setattr(obj, key, value)
-    
-
     
     def get_camera_config(self) -> Dict[str, Any]:
         """Get camera-related configuration."""
@@ -201,7 +196,7 @@ class ConfigManager:
             'font_size': self.ui.font_size,
         }
     
-    def update_window_geometry(self, geometry: Dict[str, int]):
+    def update_window_geometry(self, geometry: Dict[str, int]) -> None:
         """Update window geometry configuration."""
         with self._lock:
             self.ui.window_geometry = geometry
@@ -235,22 +230,18 @@ class ConfigManager:
         except Exception as e:
             logger.debug(f"Error getting system info: {e}")
             return {}
-    
-
-
-
 # Global configuration manager instance
-_config_manager = None
+_config_manager: Optional[ConfigManager] = None
 
 def get_config() -> ConfigManager:
-    """Get the global configuration manager."""
+    """Get the global configuration manager (singleton pattern)."""
     global _config_manager
     if _config_manager is None:
         _config_manager = ConfigManager()
     return _config_manager
 
 
-def save_config():
+def save_config() -> None:
     """Save the current configuration."""
     get_config().save_config()
 

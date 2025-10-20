@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QLabel
 )
 from PyQt5.QtCore import Qt, pyqtSignal
+from typing import Dict, Any, Optional
 
 from src.utils.logger import get_logger
 
@@ -23,6 +24,16 @@ class CameraSettingsWidget(QDialog):
     
     settings_applied = pyqtSignal(dict)
     
+    # Default settings constants for better maintainability
+    DEFAULT_SETTINGS = {
+        'exposure_ms': 15.0,
+        'gain_master': 2,
+        'frame_rate_fps': 30.0,
+        'brightness': 50,
+        'contrast': 75,
+        'saturation': 70
+    }
+    
     def __init__(self, camera_controller=None, parent=None):
         super().__init__(parent)
         self.camera = camera_controller
@@ -31,18 +42,8 @@ class CameraSettingsWidget(QDialog):
         self.setFixedSize(320, 280)
         self.setModal(True)
         
-        # Default settings (brighter values)
-        self.default_settings = {
-            'exposure_ms': 15.0,
-            'gain_master': 2,     # Use integer for gain
-            'frame_rate_fps': 30.0,
-            'brightness': 50,     # Standard brightness
-            'contrast': 75,       # Higher contrast  
-            'saturation': 70      # More vivid
-        }
-        
-        # Current settings
-        self.current_settings = self.default_settings.copy()
+        # Use class constant for defaults
+        self.current_settings = self.DEFAULT_SETTINGS.copy()
         
         self.init_ui()
         self.load_current_settings()
@@ -64,77 +65,75 @@ class CameraSettingsWidget(QDialog):
         settings_layout.setSpacing(6)
         settings_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         
-        # Essential parameter controls (compact)
-        self.exposure_input = QLineEdit()
-        self.exposure_input.setFixedWidth(80)
-        self.exposure_input.setPlaceholderText("15.0")
-        settings_layout.addRow("Exposure (ms):", self.exposure_input)
+        # Create parameter controls using helper method to reduce redundancy
+        parameter_configs = [
+            ("exposure", "Exposure (ms):", "15.0"),
+            ("gain", "Gain:", "2"),
+            ("fps", "Frame Rate (fps):", "30.0"),
+            ("brightness", "Brightness:", "50"),
+            ("contrast", "Contrast:", "75"),
+            ("saturation", "Saturation:", "70")
+        ]
         
-        self.gain_input = QLineEdit()
-        self.gain_input.setFixedWidth(80) 
-        self.gain_input.setPlaceholderText("2")
-        settings_layout.addRow("Gain:", self.gain_input)
+        # Store input widgets for easy access
+        self.inputs = {}
         
-        self.fps_input = QLineEdit()
-        self.fps_input.setFixedWidth(80)
-        self.fps_input.setPlaceholderText("30.0")
-        settings_layout.addRow("Frame Rate (fps):", self.fps_input)
-        
-        self.brightness_input = QLineEdit()
-        self.brightness_input.setFixedWidth(80)
-        self.brightness_input.setPlaceholderText("50")
-        settings_layout.addRow("Brightness:", self.brightness_input)
-        
-        self.contrast_input = QLineEdit()
-        self.contrast_input.setFixedWidth(80)
-        self.contrast_input.setPlaceholderText("75")
-        settings_layout.addRow("Contrast:", self.contrast_input)
-        
-        self.saturation_input = QLineEdit()
-        self.saturation_input.setFixedWidth(80)
-        self.saturation_input.setPlaceholderText("70")
-        settings_layout.addRow("Saturation:", self.saturation_input)
+        for param_name, label_text, placeholder in parameter_configs:
+            input_widget = self._create_parameter_input(placeholder)
+            self.inputs[param_name] = input_widget
+            settings_layout.addRow(label_text, input_widget)
         
         main_layout.addWidget(settings_group)
         
         # Spacer
         main_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
         
-        # Button layout (exactly 3 buttons)
+        # Button row - create using helper method
+        button_layout = self._create_button_row()
+        main_layout.addLayout(button_layout)
+    
+    def _create_parameter_input(self, placeholder: str) -> QLineEdit:
+        """Create a standardized parameter input widget."""
+        input_widget = QLineEdit()
+        input_widget.setFixedWidth(80)
+        input_widget.setPlaceholderText(placeholder)
+        return input_widget
+    
+    def _create_button_row(self) -> QHBoxLayout:
+        """Create the button row with consistent styling."""
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
         
-        # Apply/Reset button
-        self.apply_button = QPushButton("Apply")
-        self.apply_button.setFixedWidth(70)
-        self.apply_button.clicked.connect(self.apply_or_reset)
-        
-        # Reconnect button  
-        self.reconnect_button = QPushButton("Reconnect")
-        self.reconnect_button.setFixedWidth(70)
-        self.reconnect_button.clicked.connect(self.reconnect_camera)
-        
-        # Save button (close dialog)
-        self.save_button = QPushButton("Save")
-        self.save_button.setFixedWidth(70)
-        self.save_button.clicked.connect(self.save_and_close)
+        # Button configurations
+        button_configs = [
+            ("Apply", self.apply_or_reset),
+            ("Reconnect", self.reconnect_camera),
+            ("Save", self.save_and_close)
+        ]
         
         button_layout.addStretch()
-        button_layout.addWidget(self.apply_button)
-        button_layout.addWidget(self.reconnect_button)
-        button_layout.addWidget(self.save_button)
-        button_layout.addStretch()
         
-        main_layout.addLayout(button_layout)
+        for text, callback in button_configs:
+            button = QPushButton(text)
+            button.setFixedWidth(70)
+            button.clicked.connect(callback)
+            button_layout.addWidget(button)
+            
+            # Store specific buttons for later reference
+            if text == "Apply":
+                self.apply_button = button
+        
+        button_layout.addStretch()
+        return button_layout
     
-    def load_current_settings(self):
+    def load_current_settings(self) -> None:
         """Load current camera settings if available."""
         if self.camera and hasattr(self.camera, 'get_camera_settings'):
             try:
                 current = self.camera.get_camera_settings()
                 if current:
                     # Only update with relevant settings that we can control
-                    for key in self.default_settings.keys():
+                    for key in self.DEFAULT_SETTINGS.keys():
                         if key in current:
                             self.current_settings[key] = current[key]
                     logger.info(f"Loaded camera settings: {self.current_settings}")
@@ -143,61 +142,51 @@ class CameraSettingsWidget(QDialog):
         
         self.update_ui_from_settings()
     
-    def load_defaults(self):
+    def load_defaults(self) -> None:
         """Load default settings."""
-        self.current_settings = self.default_settings.copy()
+        self.current_settings = self.DEFAULT_SETTINGS.copy()
         self.update_ui_from_settings()
     
-    def update_ui_from_settings(self):
+    def update_ui_from_settings(self) -> None:
         """Update UI controls from current settings."""
-        self.exposure_input.setText(f"{self.current_settings.get('exposure_ms', 15.0):.2f}")
-        self.gain_input.setText(str(self.current_settings.get('gain_master', 2)))
-        self.fps_input.setText(f"{self.current_settings.get('frame_rate_fps', 30.0):.2f}")
-        self.brightness_input.setText(str(self.current_settings.get('brightness', 50)))
-        self.contrast_input.setText(str(self.current_settings.get('contrast', 75)))
-        self.saturation_input.setText(str(self.current_settings.get('saturation', 70)))
+        # Mapping for cleaner updates
+        settings_mapping = [
+            ('exposure', 'exposure_ms', lambda v: f"{v:.2f}"),
+            ('gain', 'gain_master', str),
+            ('fps', 'frame_rate_fps', lambda v: f"{v:.2f}"),
+            ('brightness', 'brightness', str),
+            ('contrast', 'contrast', str),
+            ('saturation', 'saturation', str)
+        ]
+        
+        for input_key, setting_key, formatter in settings_mapping:
+            if input_key in self.inputs:
+                value = self.current_settings.get(setting_key, self.DEFAULT_SETTINGS[setting_key])
+                self.inputs[input_key].setText(formatter(value))
     
-    def get_settings_from_ui(self) -> dict:
-        """Get settings from UI controls with proper rounding."""
-        try:
-            settings = {}
-            
-            # Parse numeric values with error handling and rounding
+    def get_settings_from_ui(self) -> Dict[str, Any]:
+        """Get settings from UI controls with proper parsing and error handling."""
+        # Mapping for parsing different types with defaults
+        parse_mapping = [
+            ('exposure', 'exposure_ms', lambda x: round(float(x), 2), 15.0),
+            ('gain', 'gain_master', int, 2),
+            ('fps', 'frame_rate_fps', lambda x: round(float(x), 2), 30.0),
+            ('brightness', 'brightness', int, 50),
+            ('contrast', 'contrast', int, 75),
+            ('saturation', 'saturation', int, 70)
+        ]
+        
+        settings = {}
+        
+        for input_key, setting_key, parser, default_value in parse_mapping:
             try:
-                settings['exposure_ms'] = round(float(self.exposure_input.text() or "15.0"), 2)
-            except ValueError:
-                settings['exposure_ms'] = 15.0
-            
-            try:
-                settings['gain_master'] = int(self.gain_input.text() or "2")
-            except ValueError:
-                settings['gain_master'] = 2
-            
-            try:
-                settings['frame_rate_fps'] = round(float(self.fps_input.text() or "30.0"), 2)
-            except ValueError:
-                settings['frame_rate_fps'] = 30.0
-            
-            try:
-                settings['brightness'] = int(self.brightness_input.text() or "50")
-            except ValueError:
-                settings['brightness'] = 50
-            
-            try:
-                settings['contrast'] = int(self.contrast_input.text() or "75")
-            except ValueError:
-                settings['contrast'] = 75
-            
-            try:
-                settings['saturation'] = int(self.saturation_input.text() or "70")
-            except ValueError:
-                settings['saturation'] = 70
-            
-            return settings
-            
-        except Exception as e:
-            logger.error(f"Error parsing settings: {e}")
-            return self.default_settings.copy()
+                text_value = self.inputs[input_key].text() or str(default_value)
+                settings[setting_key] = parser(text_value)
+            except (ValueError, KeyError):
+                settings[setting_key] = default_value
+                logger.warning(f"Using default value for {setting_key}: {default_value}")
+        
+        return settings
     
     def apply_or_reset(self):
         """Apply settings or reset to defaults (toggles function)."""

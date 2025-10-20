@@ -7,8 +7,18 @@ clear error messages for invalid inputs.
 
 import os
 from pathlib import Path
-from typing import Union, Tuple, Any, Optional
+from typing import Union, Tuple, Any, Optional, TypeVar
+
 from src.utils.exceptions import ValidationError
+
+# Type variable for generic number types
+NumberType = TypeVar('NumberType', int, float)
+
+
+def _validate_number_type(value: Any, field_name: str) -> None:
+    """Helper to validate that value is a number."""
+    if not isinstance(value, (int, float)):
+        raise ValidationError("Must be a number", field_name, value)
 
 
 def validate_positive_number(value: Union[int, float], field_name: str = "value") -> Union[int, float]:
@@ -24,8 +34,7 @@ def validate_positive_number(value: Union[int, float], field_name: str = "value"
     Raises:
         ValidationError: If value is not positive
     """
-    if not isinstance(value, (int, float)):
-        raise ValidationError("Must be a number", field_name, value)
+    _validate_number_type(value, field_name)
     
     if value <= 0:
         raise ValidationError("Must be positive", field_name, value)
@@ -46,6 +55,10 @@ def validate_frame_shape(shape: Tuple[int, ...], field_name: str = "frame_shape"
     Raises:
         ValidationError: If shape is invalid for video frames
     """
+    # Constants for validation
+    MAX_DIMENSION = 10000
+    VALID_CHANNELS = {1, 3, 4}  # grayscale, RGB, RGBA
+    
     if not isinstance(shape, (tuple, list)):
         raise ValidationError("Must be a tuple or list", field_name, shape)
     
@@ -60,12 +73,12 @@ def validate_frame_shape(shape: Tuple[int, ...], field_name: str = "frame_shape"
     
     height, width, channels = shape
     
-    # Reasonable bounds checking
-    if height > 10000 or width > 10000:
-        raise ValidationError("Frame dimensions too large (max 10000x10000)", field_name, shape)
+    # Bounds checking with constants
+    if max(height, width) > MAX_DIMENSION:
+        raise ValidationError(f"Frame dimensions too large (max {MAX_DIMENSION}x{MAX_DIMENSION})", field_name, shape)
     
-    if channels not in [1, 3, 4]:
-        raise ValidationError("Channels must be 1 (grayscale), 3 (RGB), or 4 (RGBA)", field_name, shape)
+    if channels not in VALID_CHANNELS:
+        raise ValidationError(f"Channels must be one of {sorted(VALID_CHANNELS)}", field_name, shape)
     
     return tuple(shape)
 
@@ -124,10 +137,9 @@ def validate_range(value: Union[int, float], min_val: Union[int, float], max_val
     Raises:
         ValidationError: If value is outside the allowed range
     """
-    if not isinstance(value, (int, float)):
-        raise ValidationError(f"Must be a number", field_name, value)
+    _validate_number_type(value, field_name)
     
-    if value < min_val or value > max_val:
+    if not (min_val <= value <= max_val):
         raise ValidationError(f"Must be between {min_val} and {max_val}", field_name, value)
     
     return value

@@ -694,62 +694,54 @@ class CameraController:
         self.mem_ptr = None
         self.mem_id = None
     
-    def set_exposure(self, exposure_ms: float) -> bool:
-        """Set camera exposure time in milliseconds."""
+    def _set_camera_parameter(self, param_name: str, value: Any, 
+                             setter_func, success_msg: str, error_msg: str) -> bool:
+        """Generic parameter setter with consistent error handling."""
         if not self.h_cam or not PYUEYE_AVAILABLE:
-            logger.warning("Cannot set exposure: camera not connected")
+            logger.warning(f"Cannot set {param_name}: camera not connected")
             return False
         
         try:
-            exposure = ueye.DOUBLE(exposure_ms)
-            ret = ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_SET_EXPOSURE, exposure, 8)
+            ret = setter_func()
             if ret == ueye.IS_SUCCESS:
-                logger.info(f"Exposure set to {exposure_ms:.2f} ms")
+                logger.info(success_msg)
                 return True
             else:
-                logger.error(f"Failed to set exposure: error code {ret}")
+                logger.error(f"{error_msg}: error code {ret}")
                 return False
         except Exception as e:
-            logger.error(f"Error setting exposure: {e}")
+            logger.error(f"Error setting {param_name}: {e}")
             return False
+    
+    def set_exposure(self, exposure_ms: float) -> bool:
+        """Set camera exposure time in milliseconds."""
+        exposure = ueye.DOUBLE(exposure_ms)
+        return self._set_camera_parameter(
+            "exposure", exposure_ms,
+            lambda: ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_SET_EXPOSURE, exposure, 8),
+            f"Exposure set to {exposure_ms:.2f} ms",
+            "Failed to set exposure"
+        )
     
     def set_gain(self, gain: int) -> bool:
         """Set camera master gain (0-100)."""
-        if not self.h_cam or not PYUEYE_AVAILABLE:
-            logger.warning("Cannot set gain: camera not connected")
-            return False
-        
-        try:
-            ret = ueye.is_SetHardwareGain(self.h_cam, gain, ueye.IS_IGNORE_PARAMETER, 
-                                        ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER)
-            if ret == ueye.IS_SUCCESS:
-                logger.info(f"Gain set to {gain}")
-                return True
-            else:
-                logger.error(f"Failed to set gain: error code {ret}")
-                return False
-        except Exception as e:
-            logger.error(f"Error setting gain: {e}")
-            return False
+        return self._set_camera_parameter(
+            "gain", gain,
+            lambda: ueye.is_SetHardwareGain(self.h_cam, gain, ueye.IS_IGNORE_PARAMETER, 
+                                          ueye.IS_IGNORE_PARAMETER, ueye.IS_IGNORE_PARAMETER),
+            f"Gain set to {gain}",
+            "Failed to set gain"
+        )
     
     def set_framerate(self, fps: float) -> bool:
         """Set camera frame rate in frames per second."""
-        if not self.h_cam or not PYUEYE_AVAILABLE:
-            logger.warning("Cannot set framerate: camera not connected")
-            return False
-        
-        try:
-            new_fps = ueye.DOUBLE(fps)
-            ret = ueye.is_SetFrameRate(self.h_cam, new_fps, None)
-            if ret == ueye.IS_SUCCESS:
-                logger.info(f"Frame rate set to {fps:.1f} fps")
-                return True
-            else:
-                logger.error(f"Failed to set frame rate: error code {ret}")
-                return False
-        except Exception as e:
-            logger.error(f"Error setting frame rate: {e}")
-            return False
+        new_fps = ueye.DOUBLE(fps)
+        return self._set_camera_parameter(
+            "framerate", fps,
+            lambda: ueye.is_SetFrameRate(self.h_cam, new_fps, None),
+            f"Frame rate set to {fps:.1f} fps",
+            "Failed to set frame rate"
+        )
     
     def apply_settings(self, settings: dict) -> dict:
         """Apply multiple camera settings at once.
