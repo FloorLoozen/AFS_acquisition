@@ -1,130 +1,120 @@
-"""
-Status Display Widget for the AFS Tracking System.
-Provides a standardized status indicator with colored circular status and text.
-"""
+"""Shared status components for consistent display across widgets."""
 
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PyQt5.QtWidgets import QLabel, QHBoxLayout, QWidget
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPainter, QBrush, QColor
+from PyQt5.QtGui import QColor, QPainter
+from typing import Dict, ClassVar
 
 from src.utils.logger import get_logger
 
 logger = get_logger("status_display")
 
 
-class StatusDisplay(QWidget):
-    """Widget that displays a colored status indicator with text."""
+class StatusIndicator(QLabel):
+    """Circle indicator that changes color based on status."""
     
-    # Status colors
-    STATUS_COLORS = {
-        'ready': '#00AA00',       # Green
-        'connected': '#00AA00',   # Green  
-        'on': '#00AA00',          # Green
-        'completed': '#00AA00',   # Green
-        'recording': '#FF6600',   # Orange
-        'executing': '#FF6600',   # Orange
-        'starting': '#FFAA00',    # Yellow
-        'stopped': '#FFAA00',     # Yellow
-        'disconnected': '#AA0000', # Red
-        'error': '#AA0000',       # Red
-        'offline': '#AA0000',     # Red
-        'unknown': '#888888'      # Gray
+    # Consolidated color scheme for consistency
+    STATUS_COLORS: ClassVar[Dict[str, QColor]] = {
+        # Success states (Green)
+        'live': QColor(0, 255, 0),
+        'connected': QColor(0, 255, 0),
+        'saved': QColor(0, 255, 0),
+        'on': QColor(0, 255, 0),
+        'completed': QColor(0, 255, 0),
+        
+        # Active/Executing states (Blue) - for running processes
+        'executing': QColor(0, 120, 255),     # Bright blue for active execution
+        'starting': QColor(0, 120, 255),     # Blue for starting execution
+        'running': QColor(0, 120, 255),      # Blue for active processes
+        'recording': QColor(0, 120, 255),    # Blue for recording (active process)
+        
+        # Error/Critical states (Red)
+        'error': QColor(255, 0, 0),
+        'disconnected': QColor(255, 0, 0),
+        'connection_failed': QColor(255, 0, 0),
+        'connection_error': QColor(255, 0, 0),
+        'camera_error': QColor(255, 0, 0),
+        'failed': QColor(255, 0, 0),
+        
+        # Warning/Transitional states (Orange)
+        'initializing': QColor(255, 165, 0),
+        'reinitializing': QColor(255, 165, 0),
+        'stopped': QColor(255, 165, 0),       # Orange for user-stopped actions
+        'connecting': QColor(255, 165, 0),
+        'reconnecting': QColor(255, 165, 0),
+        
+        # Inactive/Off states (Gray)
+        'off': QColor(128, 128, 128),
+        'ready': QColor(128, 128, 128),      # Gray for ready/idle state
+        
+        # Special states
+        'paused': QColor(255, 255, 0),       # Yellow
+        'test_pattern': QColor(100, 149, 237), # Cornflower blue
     }
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.status_text = "Unknown"
-        self.status_color = self.STATUS_COLORS['unknown']
+        self.setFixedSize(16, 16)
+        self.status_color = self.STATUS_COLORS['ready']
         
-        self._init_ui()
+    def set_status(self, status: str) -> None:
+        """Set status by name or use default gray."""
+        # Normalize status string for consistent matching
+        status_key = status.lower().replace(' ', '_').replace('-', '_')
+        
+        # Use direct lookup for exact matches, fallback to substring matching
+        if status_key in self.STATUS_COLORS:
+            self.status_color = self.STATUS_COLORS[status_key]
+        else:
+            # Fallback to substring matching for backward compatibility
+            self.status_color = next(
+                (color for key, color in self.STATUS_COLORS.items() if key in status_key),
+                self.STATUS_COLORS['ready']
+            )
+        self.update()
+        
+    def paintEvent(self, event) -> None:
+        """Draw the status indicator circle."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(self.status_color)
+        painter.setPen(Qt.black)
+        painter.drawEllipse(2, 2, 12, 12)
+
+
+class StatusDisplay(QWidget):
+    """Standardized status display with text and indicator."""
     
-    def _init_ui(self):
-        """Initialize the user interface."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+        
+    def _init_ui(self) -> None:
+        """Initialize the UI layout."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         
-        # Status indicator (colored circle)
         self.indicator = StatusIndicator()
-        self.indicator.setFixedSize(12, 12)
+        self.text_label = QLabel("")
+        
         layout.addWidget(self.indicator)
+        layout.addWidget(self.text_label)
+        layout.addStretch()
         
-        # Status text
-        self.label = QLabel(self.status_text)
-        # No bold styling - just normal text
-        layout.addWidget(self.label)
-        
-        # Add stretch to prevent expansion
-        layout.addStretch(1)
-    
-    def set_status(self, status_text: str):
-        """Set the status text and update the indicator color."""
-        self.status_text = status_text
-        self.label.setText(status_text)
-        
-        # Determine color based on status text
-        status_lower = status_text.lower()
-        
-        # Check for specific patterns in status text
-        if any(word in status_lower for word in ['ready', 'connected']):
-            self.status_color = self.STATUS_COLORS['ready']
-        elif any(word in status_lower for word in ['on @', 'on']):
-            self.status_color = self.STATUS_COLORS['on']
-        elif any(word in status_lower for word in ['completed', 'saved']):
-            self.status_color = self.STATUS_COLORS['completed']
-        elif any(word in status_lower for word in ['recording', 'executing']):
-            self.status_color = self.STATUS_COLORS['recording']
-        elif any(word in status_lower for word in ['starting', 'loading']):
-            self.status_color = self.STATUS_COLORS['starting']
-        elif any(word in status_lower for word in ['stopped', 'stopping']):
-            self.status_color = self.STATUS_COLORS['stopped']
-        elif any(word in status_lower for word in ['disconnected', 'offline']):
-            self.status_color = self.STATUS_COLORS['disconnected']
-        elif any(word in status_lower for word in ['error', 'failed', 'fault']):
-            self.status_color = self.STATUS_COLORS['error']
+    def set_status(self, text: str) -> None:
+        """Set both text and indicator color based on status."""
+        # If status is unknown, show nothing
+        if text.lower() in ['unknown', '']:
+            self.text_label.setText("")
         else:
-            # For unknown status, just show gray circle
-            self.status_color = self.STATUS_COLORS['unknown']
+            self.text_label.setText(text)
+        self.indicator.set_status(text)
         
-        # Update indicator color
-        self.indicator.set_color(self.status_color)
-    
-    def get_status(self) -> str:
-        """Get the current status text."""
-        return self.status_text
-    
-    def clear(self):
+    def clear(self) -> None:
         """Clear the status display."""
-        self.set_status("Ready")
-
-
-class StatusIndicator(QWidget):
-    """A simple colored circle indicator."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.color = QColor('#888888')  # Default gray
-    
-    def set_color(self, color_str: str):
-        """Set the indicator color."""
-        self.color = QColor(color_str)
-        self.update()  # Trigger repaint
-    
-    def paintEvent(self, event):
-        """Paint the colored circle."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Draw filled circle
-        brush = QBrush(self.color)
-        painter.setBrush(brush)
-        painter.setPen(Qt.NoPen)
-        
-        # Draw circle to fit widget size
-        size = min(self.width(), self.height())
-        x = (self.width() - size) // 2
-        y = (self.height() - size) // 2
-        painter.drawEllipse(x, y, size, size)
+        self.text_label.setText("")
+        self.indicator.set_status("ready")
 
 
 # Example usage if this file is run directly
