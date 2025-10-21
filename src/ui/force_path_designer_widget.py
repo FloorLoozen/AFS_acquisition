@@ -45,11 +45,12 @@ class FunctionGeneratorWorker(QThread):
     status_update = pyqtSignal(str, float, float)  # status, frequency, amplitude
     execution_finished = pyqtSignal(bool)  # success
     
-    def __init__(self, fg_controller, sorted_points, execution_log):
+    def __init__(self, fg_controller, sorted_points, execution_log, main_window=None):
         super().__init__()
         self.fg_controller = fg_controller
         self.sorted_points = sorted_points
         self.execution_log = execution_log
+        self.main_window = main_window  # Reference for HDF5 timeline logging
         self.should_stop = False
         self.measurement_start_time = time.time()
         
@@ -152,14 +153,43 @@ class FunctionGeneratorWorker(QThread):
                             if hasattr(self, '_consecutive_errors'):
                                 self._consecutive_errors = 0
                             
-                            # Log execution data (optimized - only significant changes)
+                            # ENHANCED LOGGING - Detailed function generator output tracking
+                            import datetime
+                            current_timestamp = time.time()
                             log_entry = {
-                                'time': elapsed_time,
-                                'absolute_timestamp': self.measurement_start_time + elapsed_time,
-                                'set_frequency': frequency,
-                                'set_amplitude': amplitude
+                                'execution_time_s': elapsed_time,
+                                'absolute_timestamp': current_timestamp,
+                                'iso_timestamp': datetime.datetime.fromtimestamp(current_timestamp).isoformat(),
+                                'set_frequency_mhz': frequency,
+                                'set_amplitude_vpp': amplitude,
+                                'interpolation_progress': progress,
+                                'current_segment': f"{current_idx}->{current_idx+1}",
+                                'segment_start_time': point1.time,
+                                'segment_end_time': point2.time,
+                                'transition_type': point2.transition.value,
+                                'delta_freq_mhz': abs(self._last_freq - frequency) if hasattr(self, '_last_freq') else 0.0,
+                                'delta_amp_vpp': abs(self._last_amp - amplitude) if hasattr(self, '_last_amp') else 0.0
                             }
                             self.execution_log.append(log_entry)
+                            
+                            # Real-time console logging for immediate feedback
+                            logger.info(f"FG Output: {elapsed_time:.2f}s -> {frequency:.3f}MHz, {amplitude:.2f}Vpp")
+                            
+                            # MAIN WINDOW HDF5 TIMELINE LOGGING - Log to main recording system
+                            if hasattr(self, 'main_window') and self.main_window and hasattr(self.main_window, 'camera_widget'):
+                                try:
+                                    camera_widget = self.main_window.camera_widget
+                                    if hasattr(camera_widget, 'log_function_generator_event'):
+                                        # Log function generator output to main HDF5 timeline
+                                        camera_widget.log_function_generator_event(
+                                            frequency_mhz=frequency,
+                                            amplitude_vpp=amplitude,
+                                            output_enabled=True,  # Always true during force path execution
+                                            event_type='force_path_execution'
+                                        )
+                                except Exception as e:
+                                    # Don't let logging errors interrupt execution
+                                    logger.debug(f"Failed to log FG event to main HDF5: {e}")
                             
                             # Emit status update (reduced frequency to minimize UI overhead)
                             if not hasattr(self, '_last_status_time') or (elapsed_time - self._last_status_time) > 0.2:
@@ -510,7 +540,7 @@ class ForcePathDesignerWidget(QWidget):
         
         # Status display using standardized StatusDisplay widget
         self.status_display = StatusDisplay()
-        self.status_display.set_status("Ready")
+        self.status_display.set_status("Disconnected")  # Default to disconnected until FG controller is set
         layout.addWidget(self.status_display)
         
         return widget
@@ -1002,6 +1032,10 @@ class ForcePathDesignerWidget(QWidget):
         if not self.function_generator_controller:
             self.status_display.set_status("Disconnected")
             logger.error("Execution error: No function generator controller available")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Function Generator Disconnected", 
+                              "Cannot execute force path: Function generator is not connected.\n"
+                              "Please check the function generator connection and try again.")
             return
         
         # Try to ensure connection before execution
@@ -1012,12 +1046,21 @@ class ForcePathDesignerWidget(QWidget):
                 if not self.function_generator_controller.connect():
                     self.status_display.set_status("Disconnected")
                     logger.error("Function generator connection failed - please check device")
+                    from PyQt5.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "Function Generator Connection Failed", 
+                                      "Cannot execute force path: Function generator connection failed.\n"
+                                      "Please check the device connection and try again.")
                     return
                 else:
                     logger.info("Function generator reconnected successfully")
+                    self.status_display.set_status("Ready")
             except Exception as e:
                 self.status_display.set_status("Disconnected")
                 logger.error(f"Function generator connection error: {e}")
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Function Generator Error", 
+                                  f"Cannot execute force path: {str(e)}\n"
+                                  "Please check the device connection and try again.")
                 return
             
         # Prepare execution
@@ -1030,6 +1073,9 @@ class ForcePathDesignerWidget(QWidget):
         
         # Record measurement start time
         self.measurement_start_time = time.time()
+        
+        # COMPREHENSIVE HARDWARE METADATA LOGGING
+        self._log_hardware_metadata()
         
         # Sort points by time and process for execution
         self.sorted_points = sorted(self.path_points, key=lambda p: p.time)
@@ -1050,7 +1096,8 @@ class ForcePathDesignerWidget(QWidget):
         self.fg_worker = FunctionGeneratorWorker(
             self.function_generator_controller,
             self.sorted_points,  # Pass sorted points, worker will process them
-            self.execution_log
+            self.execution_log,
+            self.main_window  # Pass main window for HDF5 timeline logging
         )
         
         # Connect worker signals
@@ -1166,13 +1213,17 @@ class ForcePathDesignerWidget(QWidget):
         self.execute_path_btn.setEnabled(True)
         self.stop_execution_btn.setEnabled(False)
         
-        # Set status based on completion state
+        # Set status based on completion state and function generator availability
         if self.execution_completed:
             self.status_display.set_status("Completed")
         else:
-            self.status_display.set_status("Stopped")  # Orange color for user-stopped
+            # Check function generator status when execution stops
+            if not self.function_generator_controller or not self.function_generator_controller.is_connected():
+                self.status_display.set_status("Disconnected")
+            else:
+                self.status_display.set_status("Stopped")  # Orange color for user-stopped
         
-        completion_status = "completed" if self.execution_completed else "stopped"
+        completion_status = "Completed" if self.execution_completed else "Stopped"
         logger.info(f"Force path execution {completion_status}")
         self.path_execution_stopped.emit()
         
@@ -1198,12 +1249,24 @@ class ForcePathDesignerWidget(QWidget):
         return processed_points
             
     def _save_path_design_to_hdf5(self):
-        """Save current path design when executing (only if measurement active)."""
+        """Save current path design to video HDF5 file (consolidated storage)."""
         if not self.main_window or not self.path_points:
             return
         
-        # Only save during execution if measurement is active
+        # Only save during execution if measurement is active and video recording is active
         if not hasattr(self.main_window, 'measurement_active') or not self.main_window.measurement_active:
+            return
+            
+        # Check if camera widget has active HDF5 recorder
+        if not hasattr(self.main_window, 'camera_widget') or not self.main_window.camera_widget:
+            return
+            
+        camera_widget = self.main_window.camera_widget
+        if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+            return
+            
+        hdf5_recorder = camera_widget.hdf5_recorder
+        if not hdf5_recorder.is_recording:
             return
             
         try:
@@ -1211,7 +1274,6 @@ class ForcePathDesignerWidget(QWidget):
             times = [point.time for point in self.path_points]
             frequencies = [point.frequency for point in self.path_points]
             amplitudes = [point.amplitude for point in self.path_points]
-            transitions = [point.transition.value for point in self.path_points]
             
             execution_data = {
                 'path_design_points': len(self.path_points),
@@ -1220,33 +1282,41 @@ class ForcePathDesignerWidget(QWidget):
                 'amplitude_range': f"{min(amplitudes)}-{max(amplitudes)} Vpp" if amplitudes else "None"
             }
             
-            # Log to main window's execution logging system
-            self.main_window.log_execution_data('force_path_design', execution_data)
-            logger.info("Force path design logged to measurement HDF5")
+            # Log directly to video HDF5 file (consolidated storage)
+            hdf5_recorder.log_execution_data('force_path_design', execution_data)
+            logger.info("Force path design logged to video HDF5 file")
             
         except Exception as e:
             logger.error(f"Error logging force path design: {e}")
             
     def _save_execution_to_hdf5(self):
-        """Log execution results using main window's execution logging."""
+        """Log execution results to video HDF5 file (consolidated storage)."""
         if not self.main_window or not self.measurement_start_time:
             return
             
-        # Only save if measurement is active
-        if not hasattr(self.main_window, 'measurement_active') or not self.main_window.measurement_active:
+        # Check if camera widget has active HDF5 recorder
+        if not hasattr(self.main_window, 'camera_widget') or not self.main_window.camera_widget:
+            return
+            
+        camera_widget = self.main_window.camera_widget
+        if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+            return
+            
+        hdf5_recorder = camera_widget.hdf5_recorder
+        if not hdf5_recorder.is_recording:
             return
             
         try:
             execution_data = {
                 'execution_completed': self.execution_completed,
                 'execution_log_entries': len(self.execution_log),
-                'execution_duration_seconds': len(self.execution_log) * 0.1 if self.execution_log else 0  # Approximate
+                'execution_duration_seconds': len(self.execution_log) * 0.02 if self.execution_log else 0  # 50Hz = 20ms intervals
             }
             
             if self.execution_log:
                 # Add summary statistics
-                set_frequencies = [entry['set_frequency'] for entry in self.execution_log]
-                set_amplitudes = [entry['set_amplitude'] for entry in self.execution_log]
+                set_frequencies = [entry['set_frequency_mhz'] for entry in self.execution_log]
+                set_amplitudes = [entry['set_amplitude_vpp'] for entry in self.execution_log]
                 
                 execution_data.update({
                     'frequency_range_executed': f"{min(set_frequencies)}-{max(set_frequencies)} MHz",
@@ -1254,14 +1324,32 @@ class ForcePathDesignerWidget(QWidget):
                     'total_execution_steps': len(set_frequencies)
                 })
             
-            # Log to main window's execution logging system
-            self.main_window.log_execution_data('force_path_execution', execution_data)
+            # Log directly to video HDF5 file (consolidated storage)
+            hdf5_recorder.log_execution_data('force_path_execution', execution_data)
             
             status = "completed" if self.execution_completed else "stopped early"
-            logger.info(f"Force path execution logged to measurement HDF5: {len(self.execution_log)} steps, {status}")
+            logger.info(f"Force path execution logged to video HDF5 file: {len(self.execution_log)} steps, {status}")
             
         except Exception as e:
             logger.error(f"Error logging force path execution: {e}")
+    
+    def _get_unique_filename(self, filename):
+        """Generate unique filename by adding _1, _2, etc. if file exists."""
+        import os
+        
+        if not os.path.exists(filename):
+            return filename
+            
+        # Split filename into base and extension
+        base, ext = os.path.splitext(filename)
+        counter = 1
+        
+        # Keep incrementing counter until we find a unique filename
+        while True:
+            new_filename = f"{base}_{counter}{ext}"
+            if not os.path.exists(new_filename):
+                return new_filename
+            counter += 1
         
     def _export_to_hdf5(self):
         """Export force path data and execution log to HDF5 file."""
@@ -1269,6 +1357,7 @@ class ForcePathDesignerWidget(QWidget):
         from datetime import datetime
         import h5py
         import numpy as np
+        import os
         
         if not self.path_points:
             logger.warning("Export failed: No path points to export")
@@ -1284,63 +1373,255 @@ class ForcePathDesignerWidget(QWidget):
         if not filename:
             return
         
+        # Handle unique filename generation (add _1, _2, etc. if file exists)
+        filename = self._get_unique_filename(filename)
+        
         try:
             with h5py.File(filename, 'w') as f:
                 # Create main groups
                 path_group = f.create_group('force_path')
                 execution_group = f.create_group('execution_log')
-                metadata_group = f.create_group('metadata')
+                fg_timeline_group = f.create_group('function_generator_timeline')  # NEW: Dedicated FG timeline
+                metadata_group = f.create_group('hardware_metadata')
                 
                 # Export path design
                 times = [point.time for point in self.path_points]
                 frequencies = [point.frequency for point in self.path_points]
                 amplitudes = [point.amplitude for point in self.path_points]
                 transitions = [point.transition.value for point in self.path_points]
+                relative_times = [self._get_relative_time(i) for i in range(len(self.path_points))]
                 
-                path_group.create_dataset('times_seconds', data=np.array(times))
+                path_group.create_dataset('absolute_times_seconds', data=np.array(times))
+                path_group.create_dataset('relative_durations_seconds', data=np.array(relative_times))
                 path_group.create_dataset('frequencies_mhz', data=np.array(frequencies))
                 path_group.create_dataset('amplitudes_vpp', data=np.array(amplitudes))
                 path_group.create_dataset('transitions', data=np.array(transitions, dtype='S10'))
                 
-                # Export execution log if available
+                # Export enhanced execution log if available
                 if self.execution_log:
-                    exec_times = [entry['time'] for entry in self.execution_log]
-                    set_frequencies = [entry['set_frequency'] for entry in self.execution_log]
-                    set_amplitudes = [entry['set_amplitude'] for entry in self.execution_log]
-                    actual_frequencies = [entry.get('actual_frequency', np.nan) for entry in self.execution_log]
-                    actual_amplitudes = [entry.get('actual_amplitude', np.nan) for entry in self.execution_log]
+                    # Extract all fields from enhanced logging
+                    exec_times = [entry.get('execution_time_s', 0) for entry in self.execution_log]
+                    abs_timestamps = [entry.get('absolute_timestamp', 0) for entry in self.execution_log]
+                    iso_timestamps = [entry.get('iso_timestamp', '') for entry in self.execution_log]
+                    set_frequencies = [entry.get('set_frequency_mhz', 0) for entry in self.execution_log]
+                    set_amplitudes = [entry.get('set_amplitude_vpp', 0) for entry in self.execution_log]
+                    interpolation_progress = [entry.get('interpolation_progress', 0) for entry in self.execution_log]
+                    current_segments = [entry.get('current_segment', '') for entry in self.execution_log]
+                    transition_types = [entry.get('transition_type', '') for entry in self.execution_log]
+                    delta_freqs = [entry.get('delta_freq_mhz', 0) for entry in self.execution_log]
+                    delta_amps = [entry.get('delta_amp_vpp', 0) for entry in self.execution_log]
                     
+                    # Create execution datasets with comprehensive data
                     execution_group.create_dataset('execution_times_seconds', data=np.array(exec_times))
+                    execution_group.create_dataset('absolute_timestamps', data=np.array(abs_timestamps))
+                    execution_group.create_dataset('iso_timestamps', data=np.array(iso_timestamps, dtype='S25'))
                     execution_group.create_dataset('set_frequencies_mhz', data=np.array(set_frequencies))
                     execution_group.create_dataset('set_amplitudes_vpp', data=np.array(set_amplitudes))
-                    execution_group.create_dataset('actual_frequencies_mhz', data=np.array(actual_frequencies))
-                    execution_group.create_dataset('actual_amplitudes_vpp', data=np.array(actual_amplitudes))
+                    execution_group.create_dataset('interpolation_progress', data=np.array(interpolation_progress))
+                    execution_group.create_dataset('current_segments', data=np.array(current_segments, dtype='S10'))
+                    execution_group.create_dataset('transition_types', data=np.array(transition_types, dtype='S10'))
+                    execution_group.create_dataset('frequency_deltas_mhz', data=np.array(delta_freqs))
+                    execution_group.create_dataset('amplitude_deltas_vpp', data=np.array(delta_amps))
+                    
+                    # NEW: Dedicated Function Generator Timeline Data (for easy video correlation)
+                    fg_timeline_group.create_dataset('time_seconds', data=np.array(exec_times))
+                    fg_timeline_group.create_dataset('frequency_mhz', data=np.array(set_frequencies))
+                    fg_timeline_group.create_dataset('amplitude_vpp', data=np.array(set_amplitudes))
+                    fg_timeline_group.create_dataset('unix_timestamps', data=np.array(abs_timestamps))
+                    fg_timeline_group.create_dataset('human_timestamps', data=np.array(iso_timestamps, dtype='S25'))
+                    
+                    # Add descriptive attributes for easy understanding
+                    fg_timeline_group.attrs['description'] = 'Function Generator Output Timeline - Real-time values sent to device'
+                    fg_timeline_group.attrs['time_reference'] = 'Relative to execution start (time_seconds) and absolute (unix_timestamps)'
+                    fg_timeline_group.attrs['frequency_units'] = 'MHz'
+                    fg_timeline_group.attrs['amplitude_units'] = 'Vpp (Volts peak-to-peak)'
+                    fg_timeline_group.attrs['sample_rate_hz'] = '50 (20ms intervals)'
+                    fg_timeline_group.attrs['total_samples'] = len(exec_times)
+                    fg_timeline_group.attrs['duration_seconds'] = max(exec_times) if exec_times else 0
+                    
+                    # Add execution summary statistics
+                    execution_group.attrs['total_execution_time_s'] = max(exec_times) if exec_times else 0
+                    execution_group.attrs['total_updates'] = len(exec_times)
+                    execution_group.attrs['frequency_range_mhz'] = f"{min(set_frequencies):.3f}-{max(set_frequencies):.3f}" if set_frequencies else "0-0"
+                    execution_group.attrs['amplitude_range_vpp'] = f"{min(set_amplitudes):.2f}-{max(set_amplitudes):.2f}" if set_amplitudes else "0-0"
                 
-                # Add metadata
-                metadata_group.attrs['creation_time'] = datetime.now().isoformat()
-                metadata_group.attrs['path_points_count'] = len(self.path_points)
-                metadata_group.attrs['total_duration_seconds'] = max(times) if times else 0
-                metadata_group.attrs['execution_log_entries'] = len(self.execution_log)
+                # Export comprehensive hardware metadata
+                if hasattr(self, 'hardware_metadata'):
+                    self._export_metadata_to_hdf5(metadata_group, self.hardware_metadata)
+                else:
+                    # Fallback basic metadata if detailed metadata not available
+                    metadata_group.attrs['export_timestamp'] = time.time()
+                    metadata_group.attrs['software_version'] = '1.0.0'
                 
-                # Add function generator info if available
-                if self.function_generator_controller:
-                    fg_group = metadata_group.create_group('function_generator')
-                    fg_group.attrs['connected'] = self.function_generator_controller.is_connected()
-                    if self.function_generator_controller.is_connected():
-                        try:
-                            fg_group.attrs['model'] = getattr(self.function_generator_controller, 'model', 'Unknown')
-                        except:
-                            fg_group.attrs['model'] = 'Unknown'
+                # Add file-level attributes for quick identification
+                f.attrs['file_type'] = 'afs_force_path_execution'
+                f.attrs['creation_time'] = time.time()
+                f.attrs['total_path_points'] = len(self.path_points)
+                f.attrs['total_execution_updates'] = len(self.execution_log) if self.execution_log else 0
             
             logger.info(f"Force path exported successfully to: {filename} "
-                       f"({len(self.path_points)} points, {len(self.execution_log)} log entries)")
+                       f"({len(self.path_points)} points, {len(self.execution_log)} log entries, "
+                       f"function generator timeline included)")
+            
+            # Log the file structure for user reference
+            logger.info(f"HDF5 structure: /force_path/, /execution_log/, /function_generator_timeline/, /hardware_metadata/")
             
         except Exception as e:
             logger.error(f"Failed to export force path to HDF5: {e}")
+    
+    def _export_metadata_to_hdf5(self, metadata_group, metadata):
+        """Export comprehensive metadata to HDF5 group."""
+        try:
+            # Experiment info
+            exp_group = metadata_group.create_group('experiment_info')
+            exp_info = metadata['experiment_info']
+            exp_group.attrs['start_timestamp'] = exp_info['start_timestamp']
+            exp_group.attrs['start_iso'] = exp_info['start_iso']
+            exp_group.attrs['experiment_type'] = exp_info['experiment_type']
+            exp_group.attrs['software_version'] = exp_info['software_version']
+            exp_group.attrs['operator'] = exp_info['operator']
+            exp_group.attrs['platform'] = exp_info['system_info']['platform']
+            exp_group.attrs['python_version'] = exp_info['system_info']['python_version']
+            exp_group.attrs['working_directory'] = exp_info['system_info']['working_directory']
+            
+            # Path design info
+            path_group = metadata_group.create_group('path_design')
+            path_info = metadata['path_design']
+            path_group.attrs['total_points'] = path_info['total_points']
+            path_group.attrs['total_duration_s'] = path_info['total_duration_s']
+            
+            # Function generator metadata
+            if 'function_generator' in metadata:
+                fg_group = metadata_group.create_group('function_generator')
+                fg_info = metadata['function_generator']
+                fg_group.attrs['connected'] = fg_info['connected']
+                if fg_info['connected']:
+                    fg_group.attrs['model'] = fg_info.get('model', 'Unknown')
+                    fg_group.attrs['identification'] = fg_info.get('identification', 'Unknown')
+                    fg_group.attrs['interface'] = fg_info['communication']['interface']
+                    fg_group.attrs['timeout_ms'] = fg_info['communication']['timeout_ms']
+                    fg_group.attrs['waveform_type'] = fg_info['initial_settings']['waveform_type']
+                    fg_group.attrs['channel'] = fg_info['initial_settings']['channel']
+                else:
+                    fg_group.attrs['error'] = fg_info.get('error', fg_info.get('reason', 'Unknown'))
+            
+            # XY Stage metadata
+            if 'xy_stage' in metadata:
+                stage_group = metadata_group.create_group('xy_stage')
+                stage_info = metadata['xy_stage']
+                stage_group.attrs['connected'] = stage_info['connected']
+                if stage_info['connected'] and 'settings' in stage_info:
+                    stage_group.attrs['current_position'] = stage_info['settings']['current_position']
+                    stage_group.attrs['movement_enabled'] = stage_info['settings']['movement_enabled']
+                else:
+                    stage_group.attrs['error'] = stage_info.get('error', stage_info.get('reason', 'Unknown'))
+            
+        except Exception as e:
+            logger.error(f"Failed to export metadata to HDF5: {e}")
+    
+    def _log_hardware_metadata(self):
+        """Log comprehensive hardware metadata for experiment reproducibility."""
+        import datetime
+        import platform
+        import sys
+        import os
+        
+        metadata = {
+            'experiment_info': {
+                'start_timestamp': self.measurement_start_time,
+                'start_iso': datetime.datetime.fromtimestamp(self.measurement_start_time).isoformat(),
+                'experiment_type': 'force_path_execution',
+                'software_version': '1.0.0',  # Could be read from version file
+                'operator': os.getenv('USERNAME', 'unknown'),
+                'system_info': {
+                    'platform': platform.platform(),
+                    'python_version': sys.version,
+                    'working_directory': os.getcwd()
+                }
+            },
+            'path_design': {
+                'total_points': len(self.path_points),
+                'total_duration_s': max(point.time for point in self.path_points) if self.path_points else 0,
+                'path_points': [
+                    {
+                        'index': i,
+                        'absolute_time_s': point.time,
+                        'relative_duration_s': self._get_relative_time(i),
+                        'frequency_mhz': point.frequency,
+                        'amplitude_vpp': point.amplitude,
+                        'transition_type': point.transition.value
+                    }
+                    for i, point in enumerate(self.path_points)
+                ]
+            }
+        }
+        
+        # Function Generator Settings
+        if self.function_generator_controller and self.function_generator_controller.is_connected():
+            try:
+                # Get function generator identification and settings
+                fg_metadata = {
+                    'connected': True,
+                    'model': getattr(self.function_generator_controller, 'model', 'Siglent SDG1032X'),
+                    'identification': 'Siglent SDG1032X',  # Could query from device
+                    'communication': {
+                        'interface': 'USB-VISA',
+                        'timeout_ms': getattr(self.function_generator_controller.function_generator, 'timeout', 5000) if hasattr(self.function_generator_controller, 'function_generator') else 5000,
+                        'connection_timestamp': self.measurement_start_time
+                    },
+                    'initial_settings': {
+                        'output_enabled': False,  # Will be enabled during execution
+                        'waveform_type': 'sine',
+                        'channel': 1
+                    }
+                }
+                metadata['function_generator'] = fg_metadata
+            except Exception as e:
+                metadata['function_generator'] = {'connected': False, 'error': str(e)}
+        else:
+            metadata['function_generator'] = {'connected': False, 'reason': 'not_available'}
+        
+        # Stage Settings (if available through main window)
+        if self.main_window and hasattr(self.main_window, 'measurement_controls_widget'):
+            try:
+                stage_metadata = {
+                    'connected': True,
+                    'type': 'xy_stage',
+                    'settings': {
+                        'current_position': 'unknown',  # Could query actual position
+                        'movement_enabled': True
+                    }
+                }
+                metadata['xy_stage'] = stage_metadata
+            except Exception as e:
+                metadata['xy_stage'] = {'connected': False, 'error': str(e)}
+        else:
+            metadata['xy_stage'] = {'connected': False, 'reason': 'not_available'}
+        
+        # Store metadata for HDF5 export
+        self.hardware_metadata = metadata
+        
+        # Log key information to console for immediate feedback
+        logger.info(f"=== EXPERIMENT METADATA ===")
+        logger.info(f"Start Time: {metadata['experiment_info']['start_iso']}")
+        logger.info(f"Path Points: {metadata['path_design']['total_points']}")
+        logger.info(f"Total Duration: {metadata['path_design']['total_duration_s']:.1f}s")
+        logger.info(f"Function Generator: {'Connected' if metadata['function_generator']['connected'] else 'Disconnected'}")
+        logger.info(f"XY Stage: {'Connected' if metadata['xy_stage']['connected'] else 'Disconnected'}")
+        logger.info(f"===========================")
         
     def set_function_generator_controller(self, controller):
         """Set the function generator controller reference."""
         self.function_generator_controller = controller
+        # Update status display based on function generator availability
+        self._update_status_display()
+        
+    def _update_status_display(self):
+        """Update status display based on function generator availability."""
+        if not self.function_generator_controller or not self.function_generator_controller.is_connected():
+            self.status_display.set_status("Disconnected")
+        else:
+            self.status_display.set_status("Ready")
         
     def set_main_window(self, main_window):
         """Set the main window reference for measurement-driven logging."""

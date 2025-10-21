@@ -23,10 +23,12 @@ class FrequencySettingsWidget(QGroupBox):
         
 # Frequency settings initialized
         
-        # Initialize paths - restore original Floor/tmp path as requested
+        # Initialize paths - use specified tmp folder
         import os
-        # Use the original Floor/tmp path that user expects
-        self.save_path = "C:/Users/fAFS/Documents/Floor/tmp"
+        # Use the specified path: C:/Users/fAFS/Documents/Floor/tmp
+        default_dir = "C:/Users/fAFS/Documents/Floor/tmp"
+        self.save_path = default_dir
+        # Use simple date format for filename: YYYYMMDD
         self.default_filename = datetime.now().strftime("%Y%m%d")
         
         # Create default directory if it doesn't exist
@@ -98,6 +100,8 @@ class FrequencySettingsWidget(QGroupBox):
         # Set default value if it's the save path
         if attr_name == "save":
             line_edit.setText(self.save_path)
+            # Connect signal to update path when user types manually
+            line_edit.textChanged.connect(self._on_save_path_changed)
         
         setattr(self, f"{attr_name}_path_edit", line_edit)
         
@@ -161,6 +165,16 @@ class FrequencySettingsWidget(QGroupBox):
             self.save_path = path
             logger.info(f"Save path set to: {path}")
     
+    def _on_save_path_changed(self):
+        """Handle manual changes to save path text field."""
+        path = self.save_path_edit.text().strip()
+        if path and os.path.isdir(path):
+            self.save_path = path
+            logger.debug(f"Save path updated to: {path}")
+        elif path:
+            # Path exists in text field but may not be valid directory yet
+            self.save_path = path  # Store it anyway, user might be typing
+    
     def _browse_for_directory(self, title, current_path):
         """Common directory browsing functionality."""
         start_path = current_path or os.path.expanduser("~")
@@ -169,6 +183,12 @@ class FrequencySettingsWidget(QGroupBox):
     # Getter methods
     def get_save_path(self):
         """Get the current save path."""
+        # Always return the text field value if it exists, otherwise fallback to internal path
+        if hasattr(self, 'save_path_edit'):
+            text_path = self.save_path_edit.text().strip()
+            if text_path:
+                self.save_path = text_path  # Update internal path
+                return text_path
         return self.save_path
 
     def get_measurements_path(self):
@@ -184,9 +204,29 @@ class FrequencySettingsWidget(QGroupBox):
         return self.notes_edit.text().strip()
 
     def get_filename(self):
-        """Get the current HDF5 filename with .hdf5 extension."""
-        filename = self.filename_edit.text().strip() or self.default_filename
-        return f"{filename}.hdf5"
+        """Get the current HDF5 filename with .hdf5 extension and automatic numbering."""
+        import os
+        base_filename = self.filename_edit.text().strip() or self.default_filename
+        
+        # Check if file already exists and add numbering
+        if self.save_path:
+            # Start with just the date (no _1)
+            filename = f"{base_filename}.hdf5"
+            full_path = os.path.join(self.save_path, filename)
+            
+            if not os.path.exists(full_path):
+                return filename
+            
+            # If base filename exists, start numbering from 1
+            counter = 1
+            while True:
+                filename = f"{base_filename}_{counter}.hdf5"
+                full_path = os.path.join(self.save_path, filename)
+                if not os.path.exists(full_path):
+                    return filename
+                counter += 1
+        else:
+            return f"{base_filename}.hdf5"
 
     def get_full_file_path(self):
         """Get the complete path for the HDF5 file."""

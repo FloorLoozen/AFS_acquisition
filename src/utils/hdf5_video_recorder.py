@@ -84,6 +84,9 @@ class HDF5VideoRecorder:
         self.fg_timeline_buffer = []
         self.fg_timeline_buffer_size = 1000  # Buffer entries before writing to disk
         
+        # Execution data logging (for force path execution, etc.)
+        self.execution_data_group = None
+        
         # High-performance asynchronous writing
         self._write_queue = queue.Queue(maxsize=200)  # Increased buffer for high FPS
         self._write_thread = None
@@ -232,6 +235,13 @@ class HDF5VideoRecorder:
             
             # Create function generator timeline dataset
             self._create_fg_timeline_dataset()
+            
+            # Create comprehensive groups structure
+            # Create metadata group for settings and regeneration info (excludes video and FG timeline)
+            self._create_metadata_group()
+            
+            # Create execution data group for force path execution, etc.
+            self._create_execution_data_group()
             
             return True
         except Exception as e:
@@ -519,7 +529,7 @@ class HDF5VideoRecorder:
     
     def add_camera_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add camera settings to the HDF5 file as dataset attributes.
+        Add comprehensive camera settings to the metadata group.
         
         Args:
             settings: Dictionary of camera settings
@@ -527,23 +537,46 @@ class HDF5VideoRecorder:
         Returns:
             True if settings saved successfully
         """
-        if not self.is_recording or not self.video_dataset or self.camera_settings_saved:
+        if not self.is_recording or not hasattr(self, 'metadata_group') or not self.metadata_group or self.camera_settings_saved:
             return False
             
         try:
-            # Add camera settings as dataset attributes with prefix
+            # Create camera settings subgroup in metadata
+            camera_group = self.metadata_group.create_group('camera_settings')
+            camera_group.attrs['description'] = b'All camera configuration parameters'
+            camera_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            settings_count = 0
+            # Add camera settings as group attributes
             for key, value in settings.items():
                 if value is not None:
-                    attr_name = f"camera_{key}"
-                    if isinstance(value, str):
-                        self.video_dataset.attrs[attr_name] = value.encode('utf-8')
-                    elif isinstance(value, (int, float, bool)):
-                        self.video_dataset.attrs[attr_name] = value
-                    else:
-                        self.video_dataset.attrs[attr_name] = str(value).encode('utf-8')
+                    try:
+                        # Handle different data types appropriately
+                        if isinstance(value, str):
+                            camera_group.attrs[key] = value.encode('utf-8')
+                        elif isinstance(value, bytes):
+                            camera_group.attrs[key] = value.decode('utf-8', errors='ignore').encode('utf-8')
+                        elif isinstance(value, (int, float, bool)):
+                            camera_group.attrs[key] = value
+                        elif value is None:
+                            camera_group.attrs[key] = 'None'.encode('utf-8')
+                        else:
+                            # Convert other types to string
+                            camera_group.attrs[key] = str(value).encode('utf-8')
+                        
+                        settings_count += 1
+                    except Exception as e:
+                        # Log individual setting errors but continue
+                        logger.warning(f"Failed to save camera setting '{key}': {e}")
+                        # Save error info
+                        error_attr_name = f"{key}_error"
+                        camera_group.attrs[error_attr_name] = str(e).encode('utf-8')
+            
+            # Add summary metadata
+            camera_group.attrs['total_parameters'] = settings_count
             
             self.camera_settings_saved = True
-            logger.debug(f"Saved camera settings: {len(settings)} parameters")
+            logger.info(f"Camera settings saved to metadata group: {settings_count} parameters")
             return True
             
         except Exception as e:
@@ -552,7 +585,7 @@ class HDF5VideoRecorder:
     
     def add_stage_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add XY stage settings to the HDF5 file as dataset attributes.
+        Add XY stage settings to the metadata group.
         
         Args:
             settings: Dictionary of stage settings
@@ -560,27 +593,75 @@ class HDF5VideoRecorder:
         Returns:
             True if settings saved successfully
         """
-        if not self.is_recording or not self.video_dataset or self.stage_settings_saved:
+        if not self.is_recording or not hasattr(self, 'metadata_group') or not self.metadata_group or self.stage_settings_saved:
             return False
             
         try:
-            # Add stage settings as dataset attributes with prefix
+            # Create stage settings subgroup in metadata
+            stage_group = self.metadata_group.create_group('stage_settings')
+            stage_group.attrs['description'] = b'XY stage configuration and position'
+            stage_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            # Add stage settings as group attributes
             for key, value in settings.items():
                 if value is not None:
-                    attr_name = f"stage_{key}"
                     if isinstance(value, str):
-                        self.video_dataset.attrs[attr_name] = value.encode('utf-8')
+                        stage_group.attrs[key] = value.encode('utf-8')
                     elif isinstance(value, (int, float, bool)):
-                        self.video_dataset.attrs[attr_name] = value
+                        stage_group.attrs[key] = value
                     else:
-                        self.video_dataset.attrs[attr_name] = str(value).encode('utf-8')
+                        stage_group.attrs[key] = str(value).encode('utf-8')
+            
+            stage_group.attrs['total_parameters'] = len(settings)
             
             self.stage_settings_saved = True
-            logger.debug(f"Saved XY stage settings: {len(settings)} parameters")
+            logger.info(f"Stage settings saved to metadata group: {len(settings)} parameters")
             return True
             
         except Exception as e:
             logger.error(f"Failed to save XY stage settings: {e}")
+            return False
+
+    def add_recording_metadata(self, metadata: Dict[str, Any]) -> bool:
+        """
+        Add recording timestamps and regeneration info to metadata group.
+        
+        Args:
+            metadata: Dictionary of recording metadata
+            
+        Returns:
+            True if metadata saved successfully
+        """
+        if not self.is_recording or not hasattr(self, 'metadata_group') or not self.metadata_group:
+            return False
+            
+        try:
+            # Create recording info subgroup in metadata
+            recording_group = self.metadata_group.create_group('recording_info')
+            recording_group.attrs['description'] = b'Recording timestamps and session information'
+            recording_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            # Add basic recording info
+            recording_group.attrs['recording_started'] = self.start_time.isoformat().encode('utf-8') if self.start_time else b'unknown'
+            recording_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
+            recording_group.attrs['target_fps'] = self.fps
+            recording_group.attrs['compression'] = getattr(self, 'compression', 'lzf').encode('utf-8')
+            
+            # Add user metadata
+            for key, value in metadata.items():
+                if value is not None:
+                    if isinstance(value, str):
+                        recording_group.attrs[key] = value.encode('utf-8')
+                    elif isinstance(value, (int, float, bool)):
+                        recording_group.attrs[key] = value
+                    else:
+                        recording_group.attrs[key] = str(value).encode('utf-8')
+            
+            logger.info("Recording metadata saved to metadata group")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save recording metadata: {e}")
             return False
     
     def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
@@ -685,6 +766,92 @@ class HDF5VideoRecorder:
             
         except Exception as e:
             logger.error(f"Error flushing FG timeline buffer: {e}")
+    
+    def _create_metadata_group(self):
+        """Create metadata group for settings and regeneration info (excludes video and FG timeline)."""
+        if not self.h5_file:
+            return
+            
+        try:
+            # Create metadata group
+            self.metadata_group = self.h5_file.create_group('metadata')
+            self.metadata_group.attrs['description'] = b'Camera settings, timestamps, and regeneration info'
+            self.metadata_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            logger.debug("Metadata group created")
+            
+        except Exception as e:
+            logger.error(f"Error creating metadata group: {e}")
+            self.metadata_group = None
+
+    def _create_execution_data_group(self):
+        """Create execution data group for storing force path execution and other execution logs."""
+        if not self.h5_file:
+            return
+            
+        try:
+            # Create execution data group
+            self.execution_data_group = self.h5_file.create_group('execution_data')
+            self.execution_data_group.attrs['description'] = b'Execution logs and data (force paths, etc.)'
+            self.execution_data_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            logger.debug("Execution data group created")
+            
+        except Exception as e:
+            logger.error(f"Error creating execution data group: {e}")
+            self.execution_data_group = None
+    
+    def log_execution_data(self, execution_type: str, data: dict) -> bool:
+        """
+        Log execution data to the HDF5 file (replaces session file logging).
+        
+        Args:
+            execution_type: Type of execution ('force_path_design', 'force_path_execution', etc.)
+            data: Dictionary of execution data
+            
+        Returns:
+            True if logged successfully
+        """
+        if not self.is_recording or not self.execution_data_group:
+            return False
+            
+        try:
+            import time
+            
+            # Create timestamped execution entry
+            timestamp = int(time.time() * 1000)  # millisecond precision
+            exec_name = f"{execution_type}_{timestamp}"
+            
+            execution_entry = self.execution_data_group.create_group(exec_name)
+            execution_entry.attrs['execution_type'] = execution_type.encode('utf-8')
+            execution_entry.attrs['timestamp'] = datetime.now().isoformat().encode('utf-8')
+            
+            # Calculate relative time from recording start
+            if hasattr(self, 'start_time') and self.start_time:
+                start_timestamp = self.start_time.timestamp() if isinstance(self.start_time, datetime) else self.start_time
+                relative_time = time.time() - start_timestamp
+                execution_entry.attrs['relative_time_s'] = relative_time
+            
+            # Store execution data as attributes
+            for key, value in data.items():
+                try:
+                    if isinstance(value, str):
+                        execution_entry.attrs[key] = value.encode('utf-8')
+                    elif isinstance(value, (int, float, bool)):
+                        execution_entry.attrs[key] = value
+                    elif value is None:
+                        execution_entry.attrs[key] = 'None'.encode('utf-8')
+                    else:
+                        execution_entry.attrs[key] = str(value).encode('utf-8')
+                except Exception as e:
+                    logger.warning(f"Failed to store execution data '{key}': {e}")
+            
+            logger.debug(f"Logged execution data: {execution_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error logging execution data: {e}")
+            return False
     
 
     

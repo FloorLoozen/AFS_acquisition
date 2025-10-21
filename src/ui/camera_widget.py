@@ -462,6 +462,12 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.warning(f"Failed to save stage settings: {e}")
             
+            # Add recording metadata and regeneration info
+            try:
+                self.hdf5_recorder.add_recording_metadata(recording_metadata)
+            except Exception as e:
+                logger.warning(f"Failed to save recording metadata: {e}")
+            
             # Set recording state
             self.is_recording = True
             self.recording_path = file_path

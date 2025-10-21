@@ -84,53 +84,12 @@ class MainWindow(QMainWindow):
             raise
 
     def _create_measurement_hdf5(self) -> bool:
-        """Create HDF5 file when measurement starts - optimized and robust."""
-        # datetime is now imported at top of file
-        import h5py
-        import os
-        
-        if self.session_hdf5_file:
-            logger.warning("Measurement HDF5 file already exists")
-            return True
-        
-        try:
-            # Create logs directory if it doesn't exist
-            logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'src', 'logs')
-            os.makedirs(logs_dir, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            self.session_hdf5_file = os.path.join(logs_dir, f'afs_measurement_{timestamp}.h5')
-            
-            # Check available disk space before creating file
-            import shutil
-            free_space_gb = shutil.disk_usage(logs_dir).free / (1024**3)
-            
-            # Adaptive disk space requirement (100MB minimum, prefer 1GB)
-            min_space_gb = 0.1 if free_space_gb < 1.0 else 1.0
-            
-            if free_space_gb < min_space_gb:
-                logger.error(f"Insufficient disk space ({free_space_gb:.1f}GB available, {min_space_gb:.1f}GB required)")
-                return False
-            
-            if free_space_gb < 0.5:
-                logger.warning(f"Low disk space ({free_space_gb:.1f}GB available) - recording may be limited")
-            
-            # Create file with optimized settings
-            with h5py.File(self.session_hdf5_file, 'w', libver='latest') as f:
-                # Minimal structure - only create what's needed
-                f.attrs['measurement_start'] = datetime.now().isoformat()
-                f.attrs['application'] = 'AFS Tracking System'
-                f.attrs['measurement_id'] = timestamp
-                f.attrs['free_space_gb_at_start'] = free_space_gb
-            
-            logger.info(f"Measurement HDF5 file created: {self.session_hdf5_file} ({free_space_gb:.1f}GB available)")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to create measurement HDF5 file: {e}")
-            self.session_hdf5_file = None
-            return False
+        """Create HDF5 file when measurement starts - DISABLED: All data now goes to video HDF5 files."""
+        # DISABLED: User wants all data consolidated in video HDF5 files only
+        # Session files are no longer needed since video files contain everything
+        logger.info("Session HDF5 creation disabled - all data goes to video HDF5 files")
+        self.session_hdf5_file = None  # Explicitly set to None
+        return True  # Always return True since we're not creating session files
 
     def _init_ui(self) -> None:
         """Initialize the user interface layout and appearance.
@@ -548,37 +507,26 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to log measurement event to HDF5: {e}")
 
     def log_execution_data(self, execution_type: str, data: dict):
-        """Log execution data only when something is actually executing."""
-        if not self.session_hdf5_file or not self.measurement_active:
-            return  # Don't log if no measurement or no HDF5 file
+        """Log execution data to video HDF5 file (consolidated storage)."""
+        if not self.measurement_active:
+            return  # Don't log if no measurement active
             
-        try:
-            import h5py
-            import time
-            from datetime import datetime
-            
-            with h5py.File(self.session_hdf5_file, 'a') as f:
-                # Create execution group if it doesn't exist
-                if 'executions' not in f:
-                    f.create_group('executions')
-                
-                exec_group = f['executions']
-                
-                # Create timestamped execution entry
-                timestamp = int(time.time() * 1000)  # millisecond precision
-                exec_name = f"{execution_type}_{timestamp}"
-                
-                execution_entry = exec_group.create_group(exec_name)
-                execution_entry.attrs['execution_type'] = execution_type
-                execution_entry.attrs['timestamp'] = datetime.now().isoformat()
-                execution_entry.attrs['relative_time'] = time.time() - self.measurement_start_time
-                
-                # Add execution data
-                for key, value in data.items():
-                    execution_entry.attrs[key] = value
-                
-        except Exception as e:
-            logger.error(f"Failed to log execution data to HDF5: {e}")
+        # Route execution data to video HDF5 file instead of session file
+        if hasattr(self, 'camera_widget') and self.camera_widget:
+            if hasattr(self.camera_widget, 'hdf5_recorder') and self.camera_widget.hdf5_recorder:
+                hdf5_recorder = self.camera_widget.hdf5_recorder
+                if hdf5_recorder.is_recording:
+                    success = hdf5_recorder.log_execution_data(execution_type, data)
+                    if success:
+                        logger.debug(f"Execution data logged to video HDF5: {execution_type}")
+                    else:
+                        logger.warning(f"Failed to log execution data to video HDF5: {execution_type}")
+                else:
+                    logger.debug("No active video recording - execution data not logged")
+            else:
+                logger.debug("No HDF5 recorder available - execution data not logged")
+        else:
+            logger.debug("No camera widget available - execution data not logged")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle application close event with proper cleanup.
