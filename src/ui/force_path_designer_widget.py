@@ -1003,11 +1003,22 @@ class ForcePathDesignerWidget(QWidget):
             self.status_display.set_status("Disconnected")
             logger.error("Execution error: No function generator controller available")
             return
-            
+        
+        # Try to ensure connection before execution
         if not self.function_generator_controller.is_connected():
-            self.status_display.set_status("Disconnected")
-            logger.error("Function generator not connected")
-            return
+            logger.info("Function generator not connected, attempting to connect...")
+            # Try to reconnect
+            try:
+                if not self.function_generator_controller.connect():
+                    self.status_display.set_status("Disconnected")
+                    logger.error("Function generator connection failed - please check device")
+                    return
+                else:
+                    logger.info("Function generator reconnected successfully")
+            except Exception as e:
+                self.status_display.set_status("Disconnected")
+                logger.error(f"Function generator connection error: {e}")
+                return
             
         # Prepare execution
         self.is_executing = True

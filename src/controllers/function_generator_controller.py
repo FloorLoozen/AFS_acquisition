@@ -21,81 +21,119 @@ class FunctionGeneratorController:
 
     def connect(self) -> bool:
         """
-        Connect to function generator with enhanced recovery capabilities.
+        Connect to function generator with enhanced recovery capabilities and retry logic.
         
         Returns:
             True if connection successful, False otherwise
         """
-        try:
-            # Clean up any existing connection
-            if self.function_generator:
-                try:
-                    self.function_generator.close()
-                except:
-                    pass
-                self.function_generator = None
-                self._is_connected = False
-            
-            # Create fresh resource manager
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
-            
-            # Find Siglent USB device
-            siglent_resource = None
-            for resource in resources:
-                if 'USB' in resource and 'F4EC' in resource:
-                    siglent_resource = resource
-                    break
-                    
-            if not siglent_resource:
-                logger.error("Function Generator: No Siglent device found")
-                return False
-            
-            logger.info(f"Attempting to connect to: {siglent_resource}")
-            
-            # Open the connection
-            self.function_generator = rm.open_resource(siglent_resource)
-            
-            # Set optimal communication settings
-            self.function_generator.read_termination = '\n'
-            self.function_generator.write_termination = '\n'
-            self.function_generator.timeout = 3000
-            
-            # Brief delay to allow device to stabilize
-            import time
-            time.sleep(0.1)
-            
-            # Test basic communication with minimal commands
+        import time
+        
+        # Retry parameters for robust connection
+        max_attempts = 3
+        base_delay = 0.5  # Start with 500ms delay
+        
+        for attempt in range(max_attempts):
             try:
-                # Simple ID query - most reliable test
-                fg_id = self.function_generator.query('*IDN?').strip()
-                logger.info(f"Function Generator: Connected to {fg_id}")
+                if attempt > 0:
+                    # Exponential backoff: 0.5s, 1.0s, 2.0s
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Connection attempt {attempt + 1}/{max_attempts} (waiting {delay:.1f}s)...")
+                    time.sleep(delay)
                 
-                # Clear any error states
-                self.function_generator.write('*CLS')
+                # Clean up any existing connection
+                if self.function_generator:
+                    try:
+                        self.function_generator.close()
+                    except:
+                        pass
+                    self.function_generator = None
+                    self._is_connected = False
                 
-                self._is_connected = True
-                return True
+                # Small delay to let device reset
+                if attempt > 0:
+                    time.sleep(0.2)
                 
-            except pyvisa.errors.VisaIOError as visa_error:
-                # Check for specific timeout error
-                if "VI_ERROR_TMO" in str(visa_error):
-                    logger.error("Function Generator: Device not responding (timeout)")
-                    logger.error("Device may need physical reconnection (unplug/replug USB)")
-                else:
-                    logger.error(f"Function Generator: VISA error: {visa_error}")
-                raise visa_error
-            
-        except Exception as e:
-            logger.error(f"Function generator connection failed: {e}")
-            if self.function_generator:
+                # Create fresh resource manager
+                rm = pyvisa.ResourceManager()
+                resources = rm.list_resources()
+                
+                # Find Siglent USB device
+                siglent_resource = None
+                for resource in resources:
+                    if 'USB' in resource and 'F4EC' in resource:
+                        siglent_resource = resource
+                        break
+                        
+                if not siglent_resource:
+                    logger.error("Function Generator: No Siglent device found")
+                    if attempt == max_attempts - 1:  # Last attempt
+                        return False
+                    continue
+                
+                logger.info(f"Attempting to connect to: {siglent_resource}")
+                
+                # Open the connection with timeout
+                self.function_generator = rm.open_resource(siglent_resource)
+                
+                # Set optimal communication settings
+                self.function_generator.read_termination = '\n'
+                self.function_generator.write_termination = '\n'
+                self.function_generator.timeout = 5000  # Increased timeout for stability
+                
+                # Brief delay to allow device to stabilize
+                time.sleep(0.2)
+                
+                # Test basic communication with minimal commands
                 try:
-                    self.function_generator.close()
-                except:
-                    pass
-                self.function_generator = None
-            self._is_connected = False
-            return False
+                    # Simple ID query - most reliable test
+                    fg_id = self.function_generator.query('*IDN?').strip()
+                    logger.info(f"Function Generator: Connected to {fg_id}")
+                    
+                    # Clear any error states
+                    self.function_generator.write('*CLS')
+                    
+                    self._is_connected = True
+                    return True
+                    
+                except pyvisa.errors.VisaIOError as visa_error:
+                    # Check for specific timeout error
+                    if "VI_ERROR_TMO" in str(visa_error):
+                        logger.warning(f"Function Generator: Device timeout on attempt {attempt + 1}")
+                        if attempt == max_attempts - 1:  # Last attempt
+                            logger.error("Function Generator: Device not responding after all attempts")
+                            logger.error("Device may need physical reconnection (unplug/replug USB)")
+                    else:
+                        logger.error(f"Function Generator: VISA error: {visa_error}")
+                    
+                    # Close and clean up for retry
+                    if self.function_generator:
+                        try:
+                            self.function_generator.close()
+                        except:
+                            pass
+                        self.function_generator = None
+                    
+                    if attempt == max_attempts - 1:  # Last attempt
+                        raise visa_error
+                    continue
+                
+            except Exception as e:
+                logger.error(f"Function generator connection attempt {attempt + 1} failed: {e}")
+                
+                # Clean up for retry
+                if self.function_generator:
+                    try:
+                        self.function_generator.close()
+                    except:
+                        pass
+                    self.function_generator = None
+                    self._is_connected = False
+                
+                if attempt == max_attempts - 1:  # Last attempt
+                    return False
+                continue
+        
+        return False
 
     def is_connected(self) -> bool:
         """Check if function generator is connected."""

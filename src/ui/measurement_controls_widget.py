@@ -166,8 +166,10 @@ class MeasurementControlsWidget(QGroupBox):
         try:
             self.fg_controller = FunctionGeneratorController()
             
-            # Simple connection attempt
-            if self.fg_controller and self.fg_controller.is_connected():
+            # Try connection with improved retry logic
+            connected = self.fg_controller.connect()
+            
+            if connected:
                 self.fg_status_display.set_status("Ready")
                 logger.info("Function generator connected successfully")
             else:
