@@ -314,6 +314,58 @@ class FunctionGeneratorController:
             # Silently fail for speed - fallback to regular method
             return self.update_parameters_only(amplitude, frequency_mhz, channel)
 
+    def sine_frequency_sweep(self, amplitude: float, freq_start: float, freq_end: float, 
+                           sweep_time: float, channel: int = 1) -> bool:
+        """
+        Configure and start a frequency sweep.
+        
+        Args:
+            amplitude: Peak-to-peak voltage in volts
+            freq_start: Start frequency in MHz
+            freq_end: End frequency in MHz
+            sweep_time: Sweep duration in seconds
+            channel: Output channel (1 or 2)
+            
+        Returns:
+            True if sweep started successfully, False otherwise
+        """
+        if not self.function_generator:
+            logger.error("Function Generator: not connected")
+            return False
+            
+        try:
+            logger.info(f"Function Generator: starting frequency sweep {freq_start:.3f} - {freq_end:.3f} MHz over {sweep_time:.1f}s")
+            
+            channel_str = f"C{channel}"
+            freq_start_hz = freq_start * 1_000_000
+            freq_end_hz = freq_end * 1_000_000
+            
+            # Configure basic waveform parameters
+            self.function_generator.write(f"{channel_str}:BSWV SHAPE,SINE")
+            self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
+            
+            # Configure sweep parameters
+            self.function_generator.write(f"{channel_str}:SWWV STATE,ON")
+            self.function_generator.write(f"{channel_str}:SWWV TIME,{sweep_time}")
+            self.function_generator.write(f"{channel_str}:SWWV START,{freq_start_hz}")
+            self.function_generator.write(f"{channel_str}:SWWV STOP,{freq_end_hz}")
+            self.function_generator.write(f"{channel_str}:SWWV SOURCE,TIME")
+            self.function_generator.write(f"{channel_str}:SWWV SWMD,LINEAR")
+            
+            # Turn on output
+            self.function_generator.write(f"{channel_str}:OUTP ON")
+            self._output_on = True
+            
+            # Update cached values
+            self._last_sine = (freq_start, amplitude, channel)
+            
+            logger.info("Function Generator: frequency sweep started successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Function Generator: frequency sweep failed: {e}")
+            return False
+
     def get_output_status(self) -> dict:
         """Get current output status."""        
         return {
