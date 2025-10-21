@@ -166,8 +166,8 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("Tools")
         self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
-        self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
         self._add_action(tools_menu, "Resonance Finder", None, self._open_resonance_finder)
+        self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
         self._add_action(tools_menu, "Force Path Designer", None, self._open_force_path_designer)
 
         # Help menu

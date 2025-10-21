@@ -249,10 +249,13 @@ class MeasurementControlsWidget(QGroupBox):
             
             success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
             if success:
-                logger.info(f"Settings: {frequency:.3f} mhz, {amplitude:.2f} vpp")
-                # Update status display with new frequency
+                logger.info(f"Settings: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
+                # Update status display with new frequency immediately
                 if self._output_enabled:
                     self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                # Update cached values
+                self._cached_frequency = frequency
+                self._cached_amplitude = amplitude
         
         # Emit signal
         try:
@@ -272,8 +275,9 @@ class MeasurementControlsWidget(QGroupBox):
             frequency = float(self.frequency_edit.text())
             amplitude = float(self.amplitude_edit.text())
             
-            # Validate ranges with user-friendly corrections
-            frequency = max(13.0, min(15.0, frequency))  # 13-15 MHz range
+            # Validate ranges but don't auto-correct user input
+            # Just ensure hardware safety limits
+            frequency = max(0.1, min(30.0, frequency))  # Full range 0.1-30 MHz
             amplitude = max(0.1, min(20.0, amplitude))
             
             # Only update hardware if values actually changed
@@ -286,6 +290,10 @@ class MeasurementControlsWidget(QGroupBox):
                         self._cached_frequency = frequency
                         self._cached_amplitude = amplitude
                         logger.info(f"Settings applied: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
+                        
+                        # Update status display with actual applied frequency
+                        if self._output_enabled:
+                            self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
                         
                         # Emit signal for timeline logging
                         self.function_generator_settings_changed.emit(frequency, amplitude)
@@ -314,7 +322,7 @@ class MeasurementControlsWidget(QGroupBox):
         """Validate frequency input and provide visual feedback."""
         try:
             freq = float(text)
-            is_valid = 13.0 <= freq <= 15.0  # 13-15 MHz range
+            is_valid = 0.1 <= freq <= 30.0  # Full hardware range 0.1-30 MHz
             self._set_input_valid(self.frequency_edit, is_valid)
             return is_valid
         except ValueError:
