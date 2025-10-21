@@ -45,6 +45,7 @@ class CameraWidget(QGroupBox):
         self.is_running = False
         self.is_live = False
         self.camera_error = None
+        self._is_reinitializing = False  # Track reinitialization state
         
         # Frame data
         self.current_frame_data: Optional[FrameData] = None
@@ -176,6 +177,7 @@ class CameraWidget(QGroupBox):
                     self.is_running = True
                     self.is_live = False
                     
+                    self._is_reinitializing = False  # Clear reinitializing flag on success
                     self.update_status("Connected")
                     self.update_button_states()
                     self.update_timer.start()
@@ -214,6 +216,7 @@ class CameraWidget(QGroupBox):
                 self.is_running = True
                 self.is_live = False
                 
+                self._is_reinitializing = False  # Clear reinitializing flag
                 self.update_status(status_text)
                 self.update_button_states()
                 self.update_timer.start()
@@ -221,18 +224,22 @@ class CameraWidget(QGroupBox):
             else:
                 self.camera = None
                 self.is_running = False
+                self._is_reinitializing = False  # Clear reinitializing flag
                 self.update_status("Camera Error")
                 self.update_button_states()
         except Exception as e:
             logger.error(f"Failed to start test pattern mode: {e}")
             self.camera = None
+            self._is_reinitializing = False  # Clear reinitializing flag
+            self.update_status("Camera Error")
             self.is_running = False
             self.update_status("Camera Error")
             self.update_button_states()
     
     def reconnect_camera(self):
         """Reconnect camera."""
-        self.update_status("Reconnecting...")
+        self._is_reinitializing = True
+        self.update_status("Reinitializing...")
         self.stop_camera()
         QTimer.singleShot(500, self.connect_camera)
     
@@ -252,7 +259,12 @@ class CameraWidget(QGroupBox):
             self.camera = None
         
         self.current_frame_data = None
-        self.update_status("Disconnected")
+        
+        # Only set to "Disconnected" if we're not reinitializing
+        if not self._is_reinitializing:
+            self.update_status("Disconnected")
+        # If reinitializing, maintain the "Reinitializing..." status
+        
         self.update_button_states()
     
     def set_live_mode(self):

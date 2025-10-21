@@ -258,8 +258,9 @@ class CameraController:
             gain_master = ueye.c_int()
             ret = ueye.is_SetHardwareGain(self.h_cam, ueye.IS_GET_MASTER_GAIN, gain_master, 
                                         ueye.c_int(), ueye.c_int())
-            if ret == ueye.IS_SUCCESS:
-                settings['gain_master'] = gain_master.value
+            # For IS_GET_MASTER_GAIN, the return value IS the gain value, not a success code
+            if ret >= 0:  # Valid gain values are >= 0
+                settings['gain_master'] = ret  # Use the return value directly
             else:
                 settings['gain_master'] = 'unavailable'
         except Exception as e:

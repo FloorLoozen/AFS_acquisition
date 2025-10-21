@@ -27,6 +27,7 @@ class StatusIndicator(QLabel):
         
         # Warning/Transitional states (Orange)
         'initializing': QColor(255, 165, 0),
+        'reinitializing': QColor(255, 165, 0),
         'stopped': QColor(255, 165, 0),
         'connecting': QColor(255, 165, 0),
         'reconnecting': QColor(255, 165, 0),
