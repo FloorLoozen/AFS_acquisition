@@ -48,9 +48,12 @@ class MeasurementControlsWidget(QGroupBox):
         self._init_ui()
         self._initialize_function_generator()
         
-        # Set initial status
+        # Set initial status based on actual connection state
         if hasattr(self, 'fg_status_display'):
-            self.fg_status_display.set_status("Ready")
+            if self.fg_controller and self.fg_controller.is_connected():
+                self.fg_status_display.set_status("Ready")
+            else:
+                self.fg_status_display.set_status("Disconnected")
 
     def _init_ui(self):
         """Initialize the user interface."""
@@ -104,7 +107,7 @@ class MeasurementControlsWidget(QGroupBox):
         
         # Add status display with circle indicator
         self.fg_status_display = StatusDisplay()
-        self.fg_status_display.set_status("OFF")
+        self.fg_status_display.set_status("Disconnected")  # Default to disconnected until proven connected
         
         row_layout.addWidget(label)
         row_layout.addWidget(self.fg_toggle_button)
@@ -163,35 +166,60 @@ class MeasurementControlsWidget(QGroupBox):
         try:
             self.fg_controller = FunctionGeneratorController()
             
-            # Attempt auto-connection silently
-            if self.fg_controller.connect():
-                pass  # Connected successfully
+            # Simple connection attempt
+            if self.fg_controller and self.fg_controller.is_connected():
+                self.fg_status_display.set_status("Ready")
+                logger.info("Function generator connected successfully")
             else:
-                pass  # Not available - will try when needed
+                self.fg_status_display.set_status("Disconnected")
+                logger.warning("Function generator connection failed - device may be busy")
         except Exception as e:
             logger.error(f"Failed to create function generator controller: {e}")
             self.fg_controller = None
+            self.fg_status_display.set_status("Disconnected")
     
     def _ensure_connection(self):
         """Ensure function generator is connected, try to reconnect if needed."""
         if not self.fg_controller:
             self._initialize_function_generator()
-            return self.fg_controller is not None
+            return self.fg_controller is not None and self.fg_controller.is_connected()
         
         if not self.fg_controller.is_connected():
-            # Try to reconnect silently
-            return self.fg_controller.connect()
+            # Try simple reconnect
+            if self.fg_controller.connect():
+                self.fg_status_display.set_status("Ready")
+                return True
+            else:
+                self.fg_status_display.set_status("Disconnected")
+                return False
         
         return True
     
+    def update_connection_status(self):
+        """Update the connection status display based on actual state."""
+        if not self.fg_controller:
+            self.fg_status_display.set_status("Disconnected")
+        elif not self.fg_controller.is_connected():
+            self.fg_status_display.set_status("Disconnected")
+        elif self.fg_toggle_button.isChecked():
+            # Output is on - show frequency info
+            try:
+                frequency = float(self.frequency_edit.text())
+                self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+            except:
+                self.fg_status_display.set_status("ON")
+        else:
+            # Connected but output off
+            self.fg_status_display.set_status("Ready")
+
     def _on_fg_toggle(self, checked):
         """Handle function generator on/off button toggle."""
         if checked:
             # Try to connect if not connected
             if not self._ensure_connection():
-                logger.warning("Function generator not available")
+                logger.warning("Function generator not available - device may be busy")
                 self.fg_toggle_button.setChecked(False)
-                self.fg_status_display.set_status("Connection Failed")
+                self.fg_status_display.set_status("Disconnected")
                 return
             
             # Turn on with current settings
@@ -222,12 +250,12 @@ class MeasurementControlsWidget(QGroupBox):
                 success = self.fg_controller.stop_all_outputs()
                 if success:
                     logger.info("Function generator OFF")
-                    self.fg_status_display.set_status("OFF")
+                    self.fg_status_display.set_status("Ready")  # Still connected, just output off
                 else:
                     logger.error("Failed to disable function generator")
                     self.fg_status_display.set_status("Error")
             else:
-                self.fg_status_display.set_status("OFF")
+                self.fg_status_display.set_status("Disconnected")  # Not connected
             
             self.fg_toggle_button.setText("OFF")
             self._output_enabled = False
@@ -420,9 +448,31 @@ class MeasurementControlsWidget(QGroupBox):
 
     def cleanup(self):
         """Clean up resources when widget is destroyed."""
+        logger.info("Measurement controls: Starting comprehensive cleanup process")
+        
         if self.fg_controller:
-            # Turn off outputs first
-            if self.fg_toggle_button.isChecked():
-                self.fg_controller.stop_all_outputs()
-            # Then disconnect
-            self.fg_controller.disconnect()
+            try:
+                # Turn off outputs first if they're on
+                if self.fg_toggle_button.isChecked():
+                    logger.info("Measurement controls: Turning off function generator outputs")
+                    self.fg_controller.stop_all_outputs()
+                    # Update UI state
+                    self.fg_toggle_button.setChecked(False)
+                
+                # Give a moment for the output command to process
+                import time
+                time.sleep(0.1)
+                
+                # Ensure proper disconnection sequence
+                logger.info("Measurement controls: Disconnecting function generator")
+                self.fg_controller.disconnect()
+                
+                # Update status to reflect disconnected state
+                self.fg_status_display.set_status("Disconnected")
+                
+            except Exception as e:
+                logger.error(f"Measurement controls: Error during FG cleanup: {e}")
+            finally:
+                # Always clear the reference regardless of errors
+                self.fg_controller = None
+                logger.info("Measurement controls: Function generator cleanup completed")

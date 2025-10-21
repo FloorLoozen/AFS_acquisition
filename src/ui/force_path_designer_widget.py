@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QSpinBox, QMessageBox, QFrame, QSplitter, QTextEdit,
     QMainWindow
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 from dataclasses import dataclass
 from enum import Enum
@@ -15,8 +15,10 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
+import time
 
 from src.utils.logger import get_logger
+from src.utils.status_display import StatusDisplay
 
 logger = get_logger("force_path_designer")
 
@@ -34,6 +36,180 @@ class PathPoint:
     frequency: float  # Frequency in MHz
     amplitude: float  # Amplitude in Vpp
     transition: TransitionType = TransitionType.LINEAR
+
+
+class FunctionGeneratorWorker(QThread):
+    """Worker thread for non-blocking function generator communication."""
+    
+    # Signals for status updates
+    status_update = pyqtSignal(str, float, float)  # status, frequency, amplitude
+    execution_finished = pyqtSignal(bool)  # success
+    
+    def __init__(self, fg_controller, sorted_points, execution_log):
+        super().__init__()
+        self.fg_controller = fg_controller
+        self.sorted_points = sorted_points
+        self.execution_log = execution_log
+        self.should_stop = False
+        self.measurement_start_time = time.time()
+        
+    def stop(self):
+        """Request worker to stop."""
+        self.should_stop = True
+        
+    def run(self):
+        """Execute the path in a separate thread."""
+        try:
+            if not self.fg_controller or not self.fg_controller.is_connected():
+                self.execution_finished.emit(False)
+                return
+                
+            start_time = time.perf_counter()
+            total_duration = self.sorted_points[-1].time if self.sorted_points else 0
+            
+            # Debug logging of received points
+            logger.info(f"FunctionGeneratorWorker received {len(self.sorted_points)} points:")
+            for i, point in enumerate(self.sorted_points):
+                logger.info(f"  Worker Point {i}: time={point.time:.1f}s, freq={point.frequency:.3f}MHz, amp={point.amplitude:.2f}Vpp")
+            
+            # Process points to handle time 0 hold behavior
+            processed_points = self._process_points_for_execution()
+            
+            logger.info(f"FunctionGeneratorWorker processed to {len(processed_points)} points:")
+            for i, point in enumerate(processed_points):
+                logger.info(f"  Processed Point {i}: time={point.time:.1f}s, freq={point.frequency:.3f}MHz, amp={point.amplitude:.2f}Vpp")
+            
+            logger.info(f"Total execution duration: {total_duration:.1f}s")
+            
+            # Start output with first point values (turn ON once)
+            if processed_points:
+                first_point = processed_points[0]
+                success = self.fg_controller.output_sine_wave(
+                    amplitude=first_point.amplitude,
+                    frequency_mhz=first_point.frequency,
+                    channel=1
+                )
+                if not success:
+                    logger.error("Failed to start function generator output")
+                    self.execution_finished.emit(False)
+                    return
+            
+            # Main execution loop - only update parameters, keep output ON
+            while not self.should_stop:
+                elapsed_time = time.perf_counter() - start_time
+                
+                # Check if execution is complete
+                if elapsed_time >= total_duration:
+                    break
+                    
+                # Find current interpolation segment
+                current_idx = 0
+                for i, point in enumerate(processed_points):
+                    if point.time <= elapsed_time:
+                        current_idx = i
+                    else:
+                        break
+                
+                # Calculate interpolated values
+                if current_idx < len(processed_points) - 1:
+                    point1 = processed_points[current_idx]
+                    point2 = processed_points[current_idx + 1]
+                    
+                    if point1.time == point2.time:
+                        progress = 0.0
+                    else:
+                        progress = (elapsed_time - point1.time) / (point2.time - point1.time)
+                        progress = max(0.0, min(1.0, progress))
+                    
+                    if point2.transition == TransitionType.HOLD:
+                        frequency = point1.frequency
+                        amplitude = point1.amplitude
+                    else:  # LINEAR
+                        frequency = point1.frequency + progress * (point2.frequency - point1.frequency)
+                        amplitude = point1.amplitude + progress * (point2.amplitude - point1.amplitude)
+                    
+                    # Update function generator parameters only (keep output ON)
+                    # Use delta-based updates to reduce unnecessary commands
+                    needs_update = False
+                    if not hasattr(self, '_last_freq') or abs(self._last_freq - frequency) > 0.005:
+                        needs_update = True
+                    if not hasattr(self, '_last_amp') or abs(self._last_amp - amplitude) > 0.005:
+                        needs_update = True
+                    
+                    if needs_update:
+                        # Try batch update first (fastest), fallback to regular if needed
+                        success = self.fg_controller.update_parameters_batch(
+                            amplitude=amplitude,
+                            frequency_mhz=frequency,
+                            channel=1
+                        )
+                        
+                        if success:
+                            self._last_freq = frequency
+                            self._last_amp = amplitude
+                            
+                            # Reset consecutive error counter
+                            if hasattr(self, '_consecutive_errors'):
+                                self._consecutive_errors = 0
+                            
+                            # Log execution data (optimized - only significant changes)
+                            log_entry = {
+                                'time': elapsed_time,
+                                'absolute_timestamp': self.measurement_start_time + elapsed_time,
+                                'set_frequency': frequency,
+                                'set_amplitude': amplitude
+                            }
+                            self.execution_log.append(log_entry)
+                            
+                            # Emit status update (reduced frequency to minimize UI overhead)
+                            if not hasattr(self, '_last_status_time') or (elapsed_time - self._last_status_time) > 0.2:
+                                # Simplified status message - detailed info in logs
+                                self.status_update.emit(f"Executing", frequency, amplitude)
+                                self._last_status_time = elapsed_time
+                        else:
+                            # Handle communication errors with retry logic
+                            if not hasattr(self, '_consecutive_errors'):
+                                self._consecutive_errors = 0
+                            self._consecutive_errors += 1
+                            
+                            if self._consecutive_errors > 3:  # Allow a few retries
+                                logger.error("Function generator communication failed during execution")
+                                self.execution_finished.emit(False)
+                                return
+                            else:
+                                logger.warning(f"Function generator retry {self._consecutive_errors}/3")
+                                # Brief pause before retry
+                                self.msleep(10)
+                
+                # Optimized sleep - balanced speed vs USB communication limits
+                self.msleep(20)  # 20ms = 50 Hz update rate (optimal for USB VISA)
+                
+            self.execution_finished.emit(True)
+            
+        except Exception as e:
+            logger.error(f"Function generator worker error: {e}")
+            self.execution_finished.emit(False)
+            
+    def _process_points_for_execution(self):
+        """Process points to handle time 0 hold behavior."""
+        if not self.sorted_points:
+            return []
+            
+        processed_points = self.sorted_points.copy()
+        
+        # Check if first point is not at time 0
+        first_point = processed_points[0]
+        if first_point.time > 0:
+            # Add a hold point from 0 to first point time
+            hold_point = PathPoint(
+                time=0.0,
+                frequency=first_point.frequency,
+                amplitude=first_point.amplitude,
+                transition=TransitionType.HOLD
+            )
+            processed_points.insert(0, hold_point)
+            
+        return processed_points
 
 
 class ForcePathDesignerWidget(QWidget):
@@ -55,6 +231,7 @@ class ForcePathDesignerWidget(QWidget):
         self.execution_timer: Optional[QTimer] = None
         self.execution_start_time = 0.0
         self.current_point_index = 0
+        self.current_execution_time = 0.0  # For live line tracking
         
         # Function generator reference (set from parent)
         self.function_generator_controller = None
@@ -68,6 +245,9 @@ class ForcePathDesignerWidget(QWidget):
         # Performance optimizations
         self._last_graph_hash = None  # Cache for graph updates
         self._graph_update_cache = {}  # Cache computed values
+        
+        # Live execution tracking
+        self.live_line = None  # Vertical line showing current execution position
         
         self._init_ui()
         self._add_default_points()
@@ -167,8 +347,16 @@ class ForcePathDesignerWidget(QWidget):
         self.path_table = QTableWidget()
         self.path_table.setColumnCount(3)
         self.path_table.setHorizontalHeaderLabels([
-            "Time (s)", "Frequency (MHz)", "Amplitude (Vpp)"
+            "Duration (s)", "Frequency (MHz)", "Amplitude (Vpp)"
         ])
+        
+        # Add tooltip for time column to explain relative behavior
+        self.path_table.horizontalHeaderItem(0).setToolTip(
+            "Duration in seconds from previous point\n"
+            "First point: time from start (0)\n"
+            "Subsequent points: time since previous point\n"
+            "Example: [5, 6, 3] → total execution time = 14 seconds"
+        )
         
         # Configure table for minimal appearance
         header = self.path_table.horizontalHeader()
@@ -307,8 +495,8 @@ class ForcePathDesignerWidget(QWidget):
         layout.setSpacing(10)
         
         # Execution control buttons - more compact
-        self.execute_path_btn = QPushButton("Execute")
-        self.execute_path_btn.setMinimumWidth(80)
+        self.execute_path_btn = QPushButton("Execute Path")
+        self.execute_path_btn.setMinimumWidth(100)
         self.execute_path_btn.clicked.connect(self._execute_path)
         layout.addWidget(self.execute_path_btn)
         
@@ -320,17 +508,23 @@ class ForcePathDesignerWidget(QWidget):
         
         layout.addStretch()  # Push buttons to the left
         
-        # Status indicator
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #666; font-size: 8pt; padding: 4px;")
-        layout.addWidget(self.status_label)
+        # Status display using standardized StatusDisplay widget
+        self.status_display = StatusDisplay()
+        self.status_display.set_status("Ready")
+        layout.addWidget(self.status_display)
         
         return widget
         
     def _add_default_points(self):
-        """Add some default points to demonstrate the interface."""
-        # Don't add default points - start with empty table
-        self.path_points = []
+        """Add default starting point at time 0."""
+        # Start with a default point at time 0
+        default_point = PathPoint(
+            time=0.0,
+            frequency=14.0,  # Default 14 MHz
+            amplitude=4.0,   # Default 4 Vpp
+            transition=TransitionType.LINEAR
+        )
+        self.path_points = [default_point]
         self._update_table()
         self._update_graph()
         
@@ -338,13 +532,13 @@ class ForcePathDesignerWidget(QWidget):
         """Add a new point to the path with 30-second increments."""
         # Get time for new point (after last point)
         if not self.path_points:
-            # First point should start at time 0
+            # Should not happen with default point, but just in case
             last_time = 0.0
         else:
             last_time = max(point.time for point in self.path_points)
         
         new_point = PathPoint(
-            time=last_time + 30.0 if self.path_points else 1.0,  # First point at 1s, then increment by 30s
+            time=last_time + 30.0,  # Increment by 30s from last point
             frequency=14.0,  # Default 14 MHz
             amplitude=4.0,   # Default 4 Vpp
             transition=TransitionType.LINEAR
@@ -394,9 +588,10 @@ class ForcePathDesignerWidget(QWidget):
         
         # Batch update for better performance
         for row, point in enumerate(self.path_points):
-            # Time - show in whole seconds for consistency
-            time_item = QTableWidgetItem(f"{int(round(point.time))}")
-            time_item.setData(Qt.UserRole, point.time)  # Store actual value for editing
+            # Time - show relative duration (time from previous point)
+            relative_time = self._get_relative_time(row)
+            time_item = QTableWidgetItem(f"{relative_time:.1f}")
+            time_item.setData(Qt.UserRole, relative_time)  # Store relative value for editing
             self.path_table.setItem(row, 0, time_item)
             
             # Frequency - 3 decimal places for precision
@@ -410,6 +605,34 @@ class ForcePathDesignerWidget(QWidget):
         # Reconnect signals
         self.path_table.itemChanged.connect(self._on_table_item_changed)
         self.path_table.cellChanged.connect(self._on_cell_changed)
+    
+    def _get_relative_time(self, point_index: int) -> float:
+        """Get relative time for a point (duration from previous point)."""
+        if point_index == 0:
+            # First point is always at absolute time, show as relative from 0
+            return self.path_points[0].time
+        else:
+            # Return difference from previous point
+            current_time = self.path_points[point_index].time
+            previous_time = self.path_points[point_index - 1].time
+            return current_time - previous_time
+    
+    def _set_relative_time(self, point_index: int, relative_time: float):
+        """Set time for a point based on relative duration."""
+        if point_index == 0:
+            # First point: relative time is the absolute time
+            self.path_points[0].time = relative_time
+        else:
+            # Subsequent points: add relative time to previous absolute time
+            previous_absolute = self.path_points[point_index - 1].time
+            self.path_points[point_index].time = previous_absolute + relative_time
+        
+        # Update all subsequent points to maintain their relative durations
+        for i in range(point_index + 1, len(self.path_points)):
+            if i > 0:
+                # Keep the same relative duration for this point
+                relative_duration = self._get_relative_time(i)
+                self.path_points[i].time = self.path_points[i - 1].time + relative_duration
         
     def _parse_time_value(self, text: str) -> float:
         """Parse time value from text in seconds."""
@@ -434,7 +657,7 @@ class ForcePathDesignerWidget(QWidget):
             return float(text)
 
     def _on_table_item_changed(self, item):
-        """Handle table item changes with improved time parsing."""
+        """Handle table item changes with relative time support."""
         row = item.row()
         col = item.column()
         
@@ -442,18 +665,38 @@ class ForcePathDesignerWidget(QWidget):
             return
             
         try:
-            if col == 0:  # Time
-                # Check if item has stored data (for programmatic updates)
-                stored_time = item.data(Qt.UserRole)
-                if stored_time is not None:
-                    self.path_points[row].time = float(stored_time)
-                else:
-                    # Parse user input
-                    self.path_points[row].time = self._parse_time_value(item.text())
+            if col == 0:  # Time (relative duration)
+                # Always parse from text for user edits
+                relative_time = self._parse_time_value(item.text())
+                
+                # Debug logging
+                old_relative = self._get_relative_time(row)
+                old_absolute = self.path_points[row].time
+                
+                # Set the relative time, which updates absolute times
+                self._set_relative_time(row, relative_time)
+                
+                new_absolute = self.path_points[row].time
+                logger.debug(f"Time updated for point {row}: relative {old_relative:.1f}s -> {relative_time:.1f}s (absolute {old_absolute:.1f}s -> {new_absolute:.1f}s)")
+                
+                # Update stored data to match the relative value
+                item.setData(Qt.UserRole, relative_time)
+                
+                # Need to refresh table to show updated relative times for subsequent points
+                self._update_table()
+                return  # Skip normal update since we called _update_table()
+                
             elif col == 1:  # Frequency
-                self.path_points[row].frequency = float(item.text())
+                old_freq = self.path_points[row].frequency
+                new_freq = float(item.text())
+                self.path_points[row].frequency = new_freq
+                logger.debug(f"Frequency updated for point {row}: {old_freq:.3f}MHz -> {new_freq:.3f}MHz")
+                
             elif col == 2:  # Amplitude
-                self.path_points[row].amplitude = float(item.text())
+                old_amp = self.path_points[row].amplitude
+                new_amp = float(item.text())
+                self.path_points[row].amplitude = new_amp
+                logger.debug(f"Amplitude updated for point {row}: {old_amp:.2f}Vpp -> {new_amp:.2f}Vpp")
                 
             # Auto-update transitions for this and subsequent points
             self._update_transitions()
@@ -465,7 +708,7 @@ class ForcePathDesignerWidget(QWidget):
             self._update_table()
             
     def _on_cell_changed(self, row: int, col: int):
-        """Handle individual cell changes for real-time graph updates with debouncing."""
+        """Handle individual cell changes for real-time graph updates with relative time support."""
         if row >= len(self.path_points):
             return
         
@@ -477,14 +720,13 @@ class ForcePathDesignerWidget(QWidget):
         try:
             # Update data structure efficiently
             point = self.path_points[row]
-            if col == 0:  # Time
-                # Check if item has stored data first
-                stored_time = item.data(Qt.UserRole)
-                if stored_time is not None:
-                    point.time = float(stored_time)
-                else:
-                    # Parse user input with new time parser
-                    point.time = self._parse_time_value(item.text())
+            if col == 0:  # Time (relative duration)
+                # Always parse from text for user edits
+                relative_time = self._parse_time_value(item.text())
+                # Set the relative time, which updates absolute times
+                self._set_relative_time(row, relative_time)
+                # Update stored data to match
+                item.setData(Qt.UserRole, relative_time)
             elif col == 1:  # Frequency
                 # Parse value with better error handling
                 value = float(item.text()) if item.text() else 14.0
@@ -718,9 +960,10 @@ class ForcePathDesignerWidget(QWidget):
             self.canvas.draw()  # Fallback
             
     def _validate_path(self):
-        """Validate the current path."""
+        """Validate the current path silently."""
         if not self.path_points:
-            QMessageBox.warning(self, "Validation Error", "No path points defined!")
+            self.status_display.set_status("Error")
+            logger.warning("Path validation failed: No path points defined")
             return False
             
         # Sort points by time
@@ -743,206 +986,206 @@ class ForcePathDesignerWidget(QWidget):
                 errors.append(f"Point {i+1}: Time must be greater than previous point")
                 
         if errors:
-            QMessageBox.warning(
-                self, "Validation Errors", 
-                "Path validation failed:\n\n" + "\n".join(errors)
-            )
+            self.status_display.set_status("Error")
+            logger.warning(f"Path validation failed: {'; '.join(errors)}")
             return False
         else:
-            QMessageBox.information(
-                self, "Validation Success", 
-                f"Path validation successful!\n{len(sorted_points)} points, "
-                f"duration: {sorted_points[-1].time:.1f} seconds"
-            )
+            logger.info(f"Path validation successful: {len(sorted_points)} points, "
+                       f"duration: {sorted_points[-1].time:.1f} seconds")
             return True
             
     def _execute_path(self):
-        """Execute the current force path."""
+        """Execute the current force path using non-blocking approach."""
         if not self._validate_path():
             return
             
         if not self.function_generator_controller:
-            QMessageBox.warning(
-                self, "Execution Error", 
-                "No function generator controller available!"
-            )
+            self.status_display.set_status("Disconnected")
+            logger.error("Execution error: No function generator controller available")
             return
             
         if not self.function_generator_controller.is_connected():
-            QMessageBox.warning(
-                self, "Execution Error", 
-                "Function generator not connected!"
-            )
+            self.status_display.set_status("Disconnected")
+            logger.error("Function generator not connected")
             return
             
-        # Start execution
+        # Prepare execution
         self.is_executing = True
-        self.execution_start_time = 0.0  # Will be set by timer
+        self.execution_start_time = time.perf_counter()
         self.current_point_index = 0
-        self.execution_log.clear()  # Clear previous execution log
-        self.execution_completed = False  # Reset completion flag
+        self.current_execution_time = 0.0
+        self.execution_log.clear()
+        self.execution_completed = False
         
         # Record measurement start time
-        import time
         self.measurement_start_time = time.time()
         
-        # Sort points by time
+        # Sort points by time and process for execution
         self.sorted_points = sorted(self.path_points, key=lambda p: p.time)
         
-        # Save current path design to HDF5 automatically
+        # Debug logging of actual path points being executed
+        logger.info(f"Executing path with {len(self.sorted_points)} points:")
+        total_duration = 0.0
+        for i, point in enumerate(self.sorted_points):
+            relative_time = self._get_relative_time(i)
+            total_duration = point.time
+            logger.info(f"  Point {i}: duration={relative_time:.1f}s, absolute={point.time:.1f}s, freq={point.frequency:.3f}MHz, amp={point.amplitude:.2f}Vpp")
+        logger.info(f"Total execution time: {total_duration:.1f}s")
+        
+        # Save current path design to HDF5
         self._save_path_design_to_hdf5()
         
-        # Setup execution timer (check every 100ms)
-        self.execution_timer = QTimer()
-        self.execution_timer.timeout.connect(self._update_execution)
-        self.execution_timer.start(100)
+        # Create and start worker thread
+        self.fg_worker = FunctionGeneratorWorker(
+            self.function_generator_controller,
+            self.sorted_points,  # Pass sorted points, worker will process them
+            self.execution_log
+        )
+        
+        # Connect worker signals
+        self.fg_worker.status_update.connect(self._on_execution_status_update)
+        self.fg_worker.execution_finished.connect(self._on_execution_finished)
+        
+        # Setup live update timer for UI (graph line updates) - reduced frequency for performance
+        self.live_update_timer = QTimer()
+        self.live_update_timer.timeout.connect(self._update_live_line)
+        self.live_update_timer.start(50)  # Update UI every 50ms (20 Hz) for smooth animation
         
         # Update UI
         self.execute_path_btn.setEnabled(False)
         self.stop_execution_btn.setEnabled(True)
-        self.status_label.setText("Executing...")
-        self.status_label.setStyleSheet("color: #0066cc; font-size: 8pt; padding: 4px;")
+        self.status_display.set_status("Starting...")
+        
+        # Start the worker
+        self.fg_worker.start()
         
         logger.info(f"Started force path execution with {len(self.sorted_points)} points")
         self.path_execution_started.emit()
         
-        # Start function generator with first point values (no origin point)
-        if not self.function_generator_controller.get_output_status():
-            first_point = self.sorted_points[0]
-            self.function_generator_controller.output_sine_wave(
-                amplitude=first_point.amplitude,
-                frequency_mhz=first_point.frequency,
-                channel=1
-            )
-            
-    def _update_execution(self):
-        """Update function generator settings during path execution (optimized)."""
-        if not self.is_executing or not self.execution_timer:
-            return
-            
-        # Use high-precision timing
-        import time
-        if self.execution_start_time == 0.0:
-            self.execution_start_time = time.perf_counter()
+    def _on_execution_status_update(self, status_text, frequency, amplitude):
+        """Handle status updates from the worker thread."""
+        # Always show "Executing" during execution for consistent blue status
+        self.status_display.set_status("Executing")
         
-        elapsed_time = time.perf_counter() - self.execution_start_time
-        
-        # Check if we've reached the end
-        if elapsed_time >= self.sorted_points[-1].time:
-            self._stop_execution()
-            return
-            
-        # Binary search for current segment (O(log n) instead of O(n))
-        left, right = 0, len(self.sorted_points) - 1
-        current_idx = 0
-        
-        while left <= right:
-            mid = (left + right) // 2
-            if self.sorted_points[mid].time <= elapsed_time:
-                current_idx = mid
-                left = mid + 1
-            else:
-                right = mid - 1
-        
-        # Find interpolation segment
-        if current_idx < len(self.sorted_points) - 1:
-            point1 = self.sorted_points[current_idx]
-            point2 = self.sorted_points[current_idx + 1]
-            
-            # Fast interpolation
-            if point1.time == point2.time:
-                progress = 0.0
-            else:
-                progress = (elapsed_time - point1.time) / (point2.time - point1.time)
-                progress = max(0.0, min(1.0, progress))  # Clamp to [0,1]
-            
-            if point2.transition == TransitionType.HOLD:
-                # Use point1 values
-                frequency = point1.frequency
-                amplitude = point1.amplitude
-            else:  # LINEAR
-                # Linear interpolation (optimized)
-                freq_diff = point2.frequency - point1.frequency
-                amp_diff = point2.amplitude - point1.amplitude
-                frequency = point1.frequency + progress * freq_diff
-                amplitude = point1.amplitude + progress * amp_diff
-            
-            # Update function generator (batch operations)
-            try:
-                # Only update if values actually changed (avoid unnecessary hardware calls)
-                changed = False
-                if not hasattr(self, '_last_freq') or abs(self._last_freq - frequency) > 0.001:
-                    changed = True
-                    self._last_freq = frequency
-                    
-                if not hasattr(self, '_last_amp') or abs(self._last_amp - amplitude) > 0.001:
-                    changed = True
-                    self._last_amp = amplitude
-                    
-                if changed:
-                    self.function_generator_controller.output_sine_wave(
-                        amplitude=amplitude,
-                        frequency_mhz=frequency,
-                        channel=1
-                    )
-                
-                # Log the execution data (both set and actual values) with timestamp from measurement start
-                log_entry = {
-                    'time': elapsed_time,  # Time relative to path start
-                    'absolute_timestamp': self.measurement_start_time + elapsed_time if self.measurement_start_time else 0,
-                    'set_frequency': frequency,
-                    'set_amplitude': amplitude
-                }
-                
-                # Try to get actual values from function generator
-                try:
-                    if hasattr(self.function_generator_controller, 'get_frequency'):
-                        log_entry['actual_frequency'] = self.function_generator_controller.get_frequency()
-                    if hasattr(self.function_generator_controller, 'get_amplitude'):
-                        log_entry['actual_amplitude'] = self.function_generator_controller.get_amplitude()
-                except Exception as read_error:
-                    logger.warning(f"Could not read actual function generator values: {read_error}")
-                
-                self.execution_log.append(log_entry)
-                    
-            except Exception as e:
-                logger.error(f"Error updating function generator during path execution: {e}")
-                self._stop_execution()
-                
-    def _stop_execution(self):
-        """Stop path execution and save results to HDF5."""
-        if self.execution_timer:
-            self.execution_timer.stop()
-            self.execution_timer = None
-            
-        # Check if execution completed normally
-        if self.is_executing and self.sorted_points:
-            # Use high-precision timing to check completion
-            import time
-            if self.execution_start_time > 0:
-                elapsed_time = time.perf_counter() - self.execution_start_time
-                total_duration = self.sorted_points[-1].time
-                self.execution_completed = elapsed_time >= total_duration
-            else:
-                self.execution_completed = False
+    def _on_execution_finished(self, success):
+        """Handle execution completion from worker thread."""
+        if success:
+            self.execution_completed = True
+            self.status_display.set_status("Completed")  # Green
+            logger.info("Force path execution completed successfully")
         else:
             self.execution_completed = False
+            self.status_display.set_status("Error")       # Red
+            logger.error("Force path execution failed")
             
+        # Clean up execution state
+        self._stop_execution()
+        
+    def _update_live_line(self):
+        """Update the vertical line showing current execution position."""
+        if not self.is_executing:
+            return
+            
+        # Calculate current execution time
+        self.current_execution_time = time.perf_counter() - self.execution_start_time
+        
+        # Update the live line on the graph
+        if hasattr(self, 'ax1') and self.sorted_points:
+            # Use processed points to get actual total duration
+            processed_points = self._process_points_for_display()
+            total_duration = processed_points[-1].time if processed_points else 0
+            
+            # Remove old live line if it exists
+            if self.live_line:
+                try:
+                    self.live_line.remove()
+                except:
+                    pass
+                    
+            # Add new live line if still within execution time
+            if self.current_execution_time <= total_duration:
+                self.live_line = self.ax1.axvline(
+                    x=self.current_execution_time, 
+                    color='green', 
+                    linewidth=2, 
+                    linestyle='--',
+                    alpha=0.8,
+                    label='Current Position'
+                )
+                
+                # Update canvas
+                self.canvas.draw_idle()
+                
+    def _stop_execution(self):
+        """Stop path execution and turn off function generator output."""
+        logger.info("Force path execution: Stop requested by user")
+        
+        # Stop the worker thread
+        if hasattr(self, 'fg_worker') and self.fg_worker.isRunning():
+            self.fg_worker.stop()
+            self.fg_worker.wait(2000)  # Wait up to 2 seconds for thread to finish
+            
+        # Stop live update timer
+        if hasattr(self, 'live_update_timer'):
+            self.live_update_timer.stop()
+            
+        # Remove live line
+        if self.live_line:
+            try:
+                self.live_line.remove()
+                self.canvas.draw_idle()
+            except:
+                pass
+            self.live_line = None
+            
+        # CRITICAL: Turn off function generator output when stopped
+        if hasattr(self, 'function_generator_controller') and self.function_generator_controller and self.function_generator_controller.is_connected():
+            try:
+                logger.info("Force path execution: Turning off function generator output")
+                self.function_generator_controller.stop_all_outputs()
+            except Exception as e:
+                logger.error(f"Force path execution: Failed to turn off output: {e}")
+        
         self.is_executing = False
         
-        # Save execution results to HDF5 automatically
+        # Save execution results to HDF5
         self._save_execution_to_hdf5()
         
-        # Update UI
+        # Update UI with proper status
         self.execute_path_btn.setEnabled(True)
         self.stop_execution_btn.setEnabled(False)
-        self.status_label.setText("Ready")
-        self.status_label.setStyleSheet("color: #666; font-size: 8pt; padding: 4px;")
         
-        completion_status = "completed" if self.execution_completed else "stopped early"
+        # Set status based on completion state
+        if self.execution_completed:
+            self.status_display.set_status("Completed")
+        else:
+            self.status_display.set_status("Stopped")  # Orange color for user-stopped
+        
+        completion_status = "completed" if self.execution_completed else "stopped"
         logger.info(f"Force path execution {completion_status}")
         self.path_execution_stopped.emit()
         
+    def _process_points_for_display(self):
+        """Process points to handle time 0 hold behavior for display and execution."""
+        if not self.sorted_points:
+            return []
+            
+        processed_points = self.sorted_points.copy()
+        
+        # Check if first point is not at time 0
+        first_point = processed_points[0]
+        if first_point.time > 0:
+            # Add a hold point from 0 to first point time
+            hold_point = PathPoint(
+                time=0.0,
+                frequency=first_point.frequency,
+                amplitude=first_point.amplitude,
+                transition=TransitionType.HOLD
+            )
+            processed_points.insert(0, hold_point)
+            
+        return processed_points
+            
     def _save_path_design_to_hdf5(self):
         """Save current path design when executing (only if measurement active)."""
         if not self.main_window or not self.path_points:
@@ -1017,7 +1260,7 @@ class ForcePathDesignerWidget(QWidget):
         import numpy as np
         
         if not self.path_points:
-            QMessageBox.warning(self, "Export Error", "No path points to export!")
+            logger.warning("Export failed: No path points to export")
             return
         
         # Get filename from user
@@ -1078,16 +1321,10 @@ class ForcePathDesignerWidget(QWidget):
                         except:
                             fg_group.attrs['model'] = 'Unknown'
             
-            QMessageBox.information(
-                self, "Export Success", 
-                f"Force path data exported successfully to:\n{filename}\n\n"
-                f"Path points: {len(self.path_points)}\n"
-                f"Execution log entries: {len(self.execution_log)}"
-            )
-            logger.info(f"Force path exported to HDF5: {filename}")
+            logger.info(f"Force path exported successfully to: {filename} "
+                       f"({len(self.path_points)} points, {len(self.execution_log)} log entries)")
             
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export HDF5 file:\n{e}")
             logger.error(f"Failed to export force path to HDF5: {e}")
         
     def set_function_generator_controller(self, controller):

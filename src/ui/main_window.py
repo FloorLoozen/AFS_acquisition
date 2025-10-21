@@ -592,25 +592,47 @@ class MainWindow(QMainWindow):
         logger.info("Application closing - cleaning up hardware")
         
         try:
-            # Cleanup function generator
-            if hasattr(self.measurement_controls_widget, 'cleanup'):
+            # Stop any running measurements first
+            if self.measurement_active:
+                logger.info("Stopping active measurement before exit")
+                self.stop_measurement_session()
+            
+            # Close force path designer if open
+            if hasattr(self, 'force_path_designer') and self.force_path_designer:
+                try:
+                    self.force_path_designer.close()
+                except Exception as e:
+                    logger.debug(f"Force path designer close error: {e}")
+            
+            # Cleanup function generator (most important for connection issues)
+            if hasattr(self.measurement_controls_widget, 'cleanup') and self.measurement_controls_widget:
+                logger.info("Cleaning up function generator...")
                 self.measurement_controls_widget.cleanup()
+                
+                # Give extra time for function generator cleanup
+                import time
+                time.sleep(0.2)
             
             # Cleanup camera
-            if hasattr(self.camera_widget, 'close'):
+            if hasattr(self.camera_widget, 'close') and self.camera_widget:
+                logger.info("Cleaning up camera...")
                 self.camera_widget.close()
             
             # Cleanup stage controller
             try:
                 from src.controllers.stage_manager import StageManager
                 stage_manager = StageManager.get_instance()
+                logger.info("Cleaning up stage controller...")
                 stage_manager.disconnect()
             except Exception as e:
                 logger.debug(f"Stage cleanup error: {e}")
             
+            logger.info("Hardware cleanup completed successfully")
+            
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
         
+        # Accept the close event
         event.accept()
     
     def get_frequency_settings(self) -> Optional['FrequencySettingsWidget']:
@@ -898,9 +920,15 @@ class MainWindow(QMainWindow):
     def _init_function_generator(self):
         """Initialize function generator hardware."""
         # Function generator initialization is handled by the measurement controls widget
+        # Give it a moment to establish connection after widget creation
         
         try:
             if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_controller'):
+                # Allow measurement controls widget time to establish connection
+                QApplication.processEvents()
+                import time
+                time.sleep(0.1)  # Small delay to allow VISA connection to establish
+                
                 fg_controller = self.measurement_controls_widget.get_function_generator_controller()
                 if fg_controller and fg_controller.is_connected():
                     return {"connected": True, "message": "Function generator connected"}

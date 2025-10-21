@@ -16,28 +16,35 @@ class StatusIndicator(QLabel):
         'connected': QColor(0, 255, 0),
         'saved': QColor(0, 255, 0),
         'on': QColor(0, 255, 0),
+        'completed': QColor(0, 255, 0),
         
-        # Active/Recording states (Red)
+        # Active/Executing states (Blue) - for running processes
+        'executing': QColor(0, 120, 255),     # Bright blue for active execution
+        'starting': QColor(0, 120, 255),     # Blue for starting execution
+        'running': QColor(0, 120, 255),      # Blue for active processes
+        
+        # Error/Critical states (Red)
         'recording': QColor(255, 0, 0),
         'error': QColor(255, 0, 0),
         'disconnected': QColor(255, 0, 0),
         'connection_failed': QColor(255, 0, 0),
         'connection_error': QColor(255, 0, 0),
         'camera_error': QColor(255, 0, 0),
+        'failed': QColor(255, 0, 0),
         
         # Warning/Transitional states (Orange)
         'initializing': QColor(255, 165, 0),
         'reinitializing': QColor(255, 165, 0),
-        'stopped': QColor(255, 165, 0),
+        'stopped': QColor(255, 165, 0),       # Orange for user-stopped actions
         'connecting': QColor(255, 165, 0),
         'reconnecting': QColor(255, 165, 0),
         
         # Inactive/Off states (Gray)
         'off': QColor(128, 128, 128),
+        'ready': QColor(128, 128, 128),      # Gray for ready/idle state
         
         # Special states
         'paused': QColor(255, 255, 0),       # Yellow
-        'ready': QColor(128, 128, 128),      # Gray
         'test_pattern': QColor(100, 149, 237), # Cornflower blue
     }
     
