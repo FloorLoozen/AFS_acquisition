@@ -138,87 +138,20 @@ class HDF5VideoRecorder:
             return False
         
         try:
-            # Ensure directory exists
-            dir_path = os.path.dirname(self.file_path)
-            if dir_path:
-                os.makedirs(dir_path, exist_ok=True)
+            # Pre-recording checks and setup
+            if not self._prepare_recording():
+                return False
             
-            # Check available disk space before starting
-            if not self._check_disk_space():
-                # Try emergency cleanup first
-                try:
-                    logger.warning("Attempting emergency cleanup to free disk space...")
-                except OSError:
-                    pass
-                
-                if self._emergency_cleanup():
-                    # Recheck after cleanup
-                    if self._check_disk_space():
-                        try:
-                            logger.info("Emergency cleanup successful - proceeding with recording")
-                        except OSError:
-                            pass
-                    else:
-                        try:
-                            logger.error("Insufficient disk space even after cleanup")
-                        except OSError:
-                            pass
-                        return False
-                else:
-                    try:
-                        logger.error("Insufficient disk space and cleanup failed")
-                    except OSError:
-                        pass
-                    return False
+            # Create and configure HDF5 file
+            if not self._create_hdf5_file():
+                return False
             
-            # Open HDF5 file for writing with robust settings
-            self.h5_file = h5py.File(
-                self.file_path, 
-                'w',
-                libver='latest',  # Use latest HDF5 format for best performance
-                swmr=False  # Single writer mode for better performance
-            )
+            # Set up datasets and metadata
+            if not self._setup_datasets_and_metadata(metadata):
+                return False
             
-            # Create simple video dataset directly in root (original simple structure)
-            # Shape: (n_frames, height, width, channels)
-            initial_shape = (self.initial_size, *self.frame_shape)
-            max_shape = (None, *self.frame_shape)  # Unlimited frames
-            
-            # Dataset creation parameters - optimized for speed and compression
-            dataset_kwargs = {
-                'shape': initial_shape,
-                'maxshape': max_shape,
-                'dtype': np.uint8,
-                'chunks': self.chunk_size,
-                'shuffle': True,  # Enable shuffle filter for better compression
-                'fillvalue': 0,  # Set fill value for uninitialized data
-                'track_times': False,  # Disable timestamp tracking for performance
-            }
-            
-            # Use LZF compression for maximum speed (much faster than GZIP)
-            dataset_kwargs['compression'] = 'lzf'
-            # LZF doesn't use compression_opts - it's optimized for speed
-            dataset_kwargs['fletcher32'] = True  # Add checksum for data integrity
-            
-            self.video_dataset = self.h5_file.create_dataset('video', **dataset_kwargs)
-            
-            # Add dataset-level metadata
-            self._add_dataset_metadata()
-            
-            # Add user-provided metadata directly to dataset attributes
-            if metadata:
-                self._add_user_metadata_to_dataset(metadata)
-            
-            # Create function generator timeline dataset
-            self._create_fg_timeline_dataset()
-            
-            # Set recording state
-            self.is_recording = True
-            self.frame_count = 0
-            self.start_time = datetime.now()
-            
-            # Start async write thread for better performance
-            self._start_async_writer()
+            # Initialize recording state and start async processing
+            self._initialize_recording_state()
             
             logger.info(f"Started HDF5 recording: {self.file_path}")
             logger.info(f"Frame shape: {self.frame_shape}, FPS: {self.fps}, Compression: lzf")
@@ -227,10 +160,119 @@ class HDF5VideoRecorder:
             
         except Exception as e:
             logger.error(f"Failed to start HDF5 recording: {e}")
-            if self.h5_file:
-                self.h5_file.close()
-                self.h5_file = None
+            self._cleanup_failed_start()
             return False
+    
+    def _prepare_recording(self) -> bool:
+        """Prepare for recording - check disk space and create directories."""
+        # Ensure directory exists
+        dir_path = os.path.dirname(self.file_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        
+        # Check available disk space before starting
+        if not self._check_disk_space():
+            return self._handle_insufficient_disk_space()
+        
+        return True
+    
+    def _handle_insufficient_disk_space(self) -> bool:
+        """Handle insufficient disk space by attempting cleanup."""
+        try:
+            logger.warning("Attempting emergency cleanup to free disk space...")
+        except OSError:
+            pass
+        
+        if self._emergency_cleanup():
+            # Recheck after cleanup
+            if self._check_disk_space():
+                try:
+                    logger.info("Emergency cleanup successful - proceeding with recording")
+                except OSError:
+                    pass
+                return True
+            else:
+                try:
+                    logger.error("Insufficient disk space even after cleanup")
+                except OSError:
+                    pass
+                return False
+        else:
+            try:
+                logger.error("Insufficient disk space and cleanup failed")
+            except OSError:
+                pass
+            return False
+    
+    def _create_hdf5_file(self) -> bool:
+        """Create and open HDF5 file with optimized settings."""
+        try:
+            self.h5_file = h5py.File(
+                self.file_path, 
+                'w',
+                libver='latest',  # Use latest HDF5 format for best performance
+                swmr=False  # Single writer mode for better performance
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create HDF5 file: {e}")
+            return False
+    
+    def _setup_datasets_and_metadata(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Set up video dataset and metadata."""
+        try:
+            # Create video dataset
+            self._create_video_dataset()
+            
+            # Add metadata
+            self._add_dataset_metadata()
+            
+            if metadata:
+                self._add_user_metadata_to_dataset(metadata)
+            
+            # Create function generator timeline dataset
+            self._create_fg_timeline_dataset()
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to setup datasets: {e}")
+            return False
+    
+    def _create_video_dataset(self):
+        """Create the main video dataset with optimized parameters."""
+        # Shape: (n_frames, height, width, channels)
+        initial_shape = (self.initial_size, *self.frame_shape)
+        max_shape = (None, *self.frame_shape)  # Unlimited frames
+        
+        # Dataset creation parameters - optimized for speed and compression
+        dataset_kwargs = {
+            'shape': initial_shape,
+            'maxshape': max_shape,
+            'dtype': np.uint8,
+            'chunks': self.chunk_size,
+            'shuffle': True,  # Enable shuffle filter for better compression
+            'fillvalue': 0,  # Set fill value for uninitialized data
+            'track_times': False,  # Disable timestamp tracking for performance
+            'compression': 'lzf',  # Fast compression for real-time recording
+            'fletcher32': True,  # Add checksum for data integrity
+        }
+        
+        self.video_dataset = self.h5_file.create_dataset('video', **dataset_kwargs)
+    
+    def _initialize_recording_state(self):
+        """Initialize recording state and start async processing."""
+        self.is_recording = True
+        self.frame_count = 0
+        self.start_time = datetime.now()
+        
+        # Start async write thread for better performance
+        self._start_async_writer()
+    
+    def _cleanup_failed_start(self):
+        """Clean up resources after a failed start attempt."""
+        if self.h5_file:
+            self.h5_file.close()
+            self.h5_file = None
     
     def _check_disk_space(self, min_gb: float = 0.05) -> bool:
         """

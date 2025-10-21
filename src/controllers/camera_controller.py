@@ -153,7 +153,22 @@ class CameraController:
         Returns:
             Dictionary containing all camera parameters and settings
         """
-        settings = {
+        settings = self._get_basic_camera_info()
+        
+        if not self.use_test_pattern and PYUEYE_AVAILABLE and self.h_cam is not None:
+            try:
+                settings.update(self._get_hardware_camera_settings())
+            except Exception as e:
+                logger.warning(f"Error extracting camera settings: {e}")
+                settings['settings_extraction_error'] = str(e)
+        else:
+            settings.update(self._get_test_pattern_settings())
+        
+        return settings
+    
+    def _get_basic_camera_info(self) -> Dict[str, Any]:
+        """Get basic camera information."""
+        return {
             'camera_id': self.camera_id,
             'use_test_pattern': self.use_test_pattern,
             'timestamp': datetime.now().isoformat(),
@@ -161,95 +176,153 @@ class CameraController:
             'height': self.height,
             'bits_per_pixel': self.bits_per_pixel,
         }
+    
+    def _get_hardware_camera_settings(self) -> Dict[str, Any]:
+        """Get hardware camera settings from actual camera."""
+        settings = {}
         
-        if not self.use_test_pattern and PYUEYE_AVAILABLE and self.h_cam is not None:
-            try:
-                # Get sensor information
-                sensor_info = ueye.SENSORINFO()
-                ret = ueye.is_GetSensorInfo(self.h_cam, sensor_info)
-                if ret == ueye.IS_SUCCESS:
-                    settings.update({
-                        'sensor_name': sensor_info.strSensorName.decode('utf-8').strip(),
-                        'sensor_id': sensor_info.SensorID,
-                        'sensor_max_width': sensor_info.nMaxWidth,
-                        'sensor_max_height': sensor_info.nMaxHeight,
-                        'sensor_color_mode': sensor_info.nColorMode,
-                    })
-                
-                # Get pixel clock
-                pixel_clock = ueye.c_uint()
-                ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_GET, pixel_clock, 4)
-                if ret == ueye.IS_SUCCESS:
-                    settings['pixel_clock_mhz'] = pixel_clock.value
-                
-                # Get frame rate
-                fps_ptr = ueye.DOUBLE()
-                ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
-                if ret == ueye.IS_SUCCESS:
-                    settings['frame_rate_fps'] = fps_ptr.value
-                
-                # Get exposure time
-                exposure = ueye.DOUBLE()
-                ret = ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_GET_EXPOSURE, exposure, 8)
-                if ret == ueye.IS_SUCCESS:
-                    settings['exposure_ms'] = exposure.value
-                
-                # Get gain settings
-                try:
-                    gain_master = ueye.c_int()
-                    ret = ueye.is_SetHardwareGain(self.h_cam, ueye.IS_GET_MASTER_GAIN, gain_master, 
-                                                ueye.c_int(), ueye.c_int())
-                    if ret == ueye.IS_SUCCESS:
-                        settings['gain_master'] = gain_master.value
-                except Exception as e:
-                    logger.debug(f"Could not get gain settings: {e}")
-                    settings['gain_master'] = 'unavailable'
-                
-                # Get color mode (set to known value since we configure it)
-                settings['color_mode'] = 'IS_CM_BGR8_PACKED'
-                
-                # Get AOI (Area of Interest)
-                rect_aoi = ueye.IS_RECT()
-                ret = ueye.is_AOI(self.h_cam, ueye.IS_AOI_IMAGE_GET_AOI, rect_aoi, ueye.sizeof(rect_aoi))
-                if ret == ueye.IS_SUCCESS:
-                    settings.update({
-                        'aoi_x': rect_aoi.s32X,
-                        'aoi_y': rect_aoi.s32Y,
-                        'aoi_width': rect_aoi.s32Width,
-                        'aoi_height': rect_aoi.s32Height,
-                    })
-                
-                # Get camera info
-                cam_info = ueye.CAMINFO()
-                ret = ueye.is_GetCameraInfo(self.h_cam, cam_info)
-                if ret == ueye.IS_SUCCESS:
-                    settings.update({
-                        'camera_serial': cam_info.SerNo.decode('utf-8').strip(),
-                        'camera_version': cam_info.Version.decode('utf-8').strip(),
-                        'camera_date': cam_info.Date.decode('utf-8').strip(),
-                    })
-                
-                # Get temperature (if supported)
-                try:
-                    temperature = ueye.c_int()
-                    ret = ueye.is_SetTemperature(self.h_cam, ueye.IS_GET_TEMPERATURE, temperature)
-                    if ret == ueye.IS_SUCCESS:
-                        settings['temperature_celsius'] = temperature.value
-                except:
-                    pass  # Temperature not supported on all cameras
-                
-            except Exception as e:
-                logger.warning(f"Error extracting camera settings: {e}")
-                settings['settings_extraction_error'] = str(e)
+        # Get sensor information
+        settings.update(self._get_sensor_info())
         
-        else:
-            settings.update({
-                'sensor_name': 'Test Pattern Generator',
-                'frame_rate_fps': 30.0,
-                'exposure_ms': 33.33,
-            })
+        # Get timing and exposure settings
+        settings.update(self._get_timing_settings())
+        
+        # Get image processing settings
+        settings.update(self._get_image_processing_settings())
+        
+        # Get camera identification
+        settings.update(self._get_camera_identification())
+        
+        # Get optional temperature (if supported)
+        settings.update(self._get_optional_settings())
         
         return settings
+    
+    def _get_sensor_info(self) -> Dict[str, Any]:
+        """Get sensor hardware information."""
+        settings = {}
+        try:
+            sensor_info = ueye.SENSORINFO()
+            ret = ueye.is_GetSensorInfo(self.h_cam, sensor_info)
+            if ret == ueye.IS_SUCCESS:
+                settings.update({
+                    'sensor_name': sensor_info.strSensorName.decode('utf-8').strip(),
+                    'sensor_id': sensor_info.SensorID,
+                    'sensor_max_width': sensor_info.nMaxWidth,
+                    'sensor_max_height': sensor_info.nMaxHeight,
+                    'sensor_color_mode': sensor_info.nColorMode,
+                })
+        except Exception as e:
+            logger.debug(f"Could not get sensor info: {e}")
+        return settings
+    
+    def _get_timing_settings(self) -> Dict[str, Any]:
+        """Get timing-related camera settings."""
+        settings = {}
+        
+        # Pixel clock
+        try:
+            pixel_clock = ueye.c_uint()
+            ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_GET, pixel_clock, 4)
+            if ret == ueye.IS_SUCCESS:
+                settings['pixel_clock_mhz'] = pixel_clock.value
+        except Exception as e:
+            logger.debug(f"Could not get pixel clock: {e}")
+        
+        # Frame rate
+        try:
+            fps_ptr = ueye.DOUBLE()
+            ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
+            if ret == ueye.IS_SUCCESS:
+                settings['frame_rate_fps'] = fps_ptr.value
+        except Exception as e:
+            logger.debug(f"Could not get frame rate: {e}")
+        
+        # Exposure time
+        try:
+            exposure = ueye.DOUBLE()
+            ret = ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_GET_EXPOSURE, exposure, 8)
+            if ret == ueye.IS_SUCCESS:
+                settings['exposure_ms'] = exposure.value
+        except Exception as e:
+            logger.debug(f"Could not get exposure: {e}")
+        
+        return settings
+    
+    def _get_image_processing_settings(self) -> Dict[str, Any]:
+        """Get image processing related settings."""
+        settings = {}
+        
+        # Gain settings
+        try:
+            gain_master = ueye.c_int()
+            ret = ueye.is_SetHardwareGain(self.h_cam, ueye.IS_GET_MASTER_GAIN, gain_master, 
+                                        ueye.c_int(), ueye.c_int())
+            if ret == ueye.IS_SUCCESS:
+                settings['gain_master'] = gain_master.value
+            else:
+                settings['gain_master'] = 'unavailable'
+        except Exception as e:
+            logger.debug(f"Could not get gain settings: {e}")
+            settings['gain_master'] = 'unavailable'
+        
+        # Color mode (known value since we configure it)
+        settings['color_mode'] = 'IS_CM_BGR8_PACKED'
+        
+        # AOI (Area of Interest)
+        try:
+            rect_aoi = ueye.IS_RECT()
+            ret = ueye.is_AOI(self.h_cam, ueye.IS_AOI_IMAGE_GET_AOI, rect_aoi, ueye.sizeof(rect_aoi))
+            if ret == ueye.IS_SUCCESS:
+                settings.update({
+                    'aoi_x': rect_aoi.s32X,
+                    'aoi_y': rect_aoi.s32Y,
+                    'aoi_width': rect_aoi.s32Width,
+                    'aoi_height': rect_aoi.s32Height,
+                })
+        except Exception as e:
+            logger.debug(f"Could not get AOI: {e}")
+        
+        return settings
+    
+    def _get_camera_identification(self) -> Dict[str, Any]:
+        """Get camera identification information."""
+        settings = {}
+        try:
+            cam_info = ueye.CAMINFO()
+            ret = ueye.is_GetCameraInfo(self.h_cam, cam_info)
+            if ret == ueye.IS_SUCCESS:
+                settings.update({
+                    'camera_serial': cam_info.SerNo.decode('utf-8').strip(),
+                    'camera_version': cam_info.Version.decode('utf-8').strip(),
+                    'camera_date': cam_info.Date.decode('utf-8').strip(),
+                })
+        except Exception as e:
+            logger.debug(f"Could not get camera info: {e}")
+        return settings
+    
+    def _get_optional_settings(self) -> Dict[str, Any]:
+        """Get optional camera settings that may not be supported."""
+        settings = {}
+        
+        # Temperature (if supported)
+        try:
+            temperature = ueye.c_int()
+            ret = ueye.is_SetTemperature(self.h_cam, ueye.IS_GET_TEMPERATURE, temperature)
+            if ret == ueye.IS_SUCCESS:
+                settings['temperature_celsius'] = temperature.value
+        except Exception:
+            pass  # Temperature not supported on all cameras
+        
+        return settings
+    
+    def _get_test_pattern_settings(self) -> Dict[str, Any]:
+        """Get settings for test pattern mode."""
+        return {
+            'sensor_name': 'Test Pattern Generator',
+            'frame_rate_fps': 30.0,
+            'exposure_ms': 33.33,
+        }
     
     @property
     def frame_shape(self) -> Tuple[int, int, int]:

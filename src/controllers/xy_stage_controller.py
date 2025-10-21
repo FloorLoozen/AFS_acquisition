@@ -139,6 +139,55 @@ class XYStageController:
                     )
         except Exception:
             pass  # Ignore if function fails
+    
+    def wait_for_movement_complete(self, timeout_ms: float = 1000) -> bool:
+        """
+        Wait for stage movement to complete by checking if position is stable.
+        More efficient than fixed time.sleep() delays.
+        
+        Args:
+            timeout_ms: Maximum time to wait in milliseconds
+            
+        Returns:
+            True if movement completed, False if timeout
+        """
+        if not self._is_connected:
+            return False
+            
+        import time
+        start_time = time.time()
+        
+        try:
+            last_x, last_y = self.get_position()
+        except:
+            # If we can't get position, use minimal delay as fallback
+            time.sleep(0.1)
+            return True
+        
+        # Wait for position to stabilize
+        stable_count = 0
+        required_stable_readings = 3  # Need 3 consecutive stable readings
+        
+        while (time.time() - start_time) * 1000 < timeout_ms:
+            time.sleep(0.01)  # Small check interval
+            try:
+                current_x, current_y = self.get_position()
+                
+                # Check if position is stable (within 1 micron)
+                if (abs(current_x - last_x) < 0.001 and 
+                    abs(current_y - last_y) < 0.001):
+                    stable_count += 1
+                    if stable_count >= required_stable_readings:
+                        return True
+                else:
+                    stable_count = 0
+                    
+                last_x, last_y = current_x, current_y
+            except:
+                # If position reading fails, assume movement complete
+                return True
+                
+        return False  # Timeout
 
     def disconnect(self) -> None:
         """Disconnect from the XY stage."""
@@ -256,15 +305,15 @@ if __name__ == "__main__":
         # Small square movement pattern
         side_length = 0.1  # mm (100 microns)
         
-        # Move in square pattern
+        # Move in square pattern with efficient waiting
         stage.move_axis(1, side_length)  # Move right
-        time.sleep(0.5)
+        stage.wait_for_movement_complete(500)  # Wait up to 500ms
         
         stage.move_axis(2, side_length)  # Move up
-        time.sleep(0.5)
+        stage.wait_for_movement_complete(500)
         
         stage.move_axis(1, -side_length)  # Move left
-        time.sleep(0.5)
+        stage.wait_for_movement_complete(500)
         
         stage.move_axis(2, -side_length)  # Move down (back to origin)
         

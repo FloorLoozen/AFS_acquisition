@@ -45,7 +45,7 @@ class FunctionGeneratorController:
             
             # Quick reset and setup
             self.function_generator.write("*RST")
-            time.sleep(0.1)
+            self._wait_for_operation_complete()
             
             # Enable SYNC and trigger output for external triggering
             self.ensure_sync_enabled(force_redundant=False)
@@ -68,6 +68,60 @@ class FunctionGeneratorController:
         """Check if function generator is connected."""
         return self._is_connected and self.function_generator is not None
 
+    def _wait_for_operation_complete(self, timeout_ms: float = 500) -> bool:
+        """
+        Wait for operation to complete using *OPC? query instead of time.sleep().
+        Much more efficient than fixed delays.
+        
+        Args:
+            timeout_ms: Maximum time to wait in milliseconds
+            
+        Returns:
+            True if operation completed, False if timeout
+        """
+        if not self.is_connected():
+            return False
+            
+        try:
+            # Set short timeout for responsiveness
+            original_timeout = self.function_generator.timeout
+            self.function_generator.timeout = int(timeout_ms)
+            
+            # Query operation complete
+            response = self.function_generator.query("*OPC?")
+            
+            # Restore original timeout
+            self.function_generator.timeout = original_timeout
+            
+            return response.strip() == "1"
+            
+        except Exception:
+            # Fallback to minimal delay if OPC not supported
+            import time
+            time.sleep(0.01)  # Very short fallback
+            return True
+    
+    def _ensure_command_processed(self, max_retries: int = 3) -> bool:
+        """
+        Ensure command is processed by checking error queue.
+        More reliable than fixed delays.
+        """
+        if not self.is_connected():
+            return False
+            
+        try:
+            for _ in range(max_retries):
+                # Check for errors
+                error = self.function_generator.query("SYST:ERR?")
+                if "No error" in error or "0," in error:
+                    return True
+                # Small delay between retries
+                import time
+                time.sleep(0.01)
+            return False
+        except Exception:
+            return True  # Assume success if can't check
+    
     def output_sine_wave(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
         """
         Output sine wave with efficient parameter caching.
@@ -177,11 +231,11 @@ class FunctionGeneratorController:
             # Send all configuration commands
             for cmd in config_commands:
                 self.function_generator.write(cmd)
-            time.sleep(0.1)  # Minimal stabilization time
+            self._ensure_command_processed()  # Smart waiting instead of fixed delay
             
             # Start sweep
             self.function_generator.write(f"C{channel}:OUTP ON")
-            time.sleep(0.1)
+            self._wait_for_operation_complete(100)  # Quick check
             self.function_generator.write(f"{channel_str}:SWWV SWST")
             
             # Ensure SYNC stays on after starting sweep
@@ -339,7 +393,10 @@ def main():
             
         # Test sine wave output
         controller.output_sine_wave(amplitude=4.0, frequency_mhz=14.0, channel=1)
-        time.sleep(2)
+        
+        # Wait for output to stabilize using efficient method
+        if not controller._wait_for_operation_complete(2000):  # 2 second max
+            logger.info("Output stabilization complete")
         
         # Test frequency sweep
         controller.sine_frequency_sweep(

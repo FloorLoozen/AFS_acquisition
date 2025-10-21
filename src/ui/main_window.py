@@ -1,5 +1,8 @@
 """Main application window for the AFS Tracking System."""
 
+import time
+import threading
+from datetime import datetime
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QAction, 
@@ -82,7 +85,7 @@ class MainWindow(QMainWindow):
 
     def _create_measurement_hdf5(self) -> bool:
         """Create HDF5 file when measurement starts - optimized and robust."""
-        from datetime import datetime
+        # datetime is now imported at top of file
         import h5py
         import os
         
