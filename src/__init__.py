@@ -1,1 +1,1 @@
-"""AFS Tracking System - Source module."""
+"""AFS Acquisition - Source module."""

@@ -1,5 +1,5 @@
 """
-Acquisition Controls Widget for the AFS Tracking System.
+Acquisition Controls Widget for AFS Acquisition.
 Provides Start, Stop, and Save recording controls for data acquisition.
 """
 

@@ -1,4 +1,4 @@
-"""Input validation utilities for the AFS Tracking System.
+"""Input validation utilities for AFS Acquisition.
 
 Provides consistent validation functions for common input types used
 throughout the application. Helps ensure data integrity and provides

@@ -1,5 +1,5 @@
 """
-Simplified Camera Widget for the AFS Tracking System.
+Simplified Camera Widget for AFS Acquisition.
 Clean, minimal design without side controls.
 """
 

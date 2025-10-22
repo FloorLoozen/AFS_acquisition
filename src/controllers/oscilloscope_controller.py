@@ -1,5 +1,5 @@
 """
-Oscilloscope Controller for AFS Tracking System.
+Oscilloscope Controller for AFS Acquisition.
 
 Provides robust, production-ready control of Tektronix oscilloscopes
 with comprehensive error handling, automatic recovery, and data validation.

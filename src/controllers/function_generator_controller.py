@@ -1,5 +1,5 @@
 """
-Function Generator Controller for AFS Tracking System.
+Function Generator Controller for AFS Acquisition.
 
 Provides robust, production-ready control of Siglent SDG series function generators
 with comprehensive error handling, automatic recovery, and performance optimization.

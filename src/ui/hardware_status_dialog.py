@@ -1,5 +1,5 @@
 """
-Hardware Status Warning Dialog for the AFS Tracking System.
+Hardware Status Warning Dialog for AFS Acquisition.
 Shows which hardware components are not connected at startup.
 """
 

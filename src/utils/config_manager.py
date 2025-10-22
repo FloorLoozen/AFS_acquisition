@@ -1,5 +1,5 @@
 """
-Enhanced configuration management for AFS Tracking System.
+Enhanced configuration management for AFS Acquisition.
 
 Centralized configuration with validation, performance tuning, and robust error handling.
 """
@@ -203,7 +203,7 @@ class FilesConfig:
 
 class ConfigManager:
     """
-    Enhanced configuration manager for AFS Tracking System.
+    Enhanced configuration manager for AFS Acquisition.
     
     Features:
     - Automatic config file loading/saving with validation

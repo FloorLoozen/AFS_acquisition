@@ -1,5 +1,5 @@
 """
-Measurement Controls Widget for the AFS Tracking System.
+Measurement Controls Widget for AFS Acquisition.
 Provides controls for function generator and other measurement hardware.
 """
 

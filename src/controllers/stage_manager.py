@@ -1,5 +1,5 @@
 """
-XY Stage Manager singleton for the AFS Tracking System.
+XY Stage Manager singleton for AFS Acquisition.
 Provides global access to the XY stage controller.
 """
 

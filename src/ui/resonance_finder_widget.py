@@ -1,5 +1,5 @@
 """
-Resonance Finder Widget for the AFS Tracking System.
+Resonance Finder Widget for AFS Acquisition.
 PyQt5-based resonance frequency analysis tool with frequency sweep and plotting.
 """
 

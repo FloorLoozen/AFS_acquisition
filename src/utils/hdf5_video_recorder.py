@@ -1,4 +1,4 @@
-"""HDF5 Video Recorder for the AFS Tracking System.
+"""HDF5 Video Recorder for AFS Acquisition.
 
 Provides high-performance video recording with frame-level access, compression,
 and metadata storage. Optimized for real-time recording with LZF compression.

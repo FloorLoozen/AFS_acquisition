@@ -1,5 +1,5 @@
 """
-Minimal Camera Settings Widget for the AFS Tracking System.
+Minimal Camera Settings Widget for AFS Acquisition.
 Ultra-simple design with only essential controls and 3 buttons.
 """
 

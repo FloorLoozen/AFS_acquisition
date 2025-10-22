@@ -1,5 +1,5 @@
 """
-XY Stage controller for the AFS Tracking System.
+XY Stage controller for AFS Acquisition.
 This module provides an interface to the XY stage hardware using MCL's MicroDrive DLL.
 """
 

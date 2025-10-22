@@ -1,5 +1,5 @@
 """
-Main application entry point for AFS Tracking System.
+Main application entry point for AFS Acquisition.
 
 This module provides the main entry point for the AFS (Atomic Force Spectroscopy)
 Tracking System, a comprehensive laboratory instrumentation control and data
@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=SyntaxWarning, module="pyueye")
 # Application metadata
 __version__ = "3.0.0"
 __author__ = "Floor Loozen"
-__description__ = "AFS Tracking System - Laboratory instrumentation control and data acquisition"
+__description__ = "AFS Acquisition - Laboratory instrumentation control and data acquisition"
 
 
 def setup_python_path() -> None:
@@ -95,11 +95,11 @@ def create_application() -> 'QApplication':
         app = QApplication(sys.argv)
         
         # Set application metadata for system integration
-        app.setApplicationName("AFS Tracking System")
+        app.setApplicationName("AFS Acquisition")
         app.setApplicationVersion(__version__)
         app.setOrganizationName("AFS Lab")
-        app.setApplicationDisplayName("AFS Tracking System")
-        
+        app.setApplicationDisplayName("AFS Acquisition")
+
         return app
         
     except ImportError as e:
@@ -159,7 +159,7 @@ def main() -> NoReturn:
         # Start in maximized mode for better visibility
         window.showMaximized()
         logger.info("Main window displayed")
-        logger.info("AFS Tracking System started successfully")
+        logger.info("AFS Acquisition started successfully")
         
         # Start the Qt event loop
         exit_code = app.exec_()

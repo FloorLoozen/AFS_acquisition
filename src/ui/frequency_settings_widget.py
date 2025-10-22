@@ -1,5 +1,5 @@
 """
-Frequency Settings Widget for the AFS Tracking System.
+Frequency Settings Widget for AFS Acquisition.
 Provides configuration options for measurement paths and settings.
 """
 

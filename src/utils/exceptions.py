@@ -1,4 +1,4 @@
-"""Custom exception classes for the AFS Tracking System.
+"""Custom exception classes for AFS Acquisition.
 
 Provides specific exception types for different error conditions,
 enabling more precise error handling and better user feedback.
@@ -8,7 +8,7 @@ from typing import Optional, Any
 
 
 class AFSTrackingError(Exception):
-    """Base exception class for all AFS Tracking System errors."""
+    """Base exception class for all AFS Acquisition errors."""
     
     def __init__(self, message: str, error_code: Optional[str] = None, 
                  component: Optional[str] = None):

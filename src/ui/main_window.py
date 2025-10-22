@@ -1,4 +1,4 @@
-"""Main application window for the AFS Tracking System."""
+"""Main application window for the AFS Acquisition."""
 
 import time
 import threading
@@ -27,7 +27,7 @@ logger = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
-    """Main application window for AFS Tracking System.
+    """Main application window for AFS Acquisition.
     
     Provides a 3-row layout with camera view, measurement settings,
     acquisition controls, and measurement controls. Handles hardware
@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
         Sets up the main window properties, creates the menu bar and central
         layout, and ensures proper focus for keyboard shortcuts.
         """
-        self.setWindowTitle("AFS Tracking System")
+        self.setWindowTitle("AFS Acquisition")
 
         self._create_menu_bar()
         self._create_central_layout()
@@ -367,8 +367,8 @@ class MainWindow(QMainWindow):
     def _open_about(self):
         """Show about dialog."""
         QMessageBox.information(self, "About", 
-            "AFS Tracking System v3\n\n"
-            "Automated tracking system for AFS using IDS cameras "
+            "AFS Acquisition v3\n\n"
+            "Automated acquisition system for AFS using IDS cameras "
             "and MCL MicroDrive XY stage hardware.")
     
     def start_measurement_session(self):

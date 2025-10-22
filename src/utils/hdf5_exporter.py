@@ -1,4 +1,4 @@
-"""HDF5 Exporter for AFS Tracking System.
+"""HDF5 Exporter for AFS Acquisition.
 
 This module provides functionality to export tracking data and camera settings
 to an HDF5 file. It includes the `HDF5Exporter` class with methods to handle

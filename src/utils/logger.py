@@ -191,7 +191,7 @@ class SafeFileHandler(logging.FileHandler):
 
 class AFSLogger:
     """
-    A custom logger for the AFS Tracking System that provides consistent formatting
+    A custom logger for AFS Acquisition that provides consistent formatting
     and log file management.
     """
     
