@@ -10,6 +10,7 @@ import pyvisa
 import time
 from typing import Optional, Tuple, Dict, Any
 from enum import Enum
+import threading
 
 from src.utils.logger import get_logger
 from src.utils.exceptions import FunctionGeneratorError, HardwareError
@@ -63,16 +64,21 @@ class FunctionGeneratorController:
         self._device_info: Optional[Dict[str, str]] = None
         self._error_count = 0
         self._last_error: Optional[str] = None
+        # Thread-safety lock for VISA operations
+        self._lock = threading.RLock()
 
-    def connect(self) -> bool:
+    def connect(self, fast_fail: bool = False) -> bool:
         """
         Connect to function generator with automatic discovery and validation.
+        
+        Args:
+            fast_fail: If True, only try once with short timeout (for startup)
         
         Returns:
             bool: True if successfully connected
             
         Raises:
-            FunctionGeneratorError: If connection fails
+            FunctionGeneratorError: If connection fails (only when fast_fail=False)
         """
         if self.is_connected:
             logger.info("Function generator already connected")
@@ -81,10 +87,85 @@ class FunctionGeneratorController:
         self._connection_state = ConnectionState.CONNECTING
         
         try:
-            return self._execute_with_retry("Connection", self._connect_impl)
+            if fast_fail:
+                # Single attempt with short timeout for fast startup
+                return self._connect_impl_fast()
+            else:
+                # Normal connection with retries
+                return self._execute_with_retry("Connection", self._connect_impl)
         except FunctionGeneratorError:
             self._connection_state = ConnectionState.ERROR
-            raise
+            if not fast_fail:
+                raise
+            return False
+    
+    def _connect_impl_fast(self) -> bool:
+        """Fast connection attempt with short timeout (for startup)."""
+        try:
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            logger.info(f"Function generator: Found VISA resources: {list(resources)}")
+            
+            if not resources:
+                logger.info("Function generator: No VISA resources found")
+                return False
+            
+            target_resource = None
+            
+            if self.resource_name:
+                if self.resource_name in resources:
+                    target_resource = self.resource_name
+            else:
+                # Auto-detect Siglent device
+                for resource in resources:
+                    resource_upper = resource.upper()
+                    if any(keyword in resource_upper for keyword in ['SIGLENT', 'SDG', 'F4EC']):
+                        target_resource = resource
+                        break
+            
+            if not target_resource:
+                return False
+            
+            logger.info(f"Function generator: Attempting to connect to {target_resource}")
+            
+            # Open with reasonable timeout for fast startup
+            self.function_generator = rm.open_resource(target_resource)
+            self.function_generator.timeout = 5000  # 5 seconds - devices need time to respond
+            self.function_generator.read_termination = '\n'
+            self.function_generator.write_termination = '\n'
+            
+            # Quick IDN check
+            idn = self.function_generator.query("*IDN?").strip()
+            
+            # Parse device info
+            idn_parts = idn.split(',')
+            self._device_info = {
+                "manufacturer": idn_parts[0] if len(idn_parts) > 0 else "Unknown",
+                "model": idn_parts[1] if len(idn_parts) > 1 else "Unknown",
+                "serial": idn_parts[2] if len(idn_parts) > 2 else "Unknown", 
+                "firmware": idn_parts[3] if len(idn_parts) > 3 else "Unknown"
+            }
+            
+            # Restore normal timeout after connection
+            self.function_generator.timeout = self.DEFAULT_TIMEOUT
+            
+            self._connection_state = ConnectionState.CONNECTED
+            self._error_count = 0
+            self.resource_name = target_resource
+            
+            logger.info(f"Function generator connected: {idn_parts[1] if len(idn_parts) > 1 else target_resource}")
+            return True
+            
+        except Exception as e:
+            # Log failure reason for debugging
+            logger.info(f"Function generator fast connection failed: {type(e).__name__}: {e}")
+            if hasattr(self, 'function_generator') and self.function_generator:
+                try:
+                    self.function_generator.close()
+                except:
+                    pass
+                self.function_generator = None
+            return False
     
     def _connect_impl(self) -> bool:
         """Implementation of connection logic."""
@@ -251,20 +332,21 @@ class FunctionGeneratorController:
         """
         if not self.is_connected:
             raise FunctionGeneratorError("Function generator not connected")
-        
+
         try:
             logger.debug(f"Sending command: {command}")
-            
-            if read_response:
-                response = self.function_generator.query(command).strip()
-                logger.debug(f"Received response: {response}")
-                return response
-            else:
-                self.function_generator.write(command)
-                # Check for errors after write commands
-                self._check_device_errors()
-                return None
-                
+            with self._lock:
+                if read_response:
+                    response = self.function_generator.query(command).strip()
+                    logger.debug(f"Received response: {response}")
+                    return response
+                else:
+                    self.function_generator.write(command)
+                    # Check for errors after write commands
+                    # Note: _check_device_errors expects lock to already be held
+                    self._check_device_errors()
+                    return None
+
         except Exception as e:
             error_msg = f"Command '{command}' failed: {e}"
             logger.error(error_msg)
@@ -272,13 +354,21 @@ class FunctionGeneratorController:
             raise FunctionGeneratorError(error_msg) from e
     
     def _check_device_errors(self) -> None:
-        """Check device for errors and clear error queue."""
+        """Check device for errors and clear error queue.
+        
+        Note: This method expects the caller to already hold self._lock.
+        """
         try:
-            while True:
+            # Lock is already held by caller (_send_command)
+            max_iterations = 10  # Prevent infinite loops
+            iterations = 0
+            while iterations < max_iterations:
                 error_response = self.function_generator.query("SYST:ERR?").strip()
-                if error_response.startswith("0,"):
+                # Check if no error: response can be "0,..." or "+0,..."
+                if error_response.startswith("0,") or error_response.startswith("+0,"):
                     break  # No more errors
                 logger.warning(f"Device error: {error_response}")
+                iterations += 1
         except Exception as e:
             logger.warning(f"Failed to check device errors: {e}")
 
@@ -611,3 +701,14 @@ class FunctionGeneratorController:
             self._last_sine = None
             self._device_info = None
             logger.info("Function generator disconnect completed")
+
+
+# Singleton instance management
+_function_generator_instance = None
+
+def get_function_generator_controller() -> FunctionGeneratorController:
+    """Get the singleton function generator controller instance."""
+    global _function_generator_instance
+    if _function_generator_instance is None:
+        _function_generator_instance = FunctionGeneratorController()
+    return _function_generator_instance

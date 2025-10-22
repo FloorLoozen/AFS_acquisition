@@ -213,11 +213,26 @@ class FunctionGeneratorWorker(QThread):
                 
                 # Optimized sleep - balanced speed vs USB communication limits
                 self.msleep(20)  # 20ms = 50 Hz update rate (optimal for USB VISA)
+            
+            # CRITICAL: Turn off function generator output after execution completes
+            logger.info("Force path execution completed - turning off function generator output")
+            try:
+                self.fg_controller.stop_all_outputs()
+                logger.info("Function generator output turned off successfully")
+            except Exception as e:
+                logger.error(f"Failed to turn off function generator output after execution: {e}")
                 
             self.execution_finished.emit(True)
             
         except Exception as e:
             logger.error(f"Function generator worker error: {e}")
+            # Try to turn off output even on error
+            try:
+                if self.fg_controller and self.fg_controller.is_connected:
+                    self.fg_controller.stop_all_outputs()
+                    logger.info("Function generator output turned off after error")
+            except:
+                pass
             self.execution_finished.emit(False)
             
     def _process_points_for_execution(self):

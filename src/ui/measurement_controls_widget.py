@@ -11,6 +11,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from src.utils.logger import get_logger
 from src.controllers.function_generator_controller import FunctionGeneratorController
+from src.controllers.device_manager import DeviceManager
 from src.utils.status_display import StatusDisplay
 
 logger = get_logger("measurement_controls")
@@ -162,19 +163,36 @@ class MeasurementControlsWidget(QGroupBox):
         layout.addLayout(row_layout)
 
     def _initialize_function_generator(self):
-        """Initialize the function generator controller."""
+        """Initialize the function generator controller with fast startup."""
         try:
-            self.fg_controller = FunctionGeneratorController()
-            
-            # Try connection with improved retry logic
-            connected = self.fg_controller.connect()
+            # Obtain function generator controller from the DeviceManager
+            try:
+                self.fg_controller = DeviceManager.get_instance().get_function_generator()
+                try:
+                    # Fast connection attempt - don't block startup
+                    connected = self.fg_controller.connect(fast_fail=True)
+                except Exception:
+                    connected = False
+            except Exception:
+                # Fallback to direct instantiation if DeviceManager isn't available
+                try:
+                    from src.controllers.function_generator_controller import get_function_generator_controller
+                    self.fg_controller = get_function_generator_controller()
+                    try:
+                        # Fast connection attempt - don't block startup
+                        connected = self.fg_controller.connect(fast_fail=True)
+                    except Exception:
+                        connected = False
+                except Exception:
+                    self.fg_controller = None
+                    connected = False
             
             if connected:
                 self.fg_status_display.set_status("Ready")
                 logger.info("Function generator connected successfully")
             else:
                 self.fg_status_display.set_status("Disconnected")
-                logger.warning("Function generator connection failed - device may be busy")
+                logger.info("Function generator not found on startup (will retry in background)")
         except Exception as e:
             logger.error(f"Failed to create function generator controller: {e}")
             self.fg_controller = None
@@ -187,11 +205,16 @@ class MeasurementControlsWidget(QGroupBox):
             return self.fg_controller is not None and self.fg_controller.is_connected
         
         if not self.fg_controller.is_connected:
-            # Try simple reconnect
-            if self.fg_controller.connect():
-                self.fg_status_display.set_status("Ready")
-                return True
-            else:
+            # Try simple reconnect with fast_fail to avoid blocking UI
+            try:
+                if self.fg_controller.connect(fast_fail=True):
+                    self.fg_status_display.set_status("Ready")
+                    return True
+                else:
+                    self.fg_status_display.set_status("Disconnected")
+                    return False
+            except Exception as e:
+                logger.debug(f"Reconnection failed: {e}")
                 self.fg_status_display.set_status("Disconnected")
                 return False
         
@@ -232,29 +255,41 @@ class MeasurementControlsWidget(QGroupBox):
                 frequency = self.default_frequency
                 amplitude = self.default_amplitude
             
-            success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
-            if not success:
-                logger.error("Failed to enable function generator")
+            try:
+                success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
+                if not success:
+                    logger.error("Failed to enable function generator")
+                    self.fg_toggle_button.setChecked(False)
+                    self.fg_toggle_button.setText("OFF")
+                    self.fg_status_display.set_status("Error")
+                    self._output_enabled = False
+                else:
+                    logger.info(f"Function generator ON: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
+                    self.fg_toggle_button.setText("ON")
+                    self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                    self._output_enabled = True
+                    self._cached_frequency = frequency
+                    self._cached_amplitude = amplitude
+            except Exception as e:
+                logger.error(f"Error enabling function generator: {e}")
                 self.fg_toggle_button.setChecked(False)
                 self.fg_toggle_button.setText("OFF")
                 self.fg_status_display.set_status("Error")
                 self._output_enabled = False
-            else:
-                logger.info(f"Function generator ON: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
-                self.fg_toggle_button.setText("ON")
-                self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
-                self._output_enabled = True
-                self._cached_frequency = frequency
-                self._cached_amplitude = amplitude
+                return
         else:
             # Turn off
             if self.fg_controller and self.fg_controller.is_connected:
-                success = self.fg_controller.stop_all_outputs()
-                if success:
-                    logger.info("Function generator OFF")
-                    self.fg_status_display.set_status("Ready")  # Still connected, just output off
-                else:
-                    logger.error("Failed to disable function generator")
+                try:
+                    success = self.fg_controller.stop_all_outputs()
+                    if success:
+                        logger.info("Function generator OFF")
+                        self.fg_status_display.set_status("Ready")  # Still connected, just output off
+                    else:
+                        logger.error("Failed to disable function generator")
+                        self.fg_status_display.set_status("Error")
+                except Exception as e:
+                    logger.error(f"Error disabling function generator: {e}")
                     self.fg_status_display.set_status("Error")
             else:
                 self.fg_status_display.set_status("Disconnected")  # Not connected
@@ -277,15 +312,19 @@ class MeasurementControlsWidget(QGroupBox):
                 frequency = self.default_frequency
                 amplitude = self.default_amplitude
             
-            success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
-            if success:
-                logger.info(f"Settings: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
-                # Update status display with new frequency immediately
-                if self._output_enabled:
-                    self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
-                # Update cached values
-                self._cached_frequency = frequency
-                self._cached_amplitude = amplitude
+            try:
+                success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
+                if success:
+                    logger.info(f"Settings: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
+                    # Update status display with new frequency immediately
+                    if self._output_enabled:
+                        self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                    # Update cached values
+                    self._cached_frequency = frequency
+                    self._cached_amplitude = amplitude
+            except Exception as e:
+                logger.error(f"Error updating function generator settings: {e}")
+                self.fg_status_display.set_status("Error")
         
         # Emit signal
         try:

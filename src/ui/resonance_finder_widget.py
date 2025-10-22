@@ -22,8 +22,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from src.utils.logger import get_logger
-from src.controllers.function_generator_controller import FunctionGeneratorController
-from src.controllers.oscilloscope_controller import OscilloscopeController
+from src.controllers.function_generator_controller import FunctionGeneratorController, get_function_generator_controller
+from src.controllers.oscilloscope_controller import OscilloscopeController, get_oscilloscope_controller
 
 logger = get_logger("resonance_finder")
 
@@ -109,12 +109,35 @@ class SweepWorker(QThread):
 class ResonanceFinderWidget(QWidget):
     """Main resonance finder widget with frequency sweep and plotting capabilities."""
     
-    def __init__(self):
+    def __init__(self, funcgen: Optional[FunctionGeneratorController] = None,
+                 oscilloscope: Optional[OscilloscopeController] = None):
         super().__init__()
-        
-        # Controllers
-        self.funcgen = FunctionGeneratorController()
-        self.oscilloscope = OscilloscopeController()
+
+        # Controllers (allow injection of shared instances)
+        if funcgen is not None:
+            self.funcgen = funcgen
+        else:
+            # Prefer DeviceManager if available
+            try:
+                from src.controllers.device_manager import DeviceManager
+                self.funcgen = DeviceManager.get_instance().get_function_generator()
+            except Exception:
+                try:
+                    self.funcgen = get_function_generator_controller()
+                except Exception:
+                    self.funcgen = FunctionGeneratorController()
+
+        if oscilloscope is not None:
+            self.oscilloscope = oscilloscope
+        else:
+            try:
+                from src.controllers.device_manager import DeviceManager
+                self.oscilloscope = DeviceManager.get_instance().get_oscilloscope()
+            except Exception:
+                try:
+                    self.oscilloscope = get_oscilloscope_controller()
+                except Exception:
+                    self.oscilloscope = OscilloscopeController()
         
         # Data storage
         self.clicked_frequencies = []

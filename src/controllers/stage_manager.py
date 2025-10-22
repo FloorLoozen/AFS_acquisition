@@ -139,9 +139,7 @@ class StageManager:
             if not self.connect():
                 return None, None
         try:
-            x_pos = self._stage.get_position(1)
-            y_pos = self._stage.get_position(2)
-            return x_pos, y_pos
+            return self._stage.get_position()
         except Exception as e:
             logger.error(f"Error getting stage position: {e}")
             return None, None

@@ -12,6 +12,7 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QCloseEvent
 
 from src.utils.logger import get_logger
+from src.controllers.device_manager import DeviceManager
 
 # Import type annotations without importing the actual classes for runtime
 if TYPE_CHECKING:
@@ -65,6 +66,23 @@ class MainWindow(QMainWindow):
             self._init_ui()
             
             # Initialize hardware
+            # Initialize DeviceManager and hardware
+            try:
+                self.device_manager = DeviceManager.get_instance()
+                # Disable automatic oscilloscope connections for fast startup
+                try:
+                    self.device_manager._disable_osc = True
+                    logger.info("DeviceManager: oscilloscope auto-connect disabled for fast startup")
+                except Exception:
+                    pass
+                # Start background health monitor for reconnects (non-blocking)
+                try:
+                    self.device_manager.start_health_monitor(interval=5.0)
+                except Exception:
+                    logger.debug("Failed to start device health monitor")
+            except Exception:
+                self.device_manager = None
+
             self._initialize_hardware()
             
             # Set up keyboard shortcuts (lazy import)
@@ -305,29 +323,10 @@ class MainWindow(QMainWindow):
     
     def _open_resonance_finder(self):
         """Open resonance finder window with oscilloscope display."""
-        try:
-            from src.ui.resonance_finder_widget import ResonanceFinderWidget
-            
-            # Create or show resonance finder window
-            if not hasattr(self, '_resonance_finder_window') or not self._resonance_finder_window:
-                self._resonance_finder_window = ResonanceFinderWidget()
-                self._resonance_finder_window.setWindowTitle("Resonance Finder - Oscilloscope Display")
-                self._resonance_finder_window.resize(1200, 600)
-                
-            # Show and bring to front
-            self._resonance_finder_window.show()
-            self._resonance_finder_window.activateWindow()
-            self._resonance_finder_window.raise_()
-            
-            logger.info("Opened resonance finder window")
-            
-        except Exception as e:
-            logger.error(f"Failed to open resonance finder: {e}")
-            import traceback
-            error_details = traceback.format_exc()
-            QMessageBox.critical(self, "Error", 
-                f"Failed to open resonance finder:\n{e}\n\nCheck the log for details.")
-            logger.error(f"Resonance finder error details:\n{error_details}")
+        # Temporarily disable opening the full Resonance Finder to speed up startup.
+        # Show a simple not-implemented message so users can open it later.
+        logger.info("Resonance Finder is currently disabled for fast startup (not implemented popup shown)")
+        self._show_not_implemented()
     
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
@@ -804,8 +803,8 @@ class MainWindow(QMainWindow):
             )
         
     def _initialize_hardware(self):
-        """Initialize all hardware components at startup."""
-# Hardware initialization starts
+        """Initialize all hardware components at startup with fast-fail for quick start."""
+        # Hardware initialization starts
         self.statusBar().showMessage("Initializing hardware...")
         
         # Collect hardware status for non-camera components first
@@ -815,6 +814,29 @@ class MainWindow(QMainWindow):
             hardware_status["XY Stage"] = self._init_xy_stage()
             hardware_status["Function Generator"] = self._init_function_generator()
             
+            # Oscilloscope is disabled for fast startup - don't create controller or add to status
+            # This keeps the oscilloscope completely out of the program for now
+            if hasattr(self, 'device_manager') and getattr(self.device_manager, '_disable_osc', False):
+                logger.info("Oscilloscope disabled for fast startup - not included in hardware status")
+                self.oscilloscope_controller = None
+                # Don't add to hardware_status so it doesn't show in the dialog
+            else:
+                # Create a shared oscilloscope controller for other widgets only if enabled
+                try:
+                    from src.controllers.oscilloscope_controller import get_oscilloscope_controller
+                    self.oscilloscope_controller = get_oscilloscope_controller()
+                    try:
+                        # Fast connection attempt - don't block startup
+                        if self.oscilloscope_controller.connect(fast_fail=True):
+                            hardware_status["Oscilloscope"] = {"connected": True, "message": "Oscilloscope connected"}
+                        else:
+                            hardware_status["Oscilloscope"] = {"connected": False, "message": "Not found (will retry in background)"}
+                    except Exception as e:
+                        hardware_status["Oscilloscope"] = {"connected": False, "message": f"Fast connect failed: {str(e)}"}
+                except Exception as e:
+                    logger.debug(f"Could not create shared oscilloscope controller: {e}")
+                    self.oscilloscope_controller = None
+
             # Handle camera separately - wait for it to fully initialize
             self._init_camera_with_status_check(hardware_status)
             

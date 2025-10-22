@@ -38,6 +38,8 @@ class SmartVerbosityFilter(logging.Filter):
         self.last_log = {}
         self.repeat_count = {}
         self.max_repeats = 2  # Only show first 2 instances of repeated messages
+        self.max_cache_size = 1000  # Prevent unbounded memory growth
+        self._cleanup_counter = 0
         
         # Patterns for messages to suppress or reduce frequency
         self.suppress_patterns = [
@@ -46,6 +48,16 @@ class SmartVerbosityFilter(logging.Filter):
             'Applied default brighter camera settings',
             'Moving:',  # Stage movement details
             'button pressed',  # Button press details
+            'Connection failed on attempt',  # Suppress retry warnings
+            'DeviceManager: attempting reconnect',  # Suppress background reconnect attempts
+            'FG reconnect failed',  # Suppress FG reconnect failures
+            'Osc reconnect failed',  # Suppress oscilloscope reconnect failures
+            'Fast connect attempt to:',  # Suppress fast connection attempts
+            'Fast connection failed',  # Suppress fast connection failures
+            'Available VISA resources',  # Suppress VISA resource listing
+            'No VISA resources found (fast check)',  # Suppress fast check messages
+            'No suitable function generator found (fast check)',  # Suppress fast check messages
+            'No suitable oscilloscope found (fast check)',  # Suppress fast check messages
         ]
         
         # Messages to show only occasionally (every Nth occurrence)  
@@ -56,6 +68,12 @@ class SmartVerbosityFilter(logging.Filter):
         
     def filter(self, record):
         message = record.getMessage()
+        
+        # Periodic cleanup to prevent memory leaks
+        self._cleanup_counter += 1
+        if self._cleanup_counter >= 500:
+            self._cleanup_cache()
+            self._cleanup_counter = 0
         
         # Check if message should be suppressed based on patterns
         for pattern in self.suppress_patterns:
@@ -86,6 +104,15 @@ class SmartVerbosityFilter(logging.Filter):
             self.last_log[msg_key] = message
             self.repeat_count[msg_key] = 1
             return True
+    
+    def _cleanup_cache(self) -> None:
+        """Clean up old cache entries to prevent unbounded memory growth."""
+        if len(self.last_log) > self.max_cache_size:
+            # Keep only the most recent half of entries
+            keys_to_remove = list(self.last_log.keys())[:(len(self.last_log) // 2)]
+            for key in keys_to_remove:
+                self.last_log.pop(key, None)
+                self.repeat_count.pop(key, None)
 
 
 class ColoredFormatter(logging.Formatter):

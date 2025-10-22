@@ -11,6 +11,7 @@ import numpy as np
 import time
 from typing import Tuple, Optional, Dict, Any, List
 from enum import Enum
+import threading
 
 from src.utils.logger import get_logger
 from src.utils.exceptions import OscilloscopeError, HardwareError
@@ -61,6 +62,8 @@ class OscilloscopeController:
         self._error_count = 0
         self._last_error: Optional[str] = None
         self._channel_states: Dict[int, bool] = {}  # Track channel enable states
+        # Thread-safety lock for VISA operations
+        self._lock = threading.RLock()
 
     @property
     def connection_state(self) -> ConnectionState:
@@ -144,20 +147,21 @@ class OscilloscopeController:
         """
         if not self.is_connected:
             raise OscilloscopeError("Oscilloscope not connected")
-        
+
         try:
             logger.debug(f"Sending command: {command}")
-            
-            if read_response:
-                response = self.oscilloscope.query(command).strip()
-                logger.debug(f"Received response: {response}")
-                return response
-            else:
-                self.oscilloscope.write(command)
-                # Check for errors after write commands
-                self._check_device_errors()
-                return None
-                
+            with self._lock:
+                if read_response:
+                    response = self.oscilloscope.query(command).strip()
+                    logger.debug(f"Received response: {response}")
+                    return response
+                else:
+                    self.oscilloscope.write(command)
+                    # Check for errors after write commands
+                    # Note: _check_device_errors expects lock to already be held
+                    self._check_device_errors()
+                    return None
+
         except Exception as e:
             error_msg = f"Command '{command}' failed: {e}"
             logger.error(error_msg)
@@ -165,25 +169,36 @@ class OscilloscopeController:
             raise OscilloscopeError(error_msg) from e
     
     def _check_device_errors(self) -> None:
-        """Check device for errors and clear error queue."""
+        """Check device for errors and clear error queue.
+        
+        Note: This method expects the caller to already hold self._lock.
+        """
         try:
-            while True:
+            # Lock is already held by caller (_send_command)
+            max_iterations = 10  # Prevent infinite loops
+            iterations = 0
+            while iterations < max_iterations:
                 error_response = self.oscilloscope.query("SYSTEM:ERROR?").strip()
-                if error_response.startswith("0,"):
+                # Check if no error: response can be "0,..." or "+0,..."
+                if error_response.startswith("0,") or error_response.startswith("+0,"):
                     break  # No more errors
                 logger.warning(f"Device error: {error_response}")
+                iterations += 1
         except Exception as e:
             logger.warning(f"Failed to check device errors: {e}")
 
-    def connect(self) -> bool:
+    def connect(self, fast_fail: bool = False) -> bool:
         """
         Connect to oscilloscope with automatic discovery and validation.
+        
+        Args:
+            fast_fail: If True, only try once with short timeout (for startup)
         
         Returns:
             bool: True if successfully connected
             
         Raises:
-            OscilloscopeError: If connection fails
+            OscilloscopeError: If connection fails (only when fast_fail=False)
         """
         if self.is_connected:
             logger.info("Oscilloscope already connected")
@@ -192,10 +207,102 @@ class OscilloscopeController:
         self._connection_state = ConnectionState.CONNECTING
         
         try:
-            return self._execute_with_retry("Connection", self._connect_impl)
+            if fast_fail:
+                # Single attempt with short timeout for fast startup
+                return self._connect_impl_fast()
+            else:
+                # Normal connection with retries
+                return self._execute_with_retry("Connection", self._connect_impl)
         except OscilloscopeError:
             self._connection_state = ConnectionState.ERROR
-            raise
+            if not fast_fail:
+                raise
+            return False
+    
+    def _connect_impl_fast(self) -> bool:
+        """Fast connection attempt with short timeout (for startup)."""
+        try:
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            logger.info(f"Oscilloscope: Found VISA resources: {list(resources)}")
+            
+            if not resources:
+                logger.info("Oscilloscope: No VISA resources found")
+                return False
+            
+            target_resource = None
+            
+            if self.resource_name:
+                if self.resource_name in resources:
+                    target_resource = self.resource_name
+            else:
+                # Auto-detect Tektronix device
+                for resource in resources:
+                    resource_upper = resource.upper()
+                    if any(keyword in resource_upper for keyword in ['TEKTRONIX', 'TEK', 'ASRL']):
+                        target_resource = resource
+                        break
+            
+            if not target_resource:
+                logger.info("Oscilloscope: No suitable resource found")
+                return False
+            
+            logger.info(f"Oscilloscope: Attempting to connect to {target_resource}")
+            
+            # Open with reasonable timeout for fast startup (but still generous for serial)
+            self.oscilloscope = rm.open_resource(target_resource)
+            self.oscilloscope.timeout = 10000  # 10 seconds - serial ports can be slow on startup
+            self.oscilloscope.read_termination = '\n'
+            self.oscilloscope.write_termination = '\n'
+            
+            # Configure serial port settings if it's a serial connection (RS-232)
+            if 'ASRL' in target_resource:
+                # Based on your working script: 9600 baud, 8N1, LF termination
+                self.oscilloscope.baud_rate = 9600
+                self.oscilloscope.data_bits = 8
+                self.oscilloscope.parity = pyvisa.constants.Parity.none
+                self.oscilloscope.stop_bits = pyvisa.constants.StopBits.one
+                self.oscilloscope.flow_control = pyvisa.constants.VI_ASRL_FLOW_NONE
+                logger.info(f"Oscilloscope: Configured RS-232 with 9600 baud, 8N1")
+                
+                # Clear input buffer before querying
+                try:
+                    self.oscilloscope.clear()
+                except:
+                    pass
+                
+            # Query IDN to verify connection
+            idn = self.oscilloscope.query("*IDN?").strip()
+            
+            # Parse device info
+            idn_parts = idn.split(',')
+            self._device_info = {
+                "manufacturer": idn_parts[0] if len(idn_parts) > 0 else "Unknown",
+                "model": idn_parts[1] if len(idn_parts) > 1 else "Unknown",
+                "serial": idn_parts[2] if len(idn_parts) > 2 else "Unknown", 
+                "firmware": idn_parts[3] if len(idn_parts) > 3 else "Unknown"
+            }
+            
+            # Restore normal timeout after connection
+            self.oscilloscope.timeout = self.DEFAULT_TIMEOUT
+            
+            self._connection_state = ConnectionState.CONNECTED
+            self._error_count = 0
+            self.resource_name = target_resource
+            
+            logger.info(f"Oscilloscope connected: {idn_parts[1] if len(idn_parts) > 1 else target_resource}")
+            return True
+            
+        except Exception as e:
+            # Log failure reason for debugging
+            logger.info(f"Oscilloscope fast connection failed: {type(e).__name__}: {e}")
+            if hasattr(self, 'oscilloscope') and self.oscilloscope:
+                try:
+                    self.oscilloscope.close()
+                except:
+                    pass
+                self.oscilloscope = None
+            return False
     
     def _connect_impl(self) -> bool:
         """Implementation of connection logic."""
@@ -236,13 +343,30 @@ class OscilloscopeController:
             
             # Open connection with optimal settings
             self.oscilloscope = rm.open_resource(target_resource)
-            self.oscilloscope.timeout = self.DEFAULT_TIMEOUT
+            self.oscilloscope.timeout = self.DEFAULT_TIMEOUT  # Full timeout for normal connection
             self.oscilloscope.read_termination = '\n'
             self.oscilloscope.write_termination = '\n'
             
-            # Brief stabilization delay
-            time.sleep(0.2)
+            # Configure serial port settings if it's a serial connection
+            if 'ASRL' in target_resource:
+                # Based on your working script: 9600 baud, 8N1, LF termination
+                self.oscilloscope.baud_rate = 9600
+                self.oscilloscope.data_bits = 8
+                self.oscilloscope.parity = pyvisa.constants.Parity.none
+                self.oscilloscope.stop_bits = pyvisa.constants.StopBits.one
+                self.oscilloscope.flow_control = pyvisa.constants.VI_ASRL_FLOW_NONE
+                logger.info(f"Configured serial port with 9600 baud, 8N1")
+                
+                # Clear input buffer before querying
+                try:
+                    self.oscilloscope.clear()
+                except:
+                    pass
             
+            # Brief stabilization delay for serial ports
+            if 'ASRL' in target_resource:
+                time.sleep(0.3)
+                
             # Verify connection with device identification
             idn = self.oscilloscope.query("*IDN?").strip()
             logger.info(f"Connected to: {idn}")
@@ -290,18 +414,22 @@ class OscilloscopeController:
         if not self.oscilloscope:
             logger.info("Oscilloscope already disconnected")
             return
-        
+
         try:
             logger.info("Beginning oscilloscope disconnect")
-            
+
             # Small delay to ensure any pending operations complete
             time.sleep(0.1)
-            
-            # Close the VISA connection
+
+            # Close the VISA connection under lock to prevent concurrent access
             logger.info("Closing VISA connection")
-            self.oscilloscope.close()
-            logger.info("VISA connection closed successfully")
-            
+            with self._lock:
+                try:
+                    self.oscilloscope.close()
+                    logger.info("VISA connection closed successfully")
+                except Exception as e:
+                    logger.debug(f"Error closing oscilloscope during disconnect: {e}")
+
         except Exception as e:
             error_msg = f"Error during disconnect: {e}"
             logger.error(error_msg)
@@ -459,6 +587,9 @@ class OscilloscopeController:
             
             # Calculate time between measurements
             step_time = duration / num_points
+            # Add overall timeout (2x expected duration)
+            overall_timeout = duration * 2.0
+            overall_start_time = time.time()
             
             logger.info(f"Starting sweep data acquisition: {start_freq:.2f} - {stop_freq:.2f} MHz, "
                        f"{duration:.1f}s, {num_points} points")
@@ -467,6 +598,11 @@ class OscilloscopeController:
             successful_acquisitions = 0
             
             for i, freq in enumerate(frequencies):
+                # Check overall timeout
+                if time.time() - overall_start_time > overall_timeout:
+                    logger.error(f"Sweep acquisition timeout after {overall_timeout:.1f}s")
+                    raise OscilloscopeError(f"Sweep acquisition timed out after {overall_timeout:.1f}s")
+                
                 # Calculate expected time for this measurement
                 expected_time = start_time + i * step_time
                 current_time = time.time()
@@ -476,7 +612,7 @@ class OscilloscopeController:
                     time.sleep(expected_time - current_time)
                 
                 try:
-                    # Acquire waveform
+                    # Acquire waveform with timeout
                     waveform = self.acquire_single_waveform(channel)
                     
                     if waveform is not None and len(waveform) > 0:

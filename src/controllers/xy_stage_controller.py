@@ -5,6 +5,7 @@ This module provides an interface to the XY stage hardware using MCL's MicroDriv
 
 import ctypes
 import time
+from typing import Tuple
 # Import logger from package
 from src.utils.logger import get_logger
 
@@ -197,9 +198,18 @@ class XYStageController:
             self._is_disconnected = True
             logger.info("Disconnected")
 
-    def get_position(self, axis: int) -> float:
+    def get_position(self) -> Tuple[float, float]:
         """
-        Get the current position of the specified axis.
+        Get the current position of both axes.
+        
+        Returns:
+            Tuple of (x_position, y_position) in mm
+        """
+        return (self.x_position, self.y_position)
+    
+    def get_axis_position(self, axis: int) -> float:
+        """
+        Get the current position of a specific axis.
         
         Args:
             axis: The axis to get the position for (1=X, 2=Y)
@@ -207,10 +217,10 @@ class XYStageController:
         Returns:
             The position in mm
         """
-        position_map = {1: self.x_position, 2: self.y_position}
-        
-        if axis in position_map:
-            return position_map[axis]
+        if axis == 1:
+            return self.x_position
+        elif axis == 2:
+            return self.y_position
         else:
             logger.error(f"Invalid axis: {axis}. Use 1 for X or 2 for Y.")
             return 0.0
