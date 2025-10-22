@@ -508,9 +508,9 @@ class FunctionGeneratorController:
         try:
             logger.info("Stopping all function generator outputs")
             
-            # Set reasonable timeout for shutdown commands
+            # Set short timeout for shutdown commands (fast response)
             original_timeout = self.function_generator.timeout
-            self.function_generator.timeout = 2000  # 2 seconds for shutdown
+            self.function_generator.timeout = 1000  # 1 second is enough for OFF commands
             
             try:
                 # Turn off both channels

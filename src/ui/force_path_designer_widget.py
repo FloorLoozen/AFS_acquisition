@@ -60,6 +60,7 @@ class FunctionGeneratorWorker(QThread):
         
     def run(self):
         """Execute the path in a separate thread."""
+        execution_start_time = time.perf_counter()  # For final timing report
         try:
             if not self.fg_controller or not self.fg_controller.is_connected:
                 self.execution_finished.emit(False)
@@ -67,6 +68,8 @@ class FunctionGeneratorWorker(QThread):
                 
             start_time = time.perf_counter()
             total_duration = self.sorted_points[-1].time if self.sorted_points else 0
+            logger.info(f"=== STARTING FORCE PATH EXECUTION ===")
+            logger.info(f"Target duration: {total_duration:.3f} seconds")
             
             # Debug logging of received points
             logger.info(f"FunctionGeneratorWorker received {len(self.sorted_points)} points:")
@@ -99,8 +102,9 @@ class FunctionGeneratorWorker(QThread):
             while not self.should_stop:
                 elapsed_time = time.perf_counter() - start_time
                 
-                # Check if execution is complete
-                if elapsed_time >= total_duration:
+                # Check if execution is complete (with small tolerance for timing precision)
+                if elapsed_time >= (total_duration - 0.001):  # 1ms tolerance
+                    logger.info(f"Execution complete: {elapsed_time:.3f}s (target: {total_duration:.1f}s)")
                     break
                     
                 # Find current interpolation segment
@@ -209,31 +213,100 @@ class FunctionGeneratorWorker(QThread):
                             else:
                                 logger.warning(f"Function generator retry {self._consecutive_errors}/3")
                                 # Brief pause before retry
-                                self.msleep(10)
+                               
                 
                 # Optimized sleep - balanced speed vs USB communication limits
                 self.msleep(20)  # 20ms = 50 Hz update rate (optimal for USB VISA)
-            
-            # CRITICAL: Turn off function generator output after execution completes
-            logger.info("Force path execution completed - turning off function generator output")
-            try:
-                self.fg_controller.stop_all_outputs()
-                logger.info("Function generator output turned off successfully")
-            except Exception as e:
-                logger.error(f"Failed to turn off function generator output after execution: {e}")
-                
+
+            # --- CRITICAL: Set final point values before turning off output ---
+            if processed_points:
+                final_point = processed_points[-1]
+                logger.info(f"Setting final FG output: freq={final_point.frequency:.3f}MHz, amp={final_point.amplitude:.2f}Vpp")
+                success = self.fg_controller.update_parameters_batch(
+                    amplitude=final_point.amplitude,
+                    frequency_mhz=final_point.frequency,
+                    channel=1
+                )
+                if success:
+                    self._last_freq = final_point.frequency
+                    self._last_amp = final_point.amplitude
+                    logger.info("Final FG output set successfully.")
+                else:
+                    logger.warning("Failed to set final FG output.")
+                # Log the final output
+                logger.info(f"FG Output (final): {total_duration:.2f}s -> {final_point.frequency:.3f}MHz, {final_point.amplitude:.2f}Vpp")
+
+            # Execution completed successfully
+            actual_duration = time.perf_counter() - execution_start_time
+            logger.info(f"=== FORCE PATH EXECUTION COMPLETED ===")
+            logger.info(f"Target duration: {total_duration:.3f}s, Actual duration: {actual_duration:.3f}s, Difference: {(actual_duration - total_duration):.3f}s")
+            # CRITICAL: Allow last command to be processed before turning off output
+            # USB VISA commands are asynchronous - device needs time to process
+            logger.info("Waiting 100ms for last command to be processed by device...")
+            self.msleep(100)  # Give device time to process the last parameter update
             self.execution_finished.emit(True)
             
         except Exception as e:
-            logger.error(f"Function generator worker error: {e}")
-            # Try to turn off output even on error
+            actual_duration = time.perf_counter() - execution_start_time
+            logger.error(f"Function generator worker error after {actual_duration:.3f}s: {e}")
+            self.execution_finished.emit(False)
+            
+        finally:
+            # CRITICAL: Robust finalization sequence - ensure final set and outputs OFF
+            logger.info("Force path execution ending - performing final FG cleanup")
             try:
                 if self.fg_controller and self.fg_controller.is_connected:
-                    self.fg_controller.stop_all_outputs()
-                    logger.info("Function generator output turned off after error")
-            except:
-                pass
-            self.execution_finished.emit(False)
+                    final_ok = False
+
+                    # If we have processed_points, try to force the final values
+                    if 'processed_points' in locals() and processed_points:
+                        final_point = processed_points[-1]
+                        logger.info(f"Final cleanup: forcing final parameters -> {final_point.frequency:.3f}MHz, {final_point.amplitude:.2f}Vpp")
+                        # Prefer fast batch update
+                        try:
+                            final_ok = self.fg_controller.update_parameters_batch(
+                                amplitude=final_point.amplitude,
+                                frequency_mhz=final_point.frequency,
+                                channel=1
+                            )
+                        except Exception as e:
+                            logger.debug(f"Batch update for final point failed: {e}")
+                            final_ok = False
+
+                        # Fallback to full set which also ensures amplitude is applied
+                        if not final_ok:
+                            try:
+                                final_ok = self.fg_controller.output_sine_wave(
+                                    amplitude=final_point.amplitude,
+                                    frequency_mhz=final_point.frequency,
+                                    channel=1
+                                )
+                            except Exception as e:
+                                logger.debug(f"Fallback output_sine_wave failed: {e}")
+                                final_ok = False
+
+                        if final_ok:
+                            logger.info("Final parameters applied, allowing device 50ms to settle")
+                            # Give device a short moment to apply settings
+                            try:
+                                self.msleep(50)
+                            except Exception:
+                                time.sleep(0.05)
+                        else:
+                            logger.warning("Unable to apply final parameters to function generator")
+
+                    # Always attempt to turn outputs off (safety net)
+                    try:
+                        stop_ok = self.fg_controller.stop_all_outputs()
+                        if stop_ok:
+                            logger.info("Function generator output turned OFF successfully (final cleanup)")
+                        else:
+                            logger.warning("Function generator stop_all_outputs() returned False during final cleanup")
+                    except Exception as e:
+                        logger.error(f"Exception while stopping outputs in final cleanup: {e}")
+
+            except Exception as e:
+                logger.error(f"Unexpected error in final FG cleanup: {e}")
             
     def _process_points_for_execution(self):
         """Process points to handle time 0 hold behavior."""
@@ -1191,12 +1264,14 @@ class ForcePathDesignerWidget(QWidget):
                 
     def _stop_execution(self):
         """Stop path execution and turn off function generator output."""
-        logger.info("Force path execution: Stop requested by user")
+        logger.info("Force path execution: Stop requested")
         
-        # Stop the worker thread
+        # Stop the worker thread (don't block UI too long)
         if hasattr(self, 'fg_worker') and self.fg_worker.isRunning():
             self.fg_worker.stop()
-            self.fg_worker.wait(2000)  # Wait up to 2 seconds for thread to finish
+            # Short wait - worker's finally block will handle output OFF
+            if not self.fg_worker.wait(500):  # Only wait 500ms
+                logger.warning("Worker thread did not finish quickly - continuing anyway (output will be stopped by finally block)")
             
         # Stop live update timer
         if hasattr(self, 'live_update_timer'):
@@ -1211,13 +1286,14 @@ class ForcePathDesignerWidget(QWidget):
                 pass
             self.live_line = None
             
-        # CRITICAL: Turn off function generator output when stopped
+        # SAFETY NET: Turn off function generator output if worker hasn't done it yet
+        # (Worker's finally block should have already done this, but double-check)
         if hasattr(self, 'function_generator_controller') and self.function_generator_controller and self.function_generator_controller.is_connected:
             try:
-                logger.info("Force path execution: Turning off function generator output")
+                logger.info("Safety check: Ensuring function generator output is OFF")
                 self.function_generator_controller.stop_all_outputs()
             except Exception as e:
-                logger.error(f"Force path execution: Failed to turn off output: {e}")
+                logger.error(f"Safety check failed (output may already be off): {e}")
         
         self.is_executing = False
         

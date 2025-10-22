@@ -551,14 +551,29 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.debug(f"Force path designer close error: {e}")
             
-            # Cleanup function generator (most important for connection issues)
+            # Cleanup function generator (CRITICAL: most important for connection issues)
             if hasattr(self.measurement_controls_widget, 'cleanup') and self.measurement_controls_widget:
                 logger.info("Cleaning up function generator...")
-                self.measurement_controls_widget.cleanup()
+                try:
+                    self.measurement_controls_widget.cleanup()
+                except Exception as e:
+                    logger.error(f"Function generator cleanup error: {e}")
+                
+                # ENSURE output is OFF and connection is properly closed
+                try:
+                    if hasattr(self.measurement_controls_widget, 'fg_controller') and self.measurement_controls_widget.fg_controller:
+                        fg = self.measurement_controls_widget.fg_controller
+                        if fg.is_connected:
+                            logger.info("Final safety check: stopping all function generator outputs")
+                            fg.stop_all_outputs()
+                            logger.info("Final safety check: disconnecting function generator")
+                            fg.disconnect()
+                except Exception as e:
+                    logger.error(f"Function generator final cleanup error: {e}")
                 
                 # Give extra time for function generator cleanup
                 import time
-                time.sleep(0.2)
+                time.sleep(0.3)
             
             # Cleanup camera
             if hasattr(self.camera_widget, 'close') and self.camera_widget:
