@@ -61,7 +61,7 @@ class FunctionGeneratorWorker(QThread):
     def run(self):
         """Execute the path in a separate thread."""
         try:
-            if not self.fg_controller or not self.fg_controller.is_connected():
+            if not self.fg_controller or not self.fg_controller.is_connected:
                 self.execution_finished.emit(False)
                 return
                 
@@ -1039,7 +1039,7 @@ class ForcePathDesignerWidget(QWidget):
             return
         
         # Try to ensure connection before execution
-        if not self.function_generator_controller.is_connected():
+        if not self.function_generator_controller.is_connected:
             logger.info("Function generator not connected, attempting to connect...")
             # Try to reconnect
             try:
@@ -1197,7 +1197,7 @@ class ForcePathDesignerWidget(QWidget):
             self.live_line = None
             
         # CRITICAL: Turn off function generator output when stopped
-        if hasattr(self, 'function_generator_controller') and self.function_generator_controller and self.function_generator_controller.is_connected():
+        if hasattr(self, 'function_generator_controller') and self.function_generator_controller and self.function_generator_controller.is_connected:
             try:
                 logger.info("Force path execution: Turning off function generator output")
                 self.function_generator_controller.stop_all_outputs()
@@ -1218,7 +1218,7 @@ class ForcePathDesignerWidget(QWidget):
             self.status_display.set_status("Completed")
         else:
             # Check function generator status when execution stops
-            if not self.function_generator_controller or not self.function_generator_controller.is_connected():
+            if not self.function_generator_controller or not self.function_generator_controller.is_connected:
                 self.status_display.set_status("Disconnected")
             else:
                 self.status_display.set_status("Stopped")  # Orange color for user-stopped
@@ -1557,7 +1557,7 @@ class ForcePathDesignerWidget(QWidget):
         }
         
         # Function Generator Settings
-        if self.function_generator_controller and self.function_generator_controller.is_connected():
+        if self.function_generator_controller and self.function_generator_controller.is_connected:
             try:
                 # Get function generator identification and settings
                 fg_metadata = {
@@ -1618,7 +1618,7 @@ class ForcePathDesignerWidget(QWidget):
         
     def _update_status_display(self):
         """Update status display based on function generator availability."""
-        if not self.function_generator_controller or not self.function_generator_controller.is_connected():
+        if not self.function_generator_controller or not self.function_generator_controller.is_connected:
             self.status_display.set_status("Disconnected")
         else:
             self.status_display.set_status("Ready")

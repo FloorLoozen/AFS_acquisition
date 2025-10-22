@@ -47,7 +47,7 @@ class SweepWorker(QThread):
         """Execute the frequency sweep in the background thread."""
         try:
             # Check if function generator is connected
-            if self.funcgen.is_connected():
+            if self.funcgen.is_connected:
                 # Start frequency sweep on function generator
                 success = self.funcgen.output_sine_wave(
                     amplitude=self.amplitude,
@@ -69,7 +69,7 @@ class SweepWorker(QThread):
             
             for i, freq in enumerate(frequencies):
                 # Update frequency if function generator is connected
-                if self.funcgen.is_connected():
+                if self.funcgen.is_connected:
                     self.funcgen.update_parameters_only(self.amplitude, freq, 1)
                 
                 time.sleep(step_time)
@@ -289,7 +289,7 @@ class ResonanceFinderWidget(QWidget):
             return
         
         # Check if at least one device is connected (allow demo mode)
-        if not self.funcgen.is_connected() and not self.oscilloscope.is_connected:
+        if not self.funcgen.is_connected and not self.oscilloscope.is_connected:
             QMessageBox.information(self, "Demo Mode", 
                                   "No hardware connected. Running in demo mode with simulated data.")
         
@@ -520,7 +520,7 @@ class ResonanceFinderWidget(QWidget):
                 self.sweep_worker.wait(1000)  # Wait up to 1 second
             
             # Stop function generator
-            if self.funcgen.is_connected():
+            if self.funcgen.is_connected:
                 self.funcgen.stop_all_outputs()
                 self.funcgen.disconnect()
             

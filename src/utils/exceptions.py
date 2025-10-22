@@ -71,6 +71,13 @@ class FunctionGeneratorError(HardwareError):
         super().__init__(message, "function_generator", error_code)
 
 
+class OscilloscopeError(HardwareError):
+    """Exception for oscilloscope-specific errors."""
+    
+    def __init__(self, message: str, error_code: Optional[str] = None):
+        super().__init__(message, "oscilloscope", error_code)
+
+
 class RecordingError(AFSTrackingError):
     """Exception for video recording errors."""
     

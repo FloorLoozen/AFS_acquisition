@@ -878,7 +878,7 @@ class MainWindow(QMainWindow):
                 time.sleep(0.1)  # Small delay to allow VISA connection to establish
                 
                 fg_controller = self.measurement_controls_widget.get_function_generator_controller()
-                if fg_controller and fg_controller.is_connected():
+                if fg_controller and fg_controller.is_connected:
                     return {"connected": True, "message": "Function generator connected"}
                 else:
                     return {"connected": False, "message": "VISA resource not found or connection failed"}

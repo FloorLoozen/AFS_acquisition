@@ -1,192 +1,290 @@
 """
 Function Generator Controller for AFS Tracking System.
-Minimal, robust implementation matching the working script approach.
+
+Provides robust, production-ready control of Siglent SDG series function generators
+with comprehensive error handling, automatic recovery, and performance optimization.
+Designed for scientific instrumentation with reliability and precision as primary goals.
 """
 
 import pyvisa
+import time
+from typing import Optional, Tuple, Dict, Any
+from enum import Enum
+
 from src.utils.logger import get_logger
+from src.utils.exceptions import FunctionGeneratorError, HardwareError
+from src.utils.validation import validate_positive_number, validate_range
 
 logger = get_logger("function_generator")
 
 
+class ConnectionState(Enum):
+    """Connection state enumeration for clear state tracking."""
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    ERROR = "error"
+
+
 class FunctionGeneratorController:
-    """Minimal controller for Siglent SDG series function generators."""
+    """
+    Robust controller for Siglent SDG series function generators.
     
-    def __init__(self):
-        """Initialize function generator controller."""
-        self.function_generator = None
+    Features:
+    - Automatic device discovery and connection
+    - Retry logic with exponential backoff
+    - Parameter validation and bounds checking
+    - State tracking and recovery
+    - Comprehensive error reporting
+    - Performance optimization with caching
+    """
+    
+    # Class constants for validation and limits
+    MIN_FREQUENCY_MHZ = 0.000001  # 1 µHz
+    MAX_FREQUENCY_MHZ = 200.0     # Typical max for SDG series
+    MIN_AMPLITUDE_VPP = 0.001     # 1 mV
+    MAX_AMPLITUDE_VPP = 20.0      # Typical max for SDG series
+    MAX_RETRY_ATTEMPTS = 3
+    BASE_RETRY_DELAY = 0.5
+    DEFAULT_TIMEOUT = 5000  # milliseconds
+    
+    def __init__(self, resource_name: Optional[str] = None):
+        """
+        Initialize function generator controller.
+        
+        Args:
+            resource_name: Specific VISA resource name. If None, auto-detect Siglent device.
+        """
+        self.resource_name = resource_name
+        self.function_generator: Optional[pyvisa.Resource] = None
+        self._connection_state = ConnectionState.DISCONNECTED
         self._output_on = False
-        self._last_sine = None  # tuple (freq_mhz, amplitude, channel)
-        self._is_connected = False
+        self._last_sine: Optional[Tuple[float, float, int]] = None  # (freq_mhz, amplitude, channel)
+        self._device_info: Optional[Dict[str, str]] = None
+        self._error_count = 0
+        self._last_error: Optional[str] = None
 
     def connect(self) -> bool:
         """
-        Connect to function generator with enhanced recovery capabilities and retry logic.
+        Connect to function generator with automatic discovery and validation.
         
         Returns:
-            True if connection successful, False otherwise
-        """
-        import time
-        
-        # Retry parameters for robust connection
-        max_attempts = 3
-        base_delay = 0.5  # Start with 500ms delay
-        
-        for attempt in range(max_attempts):
-            try:
-                if attempt > 0:
-                    # Exponential backoff: 0.5s, 1.0s, 2.0s
-                    delay = base_delay * (2 ** (attempt - 1))
-                    logger.info(f"Connection attempt {attempt + 1}/{max_attempts} (waiting {delay:.1f}s)...")
-                    time.sleep(delay)
-                
-                # Clean up any existing connection
-                if self.function_generator:
-                    try:
-                        self.function_generator.close()
-                    except:
-                        pass
-                    self.function_generator = None
-                    self._is_connected = False
-                
-                # Small delay to let device reset
-                if attempt > 0:
-                    time.sleep(0.2)
-                
-                # Create fresh resource manager
-                rm = pyvisa.ResourceManager()
-                resources = rm.list_resources()
-                
-                # Find Siglent USB device
-                siglent_resource = None
-                for resource in resources:
-                    if 'USB' in resource and 'F4EC' in resource:
-                        siglent_resource = resource
-                        break
-                        
-                if not siglent_resource:
-                    logger.error("Function Generator: No Siglent device found")
-                    if attempt == max_attempts - 1:  # Last attempt
-                        return False
-                    continue
-                
-                logger.info(f"Attempting to connect to: {siglent_resource}")
-                
-                # Open the connection with timeout
-                self.function_generator = rm.open_resource(siglent_resource)
-                
-                # Set optimal communication settings
-                self.function_generator.read_termination = '\n'
-                self.function_generator.write_termination = '\n'
-                self.function_generator.timeout = 5000  # Increased timeout for stability
-                
-                # Brief delay to allow device to stabilize
-                time.sleep(0.2)
-                
-                # Test basic communication with minimal commands
-                try:
-                    # Simple ID query - most reliable test
-                    fg_id = self.function_generator.query('*IDN?').strip()
-                    logger.info(f"Function Generator: Connected to {fg_id}")
-                    
-                    # Clear any error states
-                    self.function_generator.write('*CLS')
-                    
-                    self._is_connected = True
-                    return True
-                    
-                except pyvisa.errors.VisaIOError as visa_error:
-                    # Check for specific timeout error
-                    if "VI_ERROR_TMO" in str(visa_error):
-                        logger.warning(f"Function Generator: Device timeout on attempt {attempt + 1}")
-                        if attempt == max_attempts - 1:  # Last attempt
-                            logger.error("Function Generator: Device not responding after all attempts")
-                            logger.error("Device may need physical reconnection (unplug/replug USB)")
-                    else:
-                        logger.error(f"Function Generator: VISA error: {visa_error}")
-                    
-                    # Close and clean up for retry
-                    if self.function_generator:
-                        try:
-                            self.function_generator.close()
-                        except:
-                            pass
-                        self.function_generator = None
-                    
-                    if attempt == max_attempts - 1:  # Last attempt
-                        raise visa_error
-                    continue
-                
-            except Exception as e:
-                logger.error(f"Function generator connection attempt {attempt + 1} failed: {e}")
-                
-                # Clean up for retry
-                if self.function_generator:
-                    try:
-                        self.function_generator.close()
-                    except:
-                        pass
-                    self.function_generator = None
-                    self._is_connected = False
-                
-                if attempt == max_attempts - 1:  # Last attempt
-                    return False
-                continue
-        
-        return False
-
-    def is_connected(self) -> bool:
-        """Check if function generator is connected."""
-        return self._is_connected and self.function_generator is not None
-
-    def output_sine_wave(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
-        """
-        Output sine wave using the exact working approach from the original script.
-        
-        Args:
-            amplitude: Peak-to-peak voltage in volts
-            frequency_mhz: Frequency in MHz
-            channel: Output channel (1 or 2)
+            bool: True if successfully connected
             
-        Returns:
-            True if successful, False otherwise
+        Raises:
+            FunctionGeneratorError: If connection fails
         """
-        if not self.function_generator:
-            logger.error("Function Generator: not connected")
-            return False
-            
+        if self.is_connected:
+            logger.info("Function generator already connected")
+            return True
+        
+        self._connection_state = ConnectionState.CONNECTING
+        
         try:
-            # Simple caching - avoid identical calls
-            current = (round(frequency_mhz, 6), round(amplitude, 6), int(channel))
-            if self._output_on and self._last_sine == current:
-                return True
+            return self._execute_with_retry("Connection", self._connect_impl)
+        except FunctionGeneratorError:
+            self._connection_state = ConnectionState.ERROR
+            raise
+    
+    def _connect_impl(self) -> bool:
+        """Implementation of connection logic."""
+        try:
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            logger.debug(f"Available VISA resources: {list(resources)}")
+            
+            if not resources:
+                raise FunctionGeneratorError("No VISA resources found")
+            
+            target_resource = None
+            
+            if self.resource_name:
+                if self.resource_name in resources:
+                    target_resource = self.resource_name
+                else:
+                    raise FunctionGeneratorError(f"Specified resource '{self.resource_name}' not found")
+            else:
+                # Auto-detect Siglent device with multiple patterns
+                for resource in resources:
+                    resource_upper = resource.upper()
+                    if any(keyword in resource_upper for keyword in ['SIGLENT', 'SDG', 'F4EC']):
+                        target_resource = resource
+                        break
                 
-            logger.info(f"Function Generator: sine ({frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp)")
+                if not target_resource:
+                    # Try first USB or TCP resource as fallback
+                    for resource in resources:
+                        if any(protocol in resource.upper() for protocol in ['USB', 'TCPIP']):
+                            target_resource = resource
+                            break
             
-            # Use exact same commands and order as the working script
-            channel_str = f"C{channel}"
-            frequency_hz = frequency_mhz * 1_000_000
+            if not target_resource:
+                raise FunctionGeneratorError("No suitable function generator found")
             
-            self.function_generator.write(f"{channel_str}:BSWV SHAPE,SINE")
-            self.function_generator.write(f"{channel_str}:BSWV FRQ,{frequency_hz}")
-            self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
+            logger.info(f"Attempting to connect to: {target_resource}")
             
-            # Only turn output ON if it's not already on
-            if not self._output_on:
-                self.function_generator.write(f"{channel_str}:OUTP ON")
-                self._output_on = True
+            # Open connection with optimal settings
+            self.function_generator = rm.open_resource(target_resource)
+            self.function_generator.timeout = self.DEFAULT_TIMEOUT
+            self.function_generator.read_termination = '\n'
+            self.function_generator.write_termination = '\n'
             
-            self._last_sine = current
+            # Brief stabilization delay
+            time.sleep(0.2)
+            
+            # Verify connection with device identification
+            idn = self.function_generator.query("*IDN?").strip()
+            logger.info(f"Connected to: {idn}")
+            
+            # Parse device information
+            idn_parts = idn.split(',')
+            self._device_info = {
+                "manufacturer": idn_parts[0] if len(idn_parts) > 0 else "Unknown",
+                "model": idn_parts[1] if len(idn_parts) > 1 else "Unknown",
+                "serial": idn_parts[2] if len(idn_parts) > 2 else "Unknown", 
+                "firmware": idn_parts[3] if len(idn_parts) > 3 else "Unknown"
+            }
+            
+            # Clear any existing errors and reset
+            self._send_command("*CLS")
+            self._send_command("*RST")
+            time.sleep(0.1)  # Allow reset to complete
+            
+            self._connection_state = ConnectionState.CONNECTED
+            self._error_count = 0
+            self._last_error = None
+            self.resource_name = target_resource
+            
+            logger.info("Function generator connected successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Function Generator: sine wave failed: {e}")
-            return False
-
-    def update_parameters_only(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
+            error_msg = f"Connection failed: {e}"
+            logger.error(error_msg)
+            if hasattr(self, 'function_generator') and self.function_generator:
+                try:
+                    self.function_generator.close()
+                except:
+                    pass
+                self.function_generator = None
+            # Propagate exception to allow retry logic and callers to handle failure
+            raise FunctionGeneratorError(error_msg) from e
+    @property
+    def connection_state(self) -> ConnectionState:
+        """Get current connection state."""
+        return self._connection_state
+    
+    @property
+    def is_connected(self) -> bool:
+        """Check if function generator is connected and responsive."""
+        return (self._connection_state == ConnectionState.CONNECTED and 
+                self.function_generator is not None)
+    
+    @property
+    def device_info(self) -> Dict[str, str]:
+        """Get cached device information."""
+        if self._device_info is None:
+            return {"model": "Unknown", "serial": "Unknown", "firmware": "Unknown"}
+        return self._device_info.copy()
+    
+    def _execute_with_retry(self, operation_name: str, operation, *args, **kwargs) -> Any:
         """
-        Update only frequency and amplitude without touching output state.
-        Optimized for fast updates with minimal VISA overhead.
+        Execute an operation with retry logic and exponential backoff.
+        
+        Args:
+            operation_name: Human-readable operation description
+            operation: Function to execute
+            *args, **kwargs: Arguments to pass to operation
+            
+        Returns:
+            Result of successful operation
+            
+        Raises:
+            FunctionGeneratorError: If all retry attempts fail
+        """
+        last_exception = None
+        
+        for attempt in range(self.MAX_RETRY_ATTEMPTS):
+            try:
+                if attempt > 0:
+                    delay = self.BASE_RETRY_DELAY * (2 ** (attempt - 1))
+                    logger.debug(f"Retrying {operation_name}, attempt {attempt + 1}, delay: {delay:.2f}s")
+                    time.sleep(delay)
+                
+                result = operation(*args, **kwargs)
+                
+                if attempt > 0:
+                    logger.info(f"{operation_name} succeeded on attempt {attempt + 1}")
+                
+                return result
+                
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"{operation_name} failed on attempt {attempt + 1}: {e}")
+                
+                # For certain errors, don't retry
+                if isinstance(e, (pyvisa.VisaIOError, pyvisa.InvalidSession)):
+                    self._connection_state = ConnectionState.ERROR
+                    
+                if attempt == self.MAX_RETRY_ATTEMPTS - 1:
+                    break
+        
+        self._error_count += 1
+        self._last_error = str(last_exception)
+        error_msg = f"{operation_name} failed after {self.MAX_RETRY_ATTEMPTS} attempts: {last_exception}"
+        logger.error(error_msg)
+        raise FunctionGeneratorError(error_msg) from last_exception
+    
+    def _send_command(self, command: str, read_response: bool = False) -> Optional[str]:
+        """
+        Send SCPI command to function generator with error handling.
+        
+        Args:
+            command: SCPI command string
+            read_response: Whether to read and return response
+            
+        Returns:
+            Response string if read_response=True, None otherwise
+            
+        Raises:
+            FunctionGeneratorError: If command fails
+        """
+        if not self.is_connected:
+            raise FunctionGeneratorError("Function generator not connected")
+        
+        try:
+            logger.debug(f"Sending command: {command}")
+            
+            if read_response:
+                response = self.function_generator.query(command).strip()
+                logger.debug(f"Received response: {response}")
+                return response
+            else:
+                self.function_generator.write(command)
+                # Check for errors after write commands
+                self._check_device_errors()
+                return None
+                
+        except Exception as e:
+            error_msg = f"Command '{command}' failed: {e}"
+            logger.error(error_msg)
+            self._connection_state = ConnectionState.ERROR
+            raise FunctionGeneratorError(error_msg) from e
+    
+    def _check_device_errors(self) -> None:
+        """Check device for errors and clear error queue."""
+        try:
+            while True:
+                error_response = self.function_generator.query("SYST:ERR?").strip()
+                if error_response.startswith("0,"):
+                    break  # No more errors
+                logger.warning(f"Device error: {error_response}")
+        except Exception as e:
+            logger.warning(f"Failed to check device errors: {e}")
+
+    def output_sine_wave(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
+        """
+        Output sine wave with comprehensive validation and error handling.
         
         Args:
             amplitude: Peak-to-peak voltage in volts
@@ -194,30 +292,96 @@ class FunctionGeneratorController:
             channel: Output channel (1 or 2)
             
         Returns:
-            True if successful, False otherwise
-        """
-        if not self.function_generator:
-            logger.error("Function Generator: not connected")
-            return False
+            True if successful
             
+        Raises:
+            FunctionGeneratorError: If operation fails
+        """
+        # Input validation
+        validate_positive_number(amplitude, "amplitude")
+        validate_positive_number(frequency_mhz, "frequency")
+        validate_range(amplitude, self.MIN_AMPLITUDE_VPP, self.MAX_AMPLITUDE_VPP, "amplitude")
+        validate_range(frequency_mhz, self.MIN_FREQUENCY_MHZ, self.MAX_FREQUENCY_MHZ, "frequency")
+        
+        if channel not in [1, 2]:
+            raise ValueError(f"Channel must be 1 or 2, got {channel}")
+        
+        if not self.is_connected:
+            raise FunctionGeneratorError("Function generator not connected")
+        
+        # Smart caching to avoid redundant operations
+        current = (round(frequency_mhz, 6), round(amplitude, 6), int(channel))
+        if self._output_on and self._last_sine == current:
+            logger.debug("Parameters unchanged, skipping update")
+            return True
+        
         try:
-            # Enhanced caching with tighter tolerance
-            current = (round(frequency_mhz, 4), round(amplitude, 3), int(channel))
-            if self._last_sine == current:
-                return True
-                
-            # Only log significant changes to reduce overhead
+            logger.info(f"Setting sine wave: {frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp on channel {channel}")
+            
+            channel_str = f"C{channel}"
+            frequency_hz = frequency_mhz * 1_000_000
+            
+            # Configure waveform parameters
+            self._send_command(f"{channel_str}:BSWV SHAPE,SINE")
+            self._send_command(f"{channel_str}:BSWV FRQ,{frequency_hz}")
+            self._send_command(f"{channel_str}:BSWV AMP,{amplitude}")
+            
+            # Only turn output ON if it's not already on
+            if not self._output_on:
+                self._send_command(f"{channel_str}:OUTP ON")
+                self._output_on = True
+            
+            self._last_sine = current
+            logger.info("Sine wave configured successfully")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Failed to output sine wave: {e}"
+            logger.error(error_msg)
+            raise FunctionGeneratorError(error_msg) from e
+
+    def update_parameters_only(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
+        """
+        Update frequency and amplitude with optimized performance for real-time control.
+        
+        Args:
+            amplitude: Peak-to-peak voltage in volts
+            frequency_mhz: Frequency in MHz
+            channel: Output channel (1 or 2)
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            FunctionGeneratorError: If operation fails
+        """
+        # Input validation
+        validate_positive_number(amplitude, "amplitude")
+        validate_positive_number(frequency_mhz, "frequency")
+        validate_range(amplitude, self.MIN_AMPLITUDE_VPP, self.MAX_AMPLITUDE_VPP, "amplitude")
+        validate_range(frequency_mhz, self.MIN_FREQUENCY_MHZ, self.MAX_FREQUENCY_MHZ, "frequency")
+        
+        if not self.is_connected:
+            raise FunctionGeneratorError("Function generator not connected")
+        
+        # Enhanced caching with tighter tolerance for fast updates
+        current = (round(frequency_mhz, 4), round(amplitude, 3), int(channel))
+        if self._last_sine == current:
+            return True
+        
+        try:
+            # Log only significant changes to reduce overhead
             freq_change = abs(frequency_mhz - (self._last_sine[0] if self._last_sine else 0)) > 0.01
             amp_change = abs(amplitude - (self._last_sine[1] if self._last_sine else 0)) > 0.01
             
             if freq_change or amp_change:
-                logger.info(f"Function Generator: update ({frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp)")
+                logger.debug(f"Updating parameters: {frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp")
             
             # Fast parameter updates with reduced timeout
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
-            # Set shorter timeout for faster response
+            # Temporarily reduce timeout for faster response
             original_timeout = self.function_generator.timeout
             self.function_generator.timeout = 1000  # 1 second for fast updates
             
@@ -230,49 +394,57 @@ class FunctionGeneratorController:
                 return True
                 
             finally:
-                # Restore original timeout
+                # Always restore original timeout
                 self.function_generator.timeout = original_timeout
             
         except Exception as e:
-            logger.error(f"Function Generator: parameter update failed: {e}")
-            return False
+            error_msg = f"Failed to update parameters: {e}"
+            logger.error(error_msg)
+            raise FunctionGeneratorError(error_msg) from e
 
     def stop_all_outputs(self) -> bool:
-        """Turn off all outputs using the exact working approach."""
-        if not self.function_generator:
-            logger.error("Function Generator: not connected")
-            return False
+        """
+        Turn off all outputs with comprehensive error handling.
+        
+        Returns:
+            True if successful
             
+        Raises:
+            FunctionGeneratorError: If operation fails
+        """
+        if not self.is_connected:
+            raise FunctionGeneratorError("Function generator not connected")
+        
         try:
-            logger.info("Function Generator: stopping all outputs")
+            logger.info("Stopping all function generator outputs")
             
-            # Set a reasonable timeout for shutdown commands
+            # Set reasonable timeout for shutdown commands
             original_timeout = self.function_generator.timeout
             self.function_generator.timeout = 2000  # 2 seconds for shutdown
             
             try:
-                # Use exact same commands as the working script
-                self.function_generator.write("C1:OUTP OFF")
-                self.function_generator.write("C2:OUTP OFF")
+                # Turn off both channels
+                self._send_command("C1:OUTP OFF")
+                self._send_command("C2:OUTP OFF")
                 
                 self._output_on = False
-                logger.info("Function Generator: outputs turned off successfully")
+                logger.info("All outputs turned off successfully")
                 return True
                 
             finally:
-                # Restore original timeout
+                # Always restore original timeout
                 self.function_generator.timeout = original_timeout
             
         except Exception as e:
-            logger.error(f"Function Generator: stop outputs failed: {e}")
             # Mark as off anyway since we're shutting down
             self._output_on = False
-            return False
+            error_msg = f"Failed to stop outputs: {e}"
+            logger.error(error_msg)
+            raise FunctionGeneratorError(error_msg) from e
 
     def update_parameters_batch(self, amplitude: float, frequency_mhz: float, channel: int = 1) -> bool:
         """
-        Ultra-fast parameter update using batch commands.
-        Combines multiple commands into a single VISA transaction.
+        Ultra-fast parameter update using batch commands for maximum performance.
         
         Args:
             amplitude: Peak-to-peak voltage in volts
@@ -280,17 +452,17 @@ class FunctionGeneratorController:
             channel: Output channel (1 or 2)
             
         Returns:
-            True if successful, False otherwise
+            True if successful, falls back to regular method on failure
         """
-        if not self.function_generator:
-            return False
-            
+        if not self.is_connected:
+            return self.update_parameters_only(amplitude, frequency_mhz, channel)
+        
         try:
             # Enhanced caching
             current = (round(frequency_mhz, 4), round(amplitude, 3), int(channel))
             if self._last_sine == current:
                 return True
-                
+            
             # Batch command approach - send multiple commands in one transaction
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
@@ -317,7 +489,7 @@ class FunctionGeneratorController:
     def sine_frequency_sweep(self, amplitude: float, freq_start: float, freq_end: float, 
                            sweep_time: float, channel: int = 1) -> bool:
         """
-        Configure and start a frequency sweep.
+        Configure and start a frequency sweep with validation.
         
         Args:
             amplitude: Peak-to-peak voltage in volts
@@ -327,80 +499,115 @@ class FunctionGeneratorController:
             channel: Output channel (1 or 2)
             
         Returns:
-            True if sweep started successfully, False otherwise
-        """
-        if not self.function_generator:
-            logger.error("Function Generator: not connected")
-            return False
+            True if successful
             
+        Raises:
+            FunctionGeneratorError: If operation fails
+        """
+        # Input validation
+        validate_positive_number(amplitude, "amplitude")
+        validate_positive_number(freq_start, "start frequency")
+        validate_positive_number(freq_end, "end frequency")
+        validate_positive_number(sweep_time, "sweep time")
+        
+        validate_range(amplitude, self.MIN_AMPLITUDE_VPP, self.MAX_AMPLITUDE_VPP, "amplitude")
+        validate_range(freq_start, self.MIN_FREQUENCY_MHZ, self.MAX_FREQUENCY_MHZ, "start frequency")
+        validate_range(freq_end, self.MIN_FREQUENCY_MHZ, self.MAX_FREQUENCY_MHZ, "end frequency")
+        
+        if channel not in [1, 2]:
+            raise ValueError(f"Channel must be 1 or 2, got {channel}")
+        
+        if not self.is_connected:
+            raise FunctionGeneratorError("Function generator not connected")
+        
         try:
-            logger.info(f"Function Generator: starting frequency sweep {freq_start:.3f} - {freq_end:.3f} MHz over {sweep_time:.1f}s")
+            logger.info(f"Starting frequency sweep: {freq_start:.3f} - {freq_end:.3f} MHz over {sweep_time:.1f}s")
             
             channel_str = f"C{channel}"
             freq_start_hz = freq_start * 1_000_000
             freq_end_hz = freq_end * 1_000_000
             
             # Configure basic waveform parameters
-            self.function_generator.write(f"{channel_str}:BSWV SHAPE,SINE")
-            self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
+            self._send_command(f"{channel_str}:BSWV SHAPE,SINE")
+            self._send_command(f"{channel_str}:BSWV AMP,{amplitude}")
             
             # Configure sweep parameters
-            self.function_generator.write(f"{channel_str}:SWWV STATE,ON")
-            self.function_generator.write(f"{channel_str}:SWWV TIME,{sweep_time}")
-            self.function_generator.write(f"{channel_str}:SWWV START,{freq_start_hz}")
-            self.function_generator.write(f"{channel_str}:SWWV STOP,{freq_end_hz}")
-            self.function_generator.write(f"{channel_str}:SWWV SOURCE,TIME")
-            self.function_generator.write(f"{channel_str}:SWWV SWMD,LINEAR")
+            self._send_command(f"{channel_str}:SWWV STATE,ON")
+            self._send_command(f"{channel_str}:SWWV TIME,{sweep_time}")
+            self._send_command(f"{channel_str}:SWWV START,{freq_start_hz}")
+            self._send_command(f"{channel_str}:SWWV STOP,{freq_end_hz}")
+            self._send_command(f"{channel_str}:SWWV SOURCE,TIME")
+            self._send_command(f"{channel_str}:SWWV SWMD,LINEAR")
             
             # Turn on output
-            self.function_generator.write(f"{channel_str}:OUTP ON")
+            self._send_command(f"{channel_str}:OUTP ON")
             self._output_on = True
             
             # Update cached values
             self._last_sine = (freq_start, amplitude, channel)
             
-            logger.info("Function Generator: frequency sweep started successfully")
+            logger.info("Frequency sweep started successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Function Generator: frequency sweep failed: {e}")
-            return False
+            error_msg = f"Failed to start frequency sweep: {e}"
+            logger.error(error_msg)
+            raise FunctionGeneratorError(error_msg) from e
 
-    def get_output_status(self) -> dict:
-        """Get current output status."""        
+    def get_output_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive output status information.
+        
+        Returns:
+            Dictionary with current status information
+        """
         return {
-            'connected': self.is_connected(),
+            'connected': self.is_connected,
+            'connection_state': self.connection_state.value,
             'output_on': self._output_on,
-            'last_sine': self._last_sine
+            'last_sine': self._last_sine,
+            'device_info': self.device_info,
+            'error_count': self._error_count,
+            'last_error': self._last_error
         }
 
     def disconnect(self) -> None:
-        """Disconnect from function generator and clean up resources."""
-        if self.function_generator:
+        """
+        Disconnect from function generator with proper cleanup.
+        
+        Raises:
+            FunctionGeneratorError: If cleanup operations fail
+        """
+        if not self.function_generator:
+            logger.info("Function generator already disconnected")
+            return
+        
+        try:
+            logger.info("Beginning function generator disconnect")
+            
+            # First, try to stop all outputs safely
             try:
-                logger.info("Function Generator: Beginning clean disconnect process")
-                
-                # First, stop all outputs safely
-                try:
-                    self.stop_all_outputs()
-                except Exception as e:
-                    logger.warning(f"Function Generator: stop outputs error during disconnect: {e}")
-                
-                # Add a small delay to ensure commands are processed
-                import time
-                time.sleep(0.1)
-                
-                # Close the VISA connection
-                logger.info("Function Generator: Closing VISA connection")
-                self.function_generator.close()
-                logger.info("Function Generator: VISA connection closed successfully")
-                
+                self.stop_all_outputs()
             except Exception as e:
-                logger.error(f"Function Generator: error during disconnect: {e}")
-            finally:
-                # Always clean up the reference regardless of errors
-                self.function_generator = None
-                self._is_connected = False
-                self._output_on = False
-                self._last_sine = None
-                logger.info("Function Generator: Disconnect completed - all references cleared")
+                logger.warning(f"Error stopping outputs during disconnect: {e}")
+            
+            # Small delay to ensure commands are processed
+            time.sleep(0.1)
+            
+            # Close the VISA connection
+            logger.info("Closing VISA connection")
+            self.function_generator.close()
+            logger.info("VISA connection closed successfully")
+            
+        except Exception as e:
+            error_msg = f"Error during disconnect: {e}"
+            logger.error(error_msg)
+            # Don't raise exception during cleanup, but log the error
+        finally:
+            # Always clean up references regardless of errors
+            self.function_generator = None
+            self._connection_state = ConnectionState.DISCONNECTED
+            self._output_on = False
+            self._last_sine = None
+            self._device_info = None
+            logger.info("Function generator disconnect completed")

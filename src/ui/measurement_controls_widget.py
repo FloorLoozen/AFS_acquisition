@@ -50,7 +50,7 @@ class MeasurementControlsWidget(QGroupBox):
         
         # Set initial status based on actual connection state
         if hasattr(self, 'fg_status_display'):
-            if self.fg_controller and self.fg_controller.is_connected():
+            if self.fg_controller and self.fg_controller.is_connected:
                 self.fg_status_display.set_status("Ready")
             else:
                 self.fg_status_display.set_status("Disconnected")
@@ -184,9 +184,9 @@ class MeasurementControlsWidget(QGroupBox):
         """Ensure function generator is connected, try to reconnect if needed."""
         if not self.fg_controller:
             self._initialize_function_generator()
-            return self.fg_controller is not None and self.fg_controller.is_connected()
+            return self.fg_controller is not None and self.fg_controller.is_connected
         
-        if not self.fg_controller.is_connected():
+        if not self.fg_controller.is_connected:
             # Try simple reconnect
             if self.fg_controller.connect():
                 self.fg_status_display.set_status("Ready")
@@ -201,7 +201,7 @@ class MeasurementControlsWidget(QGroupBox):
         """Update the connection status display based on actual state."""
         if not self.fg_controller:
             self.fg_status_display.set_status("Disconnected")
-        elif not self.fg_controller.is_connected():
+        elif not self.fg_controller.is_connected:
             self.fg_status_display.set_status("Disconnected")
         elif self.fg_toggle_button.isChecked():
             # Output is on - show frequency info
@@ -248,7 +248,7 @@ class MeasurementControlsWidget(QGroupBox):
                 self._cached_amplitude = amplitude
         else:
             # Turn off
-            if self.fg_controller and self.fg_controller.is_connected():
+            if self.fg_controller and self.fg_controller.is_connected:
                 success = self.fg_controller.stop_all_outputs()
                 if success:
                     logger.info("Function generator OFF")

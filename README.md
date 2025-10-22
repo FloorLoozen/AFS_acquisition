@@ -1,102 +1,105 @@
 # AFS Tracking System
 
-Scientific data acquisition system for Atomic Force Spectroscopy with HDF5 video recording, camera control, and XY stage positioning.
+## Overview
 
-## 🚀 Key Features
+Real-time control of cameras, positioning stages, function generators, and oscilloscopes with scientific data recording in HDF5 format. Features comprehensive experimental metadata, automated measurement sequences, and resonance analysis.
 
-- **HDF5 Video Recording**: Scientific-grade recording with comprehensive metadata
-- **IDS uEye Camera**: Live feed with automatic reconnection
-- **MCL MicroDrive XY Stage**: Precise positioning with keyboard shortcuts (Ctrl+Arrow keys)
-- **Function Generator Control**: Real-time frequency/amplitude adjustment with timeline logging
-- **Modern PyQt5 GUI**: Intuitive controls with real-time monitoring
-- **Graceful Fallbacks**: Test pattern mode when hardware unavailable
+**Key Features:**
+- 🎥 High-performance video recording with metadata
+- 🎛️ Multi-instrument control (cameras, stages, function generators, oscilloscopes)  
+- 📊 Scientific data management with HDF5 format
+- 🔍 Interactive frequency sweep analysis
+- ⚡ Force path design and automated measurements
+- 🖥️ Modern PyQt5 interface with real-time monitoring
 
-## 🏃‍♂️ Quick Start
+## Quick Start
 
-### 1. Setup Environment
-```powershell
-git clone https://github.com/FloorLoozen/AFS_tracking
+```bash
+# Clone and setup
+git clone https://github.com/FloorLoozen/AFS_tracking.git
 cd AFS_tracking
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-### 2. Install Dependencies
-```powershell
-pip install --upgrade pip
+.venv\Scripts\activate  # Windows
 pip install -r requirements.txt
-# Optionally install IDS camera support from their website
+
+# Run application
+python src/main.py
 ```
 
-### 3. Run Application
-```powershell
-python -m src.main
+**Requirements:** Python 3.8+, Windows 10/11 (primary), 4+ GB RAM
+
+## Hardware Support
+
+| Type | Manufacturer | Models | Interface |
+|------|--------------|--------|-----------|
+| Camera | IDS Imaging | uEye Series | USB 3.0 |
+| XY Stage | Mad City Labs | MicroDrive | USB |
+| Function Generator | Siglent | SDG Series | USB/VISA |
+| Oscilloscope | Tektronix | Various | VISA |
+
+*Includes demo modes for testing without hardware*
+
+## Data Format
+
+HDF5 scientific format with hierarchical structure:
+```
+experiment.hdf5
+├── video/                    # 4D video dataset
+├── function_generator_timeline/  # Output sequences  
+├── execution_data/           # Measurement results
+│   ├── force_path_design_*/
+│   ├── resonance_finder_data_*/
+└── metadata/                 # Complete experimental context
+    ├── recording/, camera_settings/
+    ├── stage_settings/, system_info/
 ```
 
+## Key Components
 
+- **Main Interface**: Live camera view, instrument controls, real-time monitoring
+- **Force Path Designer**: Multi-point measurement sequences with spatial/temporal control
+- **Resonance Finder**: Interactive frequency sweeps with automatic peak detection
+- **Configuration Manager**: Hardware profiles and performance optimization
 
-## 📊 HDF5 Video Recording
+## Keyboard Shortcuts
 
-### File Structure
+- `Ctrl + Arrow Keys`: Stage movement (fine)
+- `Ctrl + Shift + Arrow`: Stage movement (coarse)  
+- `Space`: Start/stop recording
+- `F11`: Toggle fullscreen
+
+## Architecture
+
+**Robust Design:**
+- Multi-threaded video capture and processing
+- Comprehensive error handling and recovery
+- Hardware abstraction with graceful fallbacks
+- Scientific-grade data validation
+- Performance optimization for real-time operation
+
+**Core Structure:**
+- `src/main.py`: Application entry point
+- `src/ui/`: PyQt5 user interface
+- `src/controllers/`: Hardware communication
+- `src/utils/`: Data management and utilities
+
+## API Example
+
+```python
+from src.controllers.camera_controller import CameraController
+from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+
+# Initialize components
+camera = CameraController(camera_id=0)
+recorder = HDF5VideoRecorder("experiment.hdf5", frame_shape=(480, 640, 3))
+
+# Start recording with metadata
+camera.start_capture()
+recorder.start_recording(metadata={"experiment": "resonance_analysis"})
 ```
-📁 recording.hdf5
-├── � data/
-│   ├── �📹 video/                       # 4D dataset: (frames, height, width, channels)
-│   ├── � function_generator_timeline/ # Function generator event timeline  
-│   └── 📋 look_up_table/               # (To be implemented later)
-└── 📝 meta_data/
-    ├── 🔧 hardware_settings/           # Camera & stage parameters
-    │   ├── camera/                     # Real camera settings (23+ parameters)
-    │   └── xy_stage/                   # Stage position and configuration  
-    └── � resonance_finder/            # (To be implemented later)
-        ├── figure/                     # Figure data
-        └── list/                       # List data
-```
-
-
-
-### Function Generator Timeline
-The system logs all function generator operations during recording:
-- **Initial State**: Starting settings when recording begins
-- **Parameter Changes**: Frequency (13-15 MHz) and voltage (Vpp) adjustments  
-- **Output Events**: ON/OFF toggle events with timestamps
-
-**Defaults**: 14.0 MHz, 4.0 Vpp
-
-## 🛠️ System Requirements
-
-### Software Dependencies
-- **Python 3.9+** (tested with 3.13)
-- **PyQt5**: UI framework
-- **h5py, NumPy, OpenCV**: Core scientific libraries
-- **psutil, colorama**: System utilities
-
-### Hardware (Optional)
-- **IDS uEye Camera**: High-performance scientific imaging
-- **MCL MicroDrive XY Stage**: Precision positioning system
-- **Function Generator**: Siglent or compatible VISA instrument
-
-*System works in test mode without hardware for development and testing.*
-
-## 📋 Usage Workflow
-
-1. **Launch Application**: `python -m src.main`
-2. **Configure Measurement**: Set sample name, notes, and save path
-3. **Position Sample**: Use Ctrl+Arrow keys for stage movement  
-4. **Start Recording**: Click record button or use keyboard shortcut
-
-
-
-## 🔧 Configuration
-
-- **Default Save Path**: `C:/Users/fAFS/Documents/Floor/tmp`
-- **Log Files**: `logs/afs_tracking_YYYYMMDD_HHMMSS.log`
-- **Camera Settings**: Auto-detected and saved with each recording
-- **Stage Settings**: Position and configuration preserved in metadata
 
 ---
 
-**Version**: 2.1 | **Updated**: October 2025  
-**Format**: HDF5 Scientific Data | **License**: Research Use
+**Version 3.0.0** | Python 3.8+ | Scientific HDF5 Data Standard
 
 
