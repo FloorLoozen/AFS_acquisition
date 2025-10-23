@@ -69,12 +69,7 @@ class MainWindow(QMainWindow):
             # Initialize DeviceManager and hardware
             try:
                 self.device_manager = DeviceManager.get_instance()
-                # Disable automatic oscilloscope connections for fast startup
-                try:
-                    self.device_manager._disable_osc = True
-                    logger.info("DeviceManager: oscilloscope auto-connect disabled for fast startup")
-                except Exception:
-                    pass
+                logger.info("DeviceManager initialized successfully")
                 # Start background health monitor for reconnects (non-blocking)
                 try:
                     self.device_manager.start_health_monitor(interval=5.0)
@@ -102,12 +97,14 @@ class MainWindow(QMainWindow):
             raise
 
     def _create_measurement_hdf5(self) -> bool:
-        """Create HDF5 file when measurement starts - DISABLED: All data now goes to video HDF5 files."""
-        # DISABLED: User wants all data consolidated in video HDF5 files only
-        # Session files are no longer needed since video files contain everything
-        logger.info("Session HDF5 creation disabled - all data goes to video HDF5 files")
-        self.session_hdf5_file = None  # Explicitly set to None
-        return True  # Always return True since we're not creating session files
+        """Create HDF5 file when measurement starts - DISABLED.
+        
+        All data is consolidated into video HDF5 files. Session files are not created.
+        This method is kept for backwards compatibility but does nothing.
+        """
+        logger.debug("Session HDF5 creation disabled - all data goes to video HDF5 files")
+        self.session_hdf5_file = None
+        return True
 
     def _init_ui(self) -> None:
         """Initialize the user interface layout and appearance.
@@ -323,10 +320,42 @@ class MainWindow(QMainWindow):
     
     def _open_resonance_finder(self):
         """Open resonance finder window with oscilloscope display."""
-        # Temporarily disable opening the full Resonance Finder to speed up startup.
-        # Show a simple not-implemented message so users can open it later.
-        logger.info("Resonance Finder is currently disabled for fast startup (not implemented popup shown)")
-        self._show_not_implemented()
+        # DISABLED: Resonance finder functionality commented out for now
+        # Oscilloscope integration will be added in the future
+        logger.info("Resonance Finder is currently disabled (not implemented)")
+        QMessageBox.information(self, "Feature Disabled", 
+                              "Resonance Finder is currently disabled.\n\n"
+                              "This feature will be re-enabled in a future update when "
+                              "oscilloscope integration is complete.")
+        
+        # # FUTURE: Uncomment this code when oscilloscope is ready
+        # try:
+        #     from src.ui.resonance_finder_widget import ResonanceFinderWidget
+        #     
+        #     # Create or show resonance finder window
+        #     if not hasattr(self, '_resonance_finder_window') or not self._resonance_finder_window:
+        #         # Get shared oscilloscope controller if available
+        #         osc = getattr(self, 'oscilloscope_controller', None)
+        #         fg = None
+        #         if self.measurement_controls_widget:
+        #             fg = self.measurement_controls_widget.get_function_generator_controller()
+        #         
+        #         self._resonance_finder_window = ResonanceFinderWidget(funcgen=fg, oscilloscope=osc)
+        #     
+        #     # Show and bring to front
+        #     self._resonance_finder_window.show()
+        #     self._resonance_finder_window.activateWindow()
+        #     self._resonance_finder_window.raise_()
+        #     
+        #     logger.info("Opened Resonance Finder window")
+        #     
+        # except Exception as e:
+        #     logger.error(f"Failed to open Resonance Finder: {e}")
+        #     import traceback
+        #     error_details = traceback.format_exc()
+        #     QMessageBox.critical(self, "Error", 
+        #         f"Failed to open Resonance Finder:\n{e}\n\nCheck the log for details.")
+        #     logger.error(f"Resonance Finder error details:\n{error_details}")
     
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
@@ -372,39 +401,29 @@ class MainWindow(QMainWindow):
             "and MCL MicroDrive XY stage hardware.")
     
     def start_measurement_session(self):
-        """Start measurement session with optimized initialization."""
-        import time
-        
+        """Start measurement session (lightweight)."""
         if self.measurement_active:
             logger.warning("Measurement session already active")
             return
         
         try:
-            # Pre-flight checks for hardware availability
-            hardware_ready = self._validate_hardware_for_measurement()
-            if not hardware_ready:
-                logger.error("Hardware validation failed, cannot start measurement")
-                return
-            
-            # Create HDF5 file only when measurement starts
-            if not self._create_measurement_hdf5():
-                logger.error("Failed to create HDF5 file, cannot start measurement")
+            # Quick hardware validation
+            if not self.camera_widget or not hasattr(self.camera_widget, 'camera'):
+                logger.error("Camera not available for measurement")
                 return
             
             self.measurement_active = True
             self.measurement_start_time = time.time()
+            self.session_hdf5_file = None  # No session files - data goes to video files
             
-            # Log measurement start (non-blocking)
-            self._log_measurement_event_async('measurement_session_start')
-            
-            logger.info(f"Measurement session started - HDF5: {self.session_hdf5_file}")
+            logger.info("Measurement session started")
             
         except Exception as e:
             logger.error(f"Failed to start measurement session: {e}")
             self.measurement_active = False
     
     def stop_measurement_session(self):
-        """Stop measurement session with optimized cleanup."""
+        """Stop measurement session (lightweight)."""
         if not self.measurement_active:
             logger.warning("No measurement session active")
             return
@@ -412,98 +431,14 @@ class MainWindow(QMainWindow):
         try:
             self.measurement_active = False
             
-            # Log measurement stop with session statistics
             if self.measurement_start_time:
                 duration = time.time() - self.measurement_start_time
-                session_stats = {
-                    'duration_seconds': duration,
-                    'hdf5_file': self.session_hdf5_file
-                }
-                self._log_measurement_event_async('measurement_session_stop', session_stats)
+                logger.info(f"Measurement session stopped - Duration: {duration:.1f}s")
             
-            # Ensure any pending data is flushed
-            self._flush_session_data()
-            
-            logger.info(f"Measurement session stopped - Duration: {duration:.1f}s - HDF5: {self.session_hdf5_file}")
             self.measurement_start_time = None
-            # Keep HDF5 file reference for potential analysis
             
         except Exception as e:
             logger.error(f"Error stopping measurement session: {e}")
-    
-    def _validate_hardware_for_measurement(self) -> bool:
-        """Quick validation of hardware readiness for measurement."""
-        try:
-            # Check camera availability
-            if not self.camera_widget or not hasattr(self.camera_widget, 'camera') or not self.camera_widget.camera:
-                logger.warning("Camera not available for measurement")
-                return False
-            
-            # Additional hardware checks can be added here
-            return True
-            
-        except Exception as e:
-            logger.error(f"Hardware validation error: {e}")
-            return False
-    
-    def _log_measurement_event_async(self, event_type: str, event_data: dict = None):
-        """Asynchronous measurement event logging to prevent UI blocking."""
-        if not self.session_hdf5_file:
-            return
-        
-        # Use thread pool for non-blocking logging
-        try:
-            import threading
-            def log_async():
-                self._log_measurement_event(event_type, event_data)
-            
-            thread = threading.Thread(target=log_async, daemon=True)
-            thread.start()
-            
-        except Exception as e:
-            logger.warning(f"Async logging failed: {e}")
-            # Fallback to synchronous logging
-            self._log_measurement_event(event_type, event_data)
-    
-    def _flush_session_data(self):
-        """Ensure all session data is flushed to disk."""
-        try:
-            # Trigger any pending HDF5 flushes
-            if self.camera_widget and hasattr(self.camera_widget, 'hdf5_recorder') and self.camera_widget.hdf5_recorder:
-                logger.debug("Flushing camera recording data...")
-                # The HDF5 recorder will handle its own flushing
-                
-        except Exception as e:
-            logger.warning(f"Error flushing session data: {e}")
-    
-    def _log_measurement_event(self, event_type: str, event_data: dict = None):
-        """Log measurement events - simple and minimal."""
-        if not self.session_hdf5_file:
-            return
-            
-        try:
-            import h5py
-            import time
-            from datetime import datetime
-            
-            with h5py.File(self.session_hdf5_file, 'a') as f:
-                # Simple event logging directly as attributes
-                timestamp = time.time()
-                event_key = f"{event_type}_at_{int(timestamp)}"
-                
-                f.attrs[event_key + '_time'] = datetime.now().isoformat()
-                f.attrs[event_key + '_timestamp'] = timestamp
-                
-                if self.measurement_start_time:
-                    f.attrs[event_key + '_relative_time'] = timestamp - self.measurement_start_time
-                
-                # Add any execution data only when provided
-                if event_data:
-                    for key, value in event_data.items():
-                        f.attrs[f"{event_key}_{key}"] = value
-                
-        except Exception as e:
-            logger.error(f"Failed to log measurement event to HDF5: {e}")
 
     def log_execution_data(self, execution_type: str, data: dict):
         """Log execution data to video HDF5 file (consolidated storage)."""
@@ -528,136 +463,59 @@ class MainWindow(QMainWindow):
             logger.debug("No camera widget available - execution data not logged")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Handle application close event with proper cleanup.
-        
-        Ensures all hardware connections are properly closed and
-        resources are cleaned up before application exit.
-        
-        Args:
-            event: The close event from PyQt5
-        """
-        logger.info("Application closing - cleaning up hardware")
+        """Handle application close with proper cleanup."""
+        logger.info("Application closing - cleaning up")
         
         try:
-            # Stop any running measurements first
+            # Stop any running measurements
             if self.measurement_active:
-                logger.info("Stopping active measurement before exit")
                 self.stop_measurement_session()
             
             # Close force path designer if open
             if hasattr(self, 'force_path_designer') and self.force_path_designer:
                 try:
                     self.force_path_designer.close()
-                except Exception as e:
-                    logger.debug(f"Force path designer close error: {e}")
+                except:
+                    pass
             
-            # Cleanup function generator (CRITICAL: most important for connection issues)
-            if hasattr(self.measurement_controls_widget, 'cleanup') and self.measurement_controls_widget:
-                logger.info("Cleaning up function generator...")
+            # Cleanup function generator (critical for avoiding connection issues)
+            if hasattr(self, 'measurement_controls_widget') and self.measurement_controls_widget:
                 try:
                     self.measurement_controls_widget.cleanup()
                 except Exception as e:
                     logger.error(f"Function generator cleanup error: {e}")
-                
-                # ENSURE output is OFF and connection is properly closed
-                try:
-                    if hasattr(self.measurement_controls_widget, 'fg_controller') and self.measurement_controls_widget.fg_controller:
-                        fg = self.measurement_controls_widget.fg_controller
-                        if fg.is_connected:
-                            logger.info("Final safety check: stopping all function generator outputs")
-                            fg.stop_all_outputs()
-                            logger.info("Final safety check: disconnecting function generator")
-                            fg.disconnect()
-                except Exception as e:
-                    logger.error(f"Function generator final cleanup error: {e}")
-                
-                # Give extra time for function generator cleanup
-                import time
-                time.sleep(0.3)
             
             # Cleanup camera
-            if hasattr(self.camera_widget, 'close') and self.camera_widget:
-                logger.info("Cleaning up camera...")
-                self.camera_widget.close()
+            if hasattr(self, 'camera_widget') and self.camera_widget:
+                try:
+                    self.camera_widget.close()
+                except Exception as e:
+                    logger.debug(f"Camera cleanup error: {e}")
             
             # Cleanup stage controller
             try:
                 from src.controllers.stage_manager import StageManager
                 stage_manager = StageManager.get_instance()
-                logger.info("Cleaning up stage controller...")
                 stage_manager.disconnect()
             except Exception as e:
                 logger.debug(f"Stage cleanup error: {e}")
             
-            logger.info("Hardware cleanup completed successfully")
+            logger.info("Cleanup completed")
             
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
         
-        # Accept the close event
         event.accept()
     
     def get_frequency_settings(self) -> Optional['FrequencySettingsWidget']:
-        """Get the frequency settings widget.
-        
-        Returns:
-            The frequency settings widget instance, or None if not initialized.
-        """
+        """Get the frequency settings widget."""
         return self.frequency_settings_widget
     
-    def get_measurements_save_path(self) -> str:
-        """Get the configured save path (compatibility method).
-        
-        Returns:
-            The configured save path or empty string if not set
-        """
-        if self.frequency_settings_widget:
-            return self.frequency_settings_widget.get_save_path()
-        return ""
-    
     def get_save_path(self) -> str:
-        """Get the configured save path.
-        
-        Returns:
-            The configured save path or empty string if not set
-        """
+        """Get the configured save path."""
         if self.frequency_settings_widget:
             return self.frequency_settings_widget.get_save_path()
         return ""
-    
-    def get_hdf5_filename(self) -> str:
-        """Get the configured HDF5 filename.
-        
-        Returns:
-            The configured filename or empty string if not set
-        """
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_filename()
-        return ""
-    
-    def get_full_hdf5_path(self):
-        """Get the complete path for the HDF5 measurement file."""
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_full_file_path()
-        return ""
-    
-    def get_sample_information(self):
-        """Get the sample information."""
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_sample_information()
-        return ""
-    
-    def get_measurement_notes(self):
-        """Get the measurement notes."""
-        if self.measurement_settings_widget:
-            return self.measurement_settings_widget.get_notes()
-        return ""
-    
-    def get_function_generator_status(self):
-        """Get function generator status information."""
-        if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_status'):
-            return self.measurement_controls_widget.get_function_generator_status()
-        return {'enabled': False, 'connected': False}
     
     def get_function_generator_controller(self):
         """Get the function generator controller instance."""
@@ -667,8 +525,6 @@ class MainWindow(QMainWindow):
     
     def _handle_start_recording(self, file_path):
         """Handle start recording request."""
-# Recording start logged by acquisition controls
-        
         if not self.camera_widget or not self.camera_widget.is_running:
             self.acquisition_controls_widget.recording_failed(
                 "Camera is not running. Please ensure camera is connected and running.")
@@ -688,18 +544,16 @@ class MainWindow(QMainWindow):
                     # Log initial function generator state
                     if self.measurement_controls_widget and hasattr(self.camera_widget, 'log_initial_function_generator_state'):
                         try:
-                            # Get current function generator settings
-                            frequency = 1.0  # Default
-                            amplitude = 1.0  # Default
-                            enabled = False  # Default
+                            frequency = 1.0
+                            amplitude = 1.0
+                            enabled = False
                             
-                            # Try to get actual current settings
                             try:
                                 frequency = float(self.measurement_controls_widget.frequency_edit.text())
                                 amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
                                 enabled = self.measurement_controls_widget.fg_toggle_button.isChecked()
                             except (ValueError, AttributeError):
-                                pass  # Use defaults
+                                pass
                             
                             self.camera_widget.log_initial_function_generator_state(frequency, amplitude, enabled)
                         except Exception as e:
@@ -707,7 +561,6 @@ class MainWindow(QMainWindow):
                     
                     self.acquisition_controls_widget.recording_started_successfully()
                     self.statusBar().showMessage(f"HDF5 recording started: {file_path}")
-# Success already logged by acquisition controls
                 else:
                     self.acquisition_controls_widget.recording_failed("Failed to start HDF5 recording in camera.")
             else:
@@ -718,15 +571,12 @@ class MainWindow(QMainWindow):
     
     def _handle_stop_recording(self):
         """Handle stop recording request."""
-# Stop logged by acquisition controls
-        
         try:
             if hasattr(self.camera_widget, 'stop_recording'):
                 saved_path = self.camera_widget.stop_recording()
                 if saved_path:
                     self.acquisition_controls_widget.recording_stopped_successfully(saved_path)
                     self.statusBar().showMessage(f"HDF5 recording stopped: {saved_path}")
-# Success already logged by acquisition controls
                 else:
                     self.acquisition_controls_widget.recording_failed("Failed to stop HDF5 recording properly.")
             else:
@@ -736,56 +586,71 @@ class MainWindow(QMainWindow):
             self.acquisition_controls_widget.recording_failed(f"Error stopping recording: {str(e)}")
     
     def _handle_save_recording(self, file_path):
-        """Handle save recording request with background finalization awareness."""
+        """Handle save recording request."""
+        import os
+        import shutil
+        
+        try:
+            # Get the original recorded file path
+            if hasattr(self.acquisition_controls_widget, 'original_recording_path'):
+                actual_recorded_path = self.acquisition_controls_widget.original_recording_path
+                
+                # Check if we need to rename/move the file
+                if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
+                    # Wait briefly for file to be fully written
+                    QTimer.singleShot(500, lambda: self._perform_file_move(actual_recorded_path, file_path))
+                    return
+            
+            # File is already in the right place
+            self.statusBar().showMessage(f"HDF5 recording saved: {file_path}")
+            QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+            
+        except Exception as e:
+            logger.error(f"Error saving recording: {e}")
+            self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
+    
+    def _perform_file_move(self, source_path: str, dest_path: str):
+        """Perform file move operation with retries."""
         import os
         import shutil
         import time
         
-        def _perform_save():
-            """Perform the actual save operation."""
+        max_retries = 5
+        for attempt in range(max_retries):
             try:
-                # Get the original recorded file path for potential renaming
-                if hasattr(self.acquisition_controls_widget, 'original_recording_path'):
-                    actual_recorded_path = self.acquisition_controls_widget.original_recording_path
-                    if actual_recorded_path and actual_recorded_path != file_path and os.path.exists(actual_recorded_path):
-                        
-                        # Wait for file to be fully written (check for file locking)
-                        max_retries = 10
-                        for retry in range(max_retries):
-                            try:
-                                # Try to open the file to check if it's still locked
-                                with open(actual_recorded_path, 'r+b') as f:
-                                    pass  # File is accessible
-                                break
-                            except (OSError, PermissionError):
-                                if retry < max_retries - 1:
-                                    time.sleep(0.5)  # Wait 500ms and retry
-                                else:
-                                    # Final retry - just proceed anyway
-                                    pass
-                        
-                        # Need to move/rename the file to the desired path
-                        shutil.move(actual_recorded_path, file_path)
-                        
-                    elif not os.path.exists(file_path):
-                        # File doesn't exist - this shouldn't happen in auto-save
-                        logger.warning(f"Expected recording file not found: {file_path}")
+                # Check if source still exists
+                if not os.path.exists(source_path):
+                    logger.warning(f"Source file no longer exists: {source_path}")
+                    return
                 
-                self.statusBar().showMessage(f"HDF5 recording saved: {file_path}")
-                
-                # Clear status after delay
+                # Try to move the file
+                shutil.move(source_path, dest_path)
+                logger.info(f"Successfully moved recording to: {dest_path}")
+                self.statusBar().showMessage(f"HDF5 recording saved: {dest_path}")
                 QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+                return
                 
-            except Exception as e:
-                logger.error(f"Error saving recording: {e}")
-                raise e
-        
-        # Defer save operation slightly to allow background finalization to progress
-        try:
-            QTimer.singleShot(1500, _perform_save)  # 1.5 second delay
-        except Exception as e:
-            logger.error(f"Error setting up save operation: {e}")
-            self.acquisition_controls_widget.recording_failed(f"Error saving recording: {str(e)}")
+            except (OSError, PermissionError) as e:
+                if attempt < max_retries - 1:
+                    # Wait and retry
+                    time.sleep(0.3 * (attempt + 1))
+                else:
+                    # Last attempt - try copy instead of move
+                    try:
+                        shutil.copy2(source_path, dest_path)
+                        logger.info(f"Copied recording to: {dest_path}")
+                        try:
+                            os.remove(source_path)
+                        except:
+                            logger.warning(f"Could not remove original: {source_path}")
+                        self.statusBar().showMessage(f"HDF5 recording saved: {dest_path}")
+                        QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
+                        return
+                    except Exception as copy_error:
+                        logger.error(f"Failed to save recording: {copy_error}")
+                        self.acquisition_controls_widget.recording_failed(
+                            "Error saving recording: file is locked or inaccessible.")
+                        return
     
     def _on_function_generator_toggled(self, enabled: bool):
         """Handle function generator on/off events for timeline logging."""
@@ -829,28 +694,31 @@ class MainWindow(QMainWindow):
             hardware_status["XY Stage"] = self._init_xy_stage()
             hardware_status["Function Generator"] = self._init_function_generator()
             
-            # Oscilloscope is disabled for fast startup - don't create controller or add to status
-            # This keeps the oscilloscope completely out of the program for now
-            if hasattr(self, 'device_manager') and getattr(self.device_manager, '_disable_osc', False):
-                logger.info("Oscilloscope disabled for fast startup - not included in hardware status")
-                self.oscilloscope_controller = None
-                # Don't add to hardware_status so it doesn't show in the dialog
-            else:
-                # Create a shared oscilloscope controller for other widgets only if enabled
-                try:
-                    from src.controllers.oscilloscope_controller import get_oscilloscope_controller
-                    self.oscilloscope_controller = get_oscilloscope_controller()
-                    try:
-                        # Fast connection attempt - don't block startup
-                        if self.oscilloscope_controller.connect(fast_fail=True):
-                            hardware_status["Oscilloscope"] = {"connected": True, "message": "Oscilloscope connected"}
-                        else:
-                            hardware_status["Oscilloscope"] = {"connected": False, "message": "Not found (will retry in background)"}
-                    except Exception as e:
-                        hardware_status["Oscilloscope"] = {"connected": False, "message": f"Fast connect failed: {str(e)}"}
-                except Exception as e:
-                    logger.debug(f"Could not create shared oscilloscope controller: {e}")
-                    self.oscilloscope_controller = None
+            # DISABLED: Oscilloscope functionality commented out for now
+            # This will be re-enabled when oscilloscope integration is complete
+            self.oscilloscope_controller = None
+            logger.info("Oscilloscope functionality disabled (not included in hardware status)")
+            
+            # # FUTURE: Uncomment this when oscilloscope is ready
+            # if hasattr(self, 'device_manager') and getattr(self.device_manager, '_disable_osc', False):
+            #     logger.info("Oscilloscope disabled for fast startup - not included in hardware status")
+            #     self.oscilloscope_controller = None
+            # else:
+            #     # Create a shared oscilloscope controller for other widgets only if enabled
+            #     try:
+            #         from src.controllers.oscilloscope_controller import get_oscilloscope_controller
+            #         self.oscilloscope_controller = get_oscilloscope_controller()
+            #         try:
+            #             # Fast connection attempt - don't block startup
+            #             if self.oscilloscope_controller.connect(fast_fail=True):
+            #                 hardware_status["Oscilloscope"] = {"connected": True, "message": "Oscilloscope connected"}
+            #             else:
+            #                 hardware_status["Oscilloscope"] = {"connected": False, "message": "Not found (will retry in background)"}
+            #         except Exception as e:
+            #             hardware_status["Oscilloscope"] = {"connected": False, "message": f"Fast connect failed: {str(e)}"}
+            #     except Exception as e:
+            #         logger.debug(f"Could not create shared oscilloscope controller: {e}")
+            #         self.oscilloscope_controller = None
 
             # Handle camera separately - wait for it to fully initialize
             self._init_camera_with_status_check(hardware_status)
@@ -863,9 +731,6 @@ class MainWindow(QMainWindow):
     
     def _init_camera(self):
         """Initialize camera hardware."""
-# Camera initialization
-        self.statusBar().showMessage("Initializing camera... Please wait")
-        
         try:
             if self.camera_widget and hasattr(self.camera_widget, 'is_running'):
                 if self.camera_widget.is_running:
@@ -877,16 +742,13 @@ class MainWindow(QMainWindow):
                     else:
                         return {"connected": True, "message": "Camera hardware detected"}
                 else:
-                    # Camera is still initializing - this is normal and expected
-                    return {"connected": False, "message": "Still initializing (this is normal - try retry in a moment)"}
+                    return {"connected": False, "message": "Still initializing"}
             else:
                 logger.warning("Camera widget creation failed")
                 return {"connected": False, "message": "Camera widget creation failed"}
         except Exception as e:
             logger.error(f"Camera initialization error: {e}")
-            return {"connected": False, "message": f"Initialization error: {str(e)}"}
-        finally:
-            QApplication.restoreOverrideCursor()
+            return {"connected": False, "message": f"Error: {str(e)}"}
             
     def _init_xy_stage(self):
         """Initialize XY stage hardware."""
@@ -904,27 +766,22 @@ class MainWindow(QMainWindow):
     
     def _init_function_generator(self):
         """Initialize function generator hardware."""
-        # Function generator initialization is handled by the measurement controls widget
-        # Give it a moment to establish connection after widget creation
-        
         try:
             if self.measurement_controls_widget and hasattr(self.measurement_controls_widget, 'get_function_generator_controller'):
-                # Allow measurement controls widget time to establish connection
+                # Allow time for connection
                 QApplication.processEvents()
-                import time
-                time.sleep(0.1)  # Small delay to allow VISA connection to establish
                 
                 fg_controller = self.measurement_controls_widget.get_function_generator_controller()
                 if fg_controller and fg_controller.is_connected:
                     return {"connected": True, "message": "Function generator connected"}
                 else:
-                    return {"connected": False, "message": "VISA resource not found or connection failed"}
+                    return {"connected": False, "message": "VISA resource not found"}
             else:
                 logger.warning("Function generator controller not available")
                 return {"connected": False, "message": "Controller not available"}
         except Exception as e:
-            logger.error(f"Function generator status check failed: {e}")
-            return {"connected": False, "message": f"Status check error: {str(e)}"}
+            logger.error(f"Function generator check failed: {e}")
+            return {"connected": False, "message": f"Error: {str(e)}"}
     
     def _show_hardware_status_warning(self, hardware_status):
         """Show hardware status warning dialog if there are connection issues."""
@@ -978,8 +835,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Hardware retry error: {str(e)}")
     
     def _init_camera_with_status_check(self, hardware_status):
-        """Initialize camera and wait for completion before checking status."""
-        self.statusBar().showMessage("Initializing camera... Please wait")
+        """Initialize camera and wait for completion."""
+        self.statusBar().showMessage("Initializing camera...")
         
         # Start camera initialization
         initial_status = self._init_camera()
@@ -989,29 +846,26 @@ class MainWindow(QMainWindow):
             hardware_status["Camera"] = initial_status
             self._check_and_show_hardware_status(hardware_status)
         else:
-            # Camera is still initializing, wait for it to complete
-            self._wait_for_camera_initialization(hardware_status, max_wait_time=8)
+            # Camera still initializing, wait up to 5 seconds
+            self._wait_for_camera_initialization(hardware_status, max_wait_time=5)
     
-    def _wait_for_camera_initialization(self, hardware_status, max_wait_time=8):
-        """Wait for camera to finish initializing, then check status."""
-        self.camera_wait_timer = QTimer()
-        self.camera_wait_timer.setSingleShot(True)
+    def _wait_for_camera_initialization(self, hardware_status, max_wait_time=5):
+        """Wait for camera to finish initializing."""
         self.camera_wait_elapsed = 0
         
         def check_camera_status():
             self.camera_wait_elapsed += 1
             
-            # Check if camera is now running
             camera_status = self._init_camera()
             
             if camera_status["connected"]:
-                # Camera is now connected
+                # Camera now connected
                 hardware_status["Camera"] = camera_status
                 self._check_and_show_hardware_status(hardware_status)
             elif self.camera_wait_elapsed >= max_wait_time:
-                # Timeout - camera failed to initialize
+                # Timeout
                 logger.warning("Camera initialization timeout")
-                hardware_status["Camera"] = {"connected": False, "message": "Initialization timeout - hardware may not be connected"}
+                hardware_status["Camera"] = {"connected": False, "message": "Initialization timeout"}
                 self._check_and_show_hardware_status(hardware_status)
             else:
                 # Keep waiting

@@ -1,5 +1,5 @@
 """
-Logger module for the AFS Tracking System.
+    Logger module for the AFS Acquisition.
 Provides consistent logging capabilities across the application.
 """
 

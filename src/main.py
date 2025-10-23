@@ -2,7 +2,7 @@
 Main application entry point for AFS Acquisition.
 
 This module provides the main entry point for the AFS (Atomic Force Spectroscopy)
-Tracking System, a comprehensive laboratory instrumentation control and data
+Acquisition, a comprehensive laboratory instrumentation control and data
 acquisition software. The system interfaces with cameras, stages, function
 generators, and oscilloscopes to provide real-time experimental control and
 data recording capabilities.
@@ -110,7 +110,7 @@ def create_application() -> 'QApplication':
 
 def main() -> NoReturn:
     """
-    Initialize and run the AFS Tracking application.
+    Initialize and run the AFS Acquisition application.
     
     This is the main entry point that orchestrates the application startup:
     1. Sets up the Python import path

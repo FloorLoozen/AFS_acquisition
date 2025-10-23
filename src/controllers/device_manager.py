@@ -29,14 +29,16 @@ class DeviceManager:
     def __init__(self):
         # Lazy imports to avoid circular imports at module import time
         from src.controllers.function_generator_controller import get_function_generator_controller
-        from src.controllers.oscilloscope_controller import get_oscilloscope_controller
+        # DISABLED: Oscilloscope functionality commented out for now
+        # from src.controllers.oscilloscope_controller import get_oscilloscope_controller
+        
         # Controllers (singletons provided by their modules)
         self._fg = get_function_generator_controller()
-        self._osc = get_oscilloscope_controller()
-
-        # Option to disable automatic oscilloscope operations (useful for fast startup)
-        # Can be toggled by the main UI to avoid attempting RS-232 connections during fast startup
-        self._disable_osc = False
+        # DISABLED: Oscilloscope not initialized for now
+        self._osc = None  # Will be None until oscilloscope is re-enabled
+        
+        # Oscilloscope functionality disabled by default
+        self._disable_osc = True
 
         # Health monitor thread
         self._monitor_thread: Optional[threading.Thread] = None
@@ -76,16 +78,8 @@ class DeviceManager:
             except Exception as e:
                 results['function_generator'] = {'connected': False, 'error': str(e)}
 
-            # Oscilloscope (skip if disabled for fast startup)
-            if getattr(self, '_disable_osc', False):
-                results['oscilloscope'] = {'connected': False, 'message': 'Oscilloscope connections disabled'}
-            else:
-                try:
-                    if not self._osc.is_connected:
-                        self._osc.connect(fast_fail=fast_fail)
-                    results['oscilloscope'] = {'connected': self._osc.is_connected}
-                except Exception as e:
-                    results['oscilloscope'] = {'connected': False, 'error': str(e)}
+            # DISABLED: Oscilloscope functionality commented out
+            results['oscilloscope'] = {'connected': False, 'message': 'Oscilloscope functionality disabled'}
 
         return results
 
@@ -128,20 +122,9 @@ class DeviceManager:
                     except Exception:
                         pass  # Silent failure
 
-                    try:
-                        # Skip osc reconnects if disabled
-                        if getattr(self, '_disable_osc', False):
-                            pass
-                        else:
-                            if not self._osc.is_connected:
-                                # Silent reconnect attempt
-                                try:
-                                    if self._osc.connect(fast_fail=True):
-                                        logger.info("Oscilloscope reconnected successfully")
-                                except Exception:
-                                    pass  # Silent failure
-                    except Exception:
-                        pass  # Silent failure
+                    # DISABLED: Oscilloscope monitoring commented out
+                    # Oscilloscope functionality is disabled
+                    
             except Exception:
                 pass  # Silent failure
 
