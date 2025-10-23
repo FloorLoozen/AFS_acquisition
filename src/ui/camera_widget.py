@@ -515,40 +515,56 @@ class CameraWidget(QGroupBox):
         
         try:
             if self.hdf5_recorder:
-                # Show progress dialog
-                from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
-                from PyQt5.QtCore import Qt, QTimer
+                # Show simple message box (non-blocking)
+                from PyQt5.QtWidgets import QApplication, QMessageBox
+                from PyQt5.QtCore import QTimer
                 
-                progress = QProgressDialog(
-                    "Saving recording...\nPlease wait, this may take a moment.",
-                    None,
-                    0, 0,
-                    self
-                )
-                progress.setWindowTitle("Saving Recording")
-                progress.setWindowModality(Qt.WindowModal)
-                progress.setMinimumDuration(0)
-                progress.show()
+                # Create a simple message box
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Information)
+                msg_box.setWindowTitle("Saving Recording")
+                msg_box.setText("Saving recording...")
+                msg_box.setInformativeText("Please wait while the recording is being saved and compressed.")
+                msg_box.setStandardButtons(QMessageBox.NoButton)  # No buttons
+                msg_box.setModal(False)  # Non-modal so it doesn't block
+                msg_box.show()
                 
                 # Process events to show dialog
                 QApplication.processEvents()
                 
-                # Call stop_recording directly (synchronously) - no background thread
-                # This is safer and prevents Qt crashes
+                # Call stop_recording with periodic event processing
                 logger.info("Calling HDF5 recorder stop_recording()...")
                 
+                success = False
+                error_msg = None
+                
                 try:
-                    self.hdf5_recorder.stop_recording()
-                    logger.info("HDF5 file fully written and closed")
-                    success = True
-                    error_msg = None
+                    # Create a timer to process events during save
+                    def process_events_callback():
+                        QApplication.processEvents()
+                    
+                    # Set up timer to process events every 100ms during save
+                    timer = QTimer()
+                    timer.timeout.connect(process_events_callback)
+                    timer.start(100)  # Every 100ms
+                    
+                    try:
+                        self.hdf5_recorder.stop_recording()
+                        logger.info("HDF5 file fully written and closed")
+                        success = True
+                    finally:
+                        # Stop timer
+                        timer.stop()
+                        timer.deleteLater()
+                        
                 except Exception as e:
                     logger.error(f"Error stopping HDF5 recorder: {e}", exc_info=True)
                     success = False
                     error_msg = str(e)
                 
-                # Close progress dialog
-                progress.close()
+                # Close message box
+                msg_box.close()
+                msg_box.deleteLater()
                 QApplication.processEvents()
                 
                 # Show error if failed

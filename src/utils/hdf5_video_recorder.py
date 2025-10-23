@@ -749,6 +749,86 @@ class HDF5VideoRecorder:
             logger.error(f"Failed to save recording metadata: {e}")
             return False
     
+    def add_force_path_execution(self, path_points: List, execution_start: str = None, execution_end: str = None) -> bool:
+        """
+        Add force path execution table to /meta_data/force_path_execution.
+        Saves the exact force path table from the designer widget.
+        
+        Args:
+            path_points: List of PathPoint objects from force path designer
+                Each point has: time, frequency, amplitude, transition
+            execution_start: ISO format timestamp of when execution started
+            execution_end: ISO format timestamp of when execution ended
+            
+        Returns:
+            True if data saved successfully
+        """
+        if not self.is_recording or not hasattr(self, 'metadata_group') or not self.metadata_group:
+            logger.warning("Cannot add force path execution: not recording or no metadata group")
+            return False
+            
+        try:
+            # Create force_path_execution group if it doesn't exist
+            if 'force_path_execution' not in self.metadata_group:
+                fp_group = self.metadata_group.create_group('force_path_execution')
+                fp_group.attrs['description'] = b'Force path execution table from designer'
+                logger.info("Created /meta_data/force_path_execution group")
+            else:
+                fp_group = self.metadata_group['force_path_execution']
+            
+            # Add execution metadata
+            fp_group.attrs['total_points'] = len(path_points)
+            if execution_start:
+                fp_group.attrs['execution_start'] = execution_start.encode('utf-8')
+            if execution_end:
+                fp_group.attrs['execution_end'] = execution_end.encode('utf-8')
+            fp_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            
+            # Extract data from PathPoint objects
+            times = []
+            frequencies = []
+            amplitudes = []
+            transitions = []
+            
+            for point in path_points:
+                times.append(point.time)
+                frequencies.append(point.frequency)
+                amplitudes.append(point.amplitude)
+                transitions.append(point.transition.value if hasattr(point.transition, 'value') else str(point.transition))
+            
+            # Store as compressed datasets (more efficient than attributes for tables)
+            if 'time' in fp_group:
+                del fp_group['time']
+            fp_group.create_dataset('time', data=np.array(times), compression='gzip', compression_opts=9)
+            fp_group['time'].attrs['unit'] = b'seconds'
+            fp_group['time'].attrs['description'] = b'Time for each point in the force path'
+            
+            if 'frequency' in fp_group:
+                del fp_group['frequency']
+            fp_group.create_dataset('frequency', data=np.array(frequencies), compression='gzip', compression_opts=9)
+            fp_group['frequency'].attrs['unit'] = b'MHz'
+            fp_group['frequency'].attrs['description'] = b'Frequency at each point'
+            
+            if 'amplitude' in fp_group:
+                del fp_group['amplitude']
+            fp_group.create_dataset('amplitude', data=np.array(amplitudes), compression='gzip', compression_opts=9)
+            fp_group['amplitude'].attrs['unit'] = b'Vpp'
+            fp_group['amplitude'].attrs['description'] = b'Amplitude at each point'
+            
+            if 'transition' in fp_group:
+                del fp_group['transition']
+            # Store transitions as strings
+            transition_bytes = [t.encode('utf-8') for t in transitions]
+            fp_group.create_dataset('transition', data=np.array(transition_bytes, dtype='S10'), compression='gzip', compression_opts=9)
+            fp_group['transition'].attrs['description'] = b'Transition type (Hold/Linear) at each point'
+            
+            logger.info(f"Force path execution table saved: {len(path_points)} points")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save force path execution table: {e}", exc_info=True)
+            return False
+    
     def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float, 
                                    output_enabled: bool = True, 
                                    event_type: str = 'parameter_change') -> bool:
