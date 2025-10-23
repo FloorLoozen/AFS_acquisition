@@ -44,14 +44,16 @@ python src/main.py
 HDF5 scientific format with hierarchical structure:
 ```
 experiment.hdf5
-├── video/                    # 4D video dataset
-├── function_generator_timeline/  # Output sequences  
-├── execution_data/           # Measurement results
-│   ├── force_path_design_*/
-│   ├── resonance_finder_data_*/
-└── metadata/                 # Complete experimental context
-    ├── recording/, camera_settings/
-    ├── stage_settings/, system_info/
+├── data/
+│   ├── main_video                     # 4D video dataset (frames, height, width, channels)
+│   ├── function_generator_timeline    # FG parameter changes over time
+│   └── LUT/                           # Lookup tables (placeholder)
+└── meta_data/
+    ├── hardware_settings/
+    │   ├── camera_settings            # Camera parameters and configuration
+    │   └── stage_settings             # XY stage position and settings
+    ├── recording_info                 # Recording session metadata
+    └── force_path_execution           # Force path table (optional, if used)
 ```
 
 ## Key Components
