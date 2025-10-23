@@ -19,7 +19,7 @@ class FrequencySettingsWidget(QGroupBox):
     """Widget for configuring frequency measurement settings including save paths."""
 
     def __init__(self, parent=None):
-        super().__init__("Frequency Settings", parent)
+        super().__init__("Measurement Settings", parent)
         
 # Frequency settings initialized
         

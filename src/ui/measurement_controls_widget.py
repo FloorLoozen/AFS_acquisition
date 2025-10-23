@@ -25,7 +25,7 @@ class MeasurementControlsWidget(QGroupBox):
     function_generator_settings_changed = pyqtSignal(float, float)  # frequency_mhz, amplitude
     
     def __init__(self, parent=None):
-        super().__init__("Measurement Controls", parent)
+        super().__init__("Frequency Settings", parent)
         
         # Function generator controller
         self.fg_controller = None

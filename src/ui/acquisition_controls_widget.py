@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QMessageBox, QFrame, QWidget
+    QMessageBox, QFrame, QWidget, QLabel
 )
 from PyQt5.QtCore import pyqtSignal, QTimer
 
@@ -75,7 +75,7 @@ class AcquisitionControlsWidget(QGroupBox):
         """Create the recording controls section."""
         section = QWidget()
         layout = QVBoxLayout(section)
-        layout.setSpacing(8)  # Consistent spacing between rows
+        layout.setSpacing(8)
         
         # Button and status layout
         controls_layout = QHBoxLayout()
@@ -87,21 +87,20 @@ class AcquisitionControlsWidget(QGroupBox):
         # Stop measurement button
         self.stop_btn = QPushButton("⏹️ Stop Recording")
         self.stop_btn.clicked.connect(self.stop_recording)
-        self.stop_btn.setEnabled(False)  # Initially disabled
+        self.stop_btn.setEnabled(False)
         
-        # Save measurement button (now hidden since saving is automatic)
+        # Save button (hidden)
         self.save_btn = QPushButton("💾 Save Recording")
         self.save_btn.clicked.connect(self.save_recording)
-        self.save_btn.setEnabled(False)  # Initially disabled
-        self.save_btn.hide()  # Hide since saving is now automatic
+        self.save_btn.setEnabled(False)
+        self.save_btn.hide()
         
-        # Status display for recording feedback (next to buttons)
+        # Status display
         self.status_display = StatusDisplay()
         
         controls_layout.addWidget(self.start_btn)
         controls_layout.addWidget(self.stop_btn)
-        # Save button is hidden since saving is automatic
-        controls_layout.addWidget(self.status_display, 1)  # Give status display more space
+        controls_layout.addWidget(self.status_display, 1)
         
         layout.addLayout(controls_layout)
         
@@ -174,19 +173,19 @@ class AcquisitionControlsWidget(QGroupBox):
         logger.info("Recording stopped")
         
         try:
+            # Update status immediately to show saving is in progress
+            self.status_display.set_status("Saving...")
+            
             # Emit signal to stop recording
             self.stop_recording_requested.emit()
             
             # Update internal state
             self.is_recording = False
             
-            # Update button states
-            self.start_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            # Update button states - disable stop button to prevent double-clicking
+            self.start_btn.setEnabled(False)  # Keep disabled while saving
+            self.stop_btn.setEnabled(False)   # Disable to show operation is complete
             self.update_save_button_state()
-            
-            # Update status to stopped
-            self.status_display.set_status("Stopped")
             
             # Start automatic saving after 1 second
             self.auto_save_timer.start(1000)  # 1 second delay
@@ -265,21 +264,24 @@ class AcquisitionControlsWidget(QGroupBox):
         
         if not self.current_recording_path:
             logger.warning("No recording path available for auto-save")
+            # Re-enable start button even if save fails
+            self.start_btn.setEnabled(True)
             return
         
         try:
-            # Check if the current file needs to be renamed to avoid conflicts
-            final_save_path = self._get_unique_filename(self.current_recording_path)
+            # File is already saved with the correct name during recording
+            # No need to rename - just emit the signal with the current path
+            final_save_path = self.current_recording_path
             
-            # If the unique filename is different, we need to rename the file
-            if final_save_path != self.current_recording_path:
-                pass  # File rename logged in main window
-            
-            # Emit signal to save recording
+            # Emit signal to confirm save is complete
             self.save_recording_requested.emit(final_save_path)
             
             # Update status to saved
             self.status_display.set_status("Saved")
+            
+            # Re-enable start button after successful save
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)  # Keep stop disabled
             
             # Clear status after 3 seconds
             self.status_clear_timer.start(3000)
@@ -289,6 +291,8 @@ class AcquisitionControlsWidget(QGroupBox):
         except Exception as e:
             logger.error(f"Error in auto-save: {e}")
             self.status_display.set_status("Error")
+            # Re-enable start button even on error
+            self.start_btn.setEnabled(True)
 
     def _get_unique_filename(self, original_path):
         """Generate unique filename by adding _1, _2, etc. if file exists."""

@@ -35,23 +35,37 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
-                 fps: float = 60.0) -> None:
+                 fps: float = 60.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
         """
-        Initialize the HDF5 video recorder with optimized LZF compression.
+        Initialize the HDF5 video recorder with configurable compression.
         
         Args:
             file_path: Path to save the HDF5 file (str or Path object)
             frame_shape: Shape of each frame (height, width, channels)
             fps: Frames per second for metadata (must be > 0)
+            compression_level: Compression level (0=none, 1-3=fast/LZF, 4-9=best/GZIP)
+            downscale_factor: Factor to downscale frames (1=no downscale, 2=half size, 4=quarter size)
             
         Raises:
             ValueError: If frame_shape is invalid or fps <= 0
             OSError: If the parent directory doesn't exist or isn't writable
         """
         # Input validation using validation utilities
-        self.frame_shape = validate_frame_shape(frame_shape, "frame_shape")
+        self.original_frame_shape = validate_frame_shape(frame_shape, "frame_shape")
         self.fps = validate_positive_number(fps, "fps")
         file_path_obj = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
+        
+        # Compression settings
+        self.compression_level = max(0, min(9, compression_level))  # Clamp 0-9
+        self.downscale_factor = max(1, min(4, downscale_factor))  # Clamp 1-4
+        
+        # Calculate actual frame shape after downscaling
+        if self.downscale_factor > 1:
+            h, w, c = self.original_frame_shape
+            self.frame_shape = (h // self.downscale_factor, w // self.downscale_factor, c)
+            logger.info(f"Downscaling enabled: {self.original_frame_shape} -> {self.frame_shape} (factor: {self.downscale_factor})")
+        else:
+            self.frame_shape = self.original_frame_shape
         
         self.file_path = str(file_path_obj)
         
@@ -62,8 +76,8 @@ class HDF5VideoRecorder:
         self.frame_count: int = 0
         self.start_time: Optional[float] = None
         
-        # Dataset parameters - optimized for performance
-        self.chunk_size = self._calculate_optimal_chunk_size(frame_shape)
+        # Dataset parameters - optimized for performance (use downscaled frame shape for chunks)
+        self.chunk_size = self._calculate_optimal_chunk_size(self.frame_shape)
         self.initial_size = 2000  # Larger initial allocation to reduce resizing
         self.growth_factor = 2.0  # Exponential growth for better amortized performance
         
@@ -213,8 +227,7 @@ class HDF5VideoRecorder:
             self.h5_file = h5py.File(
                 self.file_path, 
                 'w',
-                libver='latest',  # Use latest HDF5 format for best performance
-                swmr=False  # Single writer mode for better performance
+                libver='latest'  # Use latest HDF5 format for best performance
             )
             return True
         except Exception as e:
@@ -225,49 +238,83 @@ class HDF5VideoRecorder:
         """Set up video dataset and metadata."""
         try:
             # Create video dataset
+            logger.debug("Creating video dataset...")
             self._create_video_dataset()
             
             # Add metadata
+            logger.debug("Adding dataset metadata...")
             self._add_dataset_metadata()
             
             if metadata:
+                logger.debug("Adding user metadata...")
                 self._add_user_metadata_to_dataset(metadata)
             
             # Create function generator timeline dataset
+            logger.debug("Creating FG timeline dataset...")
             self._create_fg_timeline_dataset()
             
             # Create comprehensive groups structure
-            # Create metadata group for settings and regeneration info (excludes video and FG timeline)
+            logger.debug("Creating metadata group...")
             self._create_metadata_group()
             
             # Create execution data group for force path execution, etc.
+            logger.debug("Creating execution/LUT group...")
             self._create_execution_data_group()
             
+            logger.info("HDF5 structure setup completed successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to setup datasets: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def _create_video_dataset(self):
-        """Create the main video dataset with optimized parameters."""
+        """Create the main video dataset with configurable compression under /data/main_video."""
+        # Create /data group if it doesn't exist
+        if 'data' not in self.h5_file:
+            data_group = self.h5_file.create_group('data')
+            data_group.attrs['description'] = b'All measurement data including video and timelines'
+        else:
+            data_group = self.h5_file['data']
+        
         # Shape: (n_frames, height, width, channels)
         initial_shape = (self.initial_size, *self.frame_shape)
         max_shape = (None, *self.frame_shape)  # Unlimited frames
         
-        # Dataset creation parameters - optimized for speed and compression
+        # Base dataset parameters
         dataset_kwargs = {
             'shape': initial_shape,
             'maxshape': max_shape,
             'dtype': np.uint8,
             'chunks': self.chunk_size,
             'shuffle': True,  # Enable shuffle filter for better compression
-            'fillvalue': 0,  # Set fill value for uninitialized data
-            'track_times': False,  # Disable timestamp tracking for performance
-            'compression': 'lzf',  # Fast compression for real-time recording
-            'fletcher32': True,  # Add checksum for data integrity
+            'fillvalue': 0,
+            'track_times': False,
         }
         
-        self.video_dataset = self.h5_file.create_dataset('video', **dataset_kwargs)
+        # Configure compression based on level (default level 9 = GZIP level 6)
+        if self.compression_level == 0:
+            # No compression - fastest, largest files
+            dataset_kwargs['compression'] = None
+            logger.info("Video dataset: No compression (maximum speed)")
+        elif self.compression_level <= 3:
+            # LZF compression - fast, good for real-time
+            dataset_kwargs['compression'] = 'lzf'
+            dataset_kwargs['fletcher32'] = True
+            logger.info("Video dataset: LZF compression (fast, real-time friendly)")
+        else:
+            # GZIP compression - slower but best compression (for offline analysis)
+            gzip_level = min(self.compression_level - 3, 9)  # Map 4-9 to 1-6 (capped at 9 for extreme compression)
+            dataset_kwargs['compression'] = 'gzip'
+            dataset_kwargs['compression_opts'] = gzip_level
+            dataset_kwargs['fletcher32'] = True
+            logger.info(f"Video dataset: GZIP level {gzip_level} (best compression for offline analysis)")
+        
+        logger.debug(f"Creating main_video dataset with shape {initial_shape}, compression: {dataset_kwargs.get('compression', 'none')}")
+        self.video_dataset = data_group.create_dataset('main_video', **dataset_kwargs)
+        self.video_dataset.attrs['description'] = b'Main camera video with efficient compression'
+        logger.debug("Video dataset created successfully")
     
     def _initialize_recording_state(self):
         """Initialize recording state and start async processing."""
@@ -347,7 +394,19 @@ class HDF5VideoRecorder:
         # Recording parameters
         self.video_dataset.attrs['fps'] = self.fps
         self.video_dataset.attrs['frame_shape'] = self.frame_shape
-        self.video_dataset.attrs['compression'] = 'lzf'
+        self.video_dataset.attrs['original_frame_shape'] = self.original_frame_shape
+        self.video_dataset.attrs['downscale_factor'] = self.downscale_factor
+        self.video_dataset.attrs['compression_level'] = self.compression_level
+        
+        # Compression details
+        if self.compression_level == 0:
+            self.video_dataset.attrs['compression'] = 'none'
+        elif self.compression_level <= 3:
+            self.video_dataset.attrs['compression'] = 'lzf'
+        else:
+            self.video_dataset.attrs['compression'] = 'gzip'
+            self.video_dataset.attrs['gzip_level'] = min(self.compression_level - 3, 9)  # Match _create_video_dataset
+        
         self.video_dataset.attrs['chunk_size'] = self.chunk_size
         
         # Timestamp information
@@ -388,7 +447,7 @@ class HDF5VideoRecorder:
     
     def record_frame(self, frame: np.ndarray, use_async: bool = True) -> bool:
         """
-        Record a single frame with optimized async/sync writing.
+        Record a single frame with optional downscaling and compression.
         
         Args:
             frame: Frame data as numpy array (height, width, channels)
@@ -406,12 +465,29 @@ class HDF5VideoRecorder:
             self.stop_recording()
             return False
         
+        # Apply downscaling if enabled
+        if self.downscale_factor > 1:
+            frame = self._downscale_frame(frame)
+        
         # Fast async path for high performance
         if use_async:
             return self._record_frame_async(frame)
         
         # Synchronous fallback for compatibility
         return self._record_frame_sync(frame)
+    
+    def _downscale_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Downscale frame using fast area interpolation."""
+        try:
+            import cv2
+            new_height = self.frame_shape[0]
+            new_width = self.frame_shape[1]
+            # Use INTER_AREA for downscaling - best quality and fast
+            downscaled = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            return downscaled
+        except Exception as e:
+            logger.error(f"Error downscaling frame: {e}")
+            return frame  # Return original on error
     
     def _record_frame_async(self, frame: np.ndarray) -> bool:
         """Memory-efficient asynchronous frame recording."""
@@ -529,7 +605,7 @@ class HDF5VideoRecorder:
     
     def add_camera_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add comprehensive camera settings to the metadata group.
+        Add comprehensive camera settings to /meta_data/hardware_settings/camera_settings.
         
         Args:
             settings: Dictionary of camera settings
@@ -541,8 +617,14 @@ class HDF5VideoRecorder:
             return False
             
         try:
-            # Create camera settings subgroup in metadata
-            camera_group = self.metadata_group.create_group('camera_settings')
+            # Get hardware_settings group
+            if 'hardware_settings' not in self.metadata_group:
+                hardware_group = self.metadata_group.create_group('hardware_settings')
+            else:
+                hardware_group = self.metadata_group['hardware_settings']
+            
+            # Create camera settings subgroup
+            camera_group = hardware_group.create_group('camera_settings')
             camera_group.attrs['description'] = b'All camera configuration parameters'
             camera_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
             
@@ -585,7 +667,7 @@ class HDF5VideoRecorder:
     
     def add_stage_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add XY stage settings to the metadata group.
+        Add XY stage settings to /meta_data/hardware_settings/stage_settings.
         
         Args:
             settings: Dictionary of stage settings
@@ -597,8 +679,14 @@ class HDF5VideoRecorder:
             return False
             
         try:
-            # Create stage settings subgroup in metadata
-            stage_group = self.metadata_group.create_group('stage_settings')
+            # Get hardware_settings group
+            if 'hardware_settings' not in self.metadata_group:
+                hardware_group = self.metadata_group.create_group('hardware_settings')
+            else:
+                hardware_group = self.metadata_group['hardware_settings']
+            
+            # Create stage settings subgroup
+            stage_group = hardware_group.create_group('stage_settings')
             stage_group.attrs['description'] = b'XY stage configuration and position'
             stage_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
             
@@ -624,7 +712,7 @@ class HDF5VideoRecorder:
 
     def add_recording_metadata(self, metadata: Dict[str, Any]) -> bool:
         """
-        Add recording timestamps and regeneration info to metadata group.
+        Add user recording metadata to /meta_data/recording_info.
         
         Args:
             metadata: Dictionary of recording metadata
@@ -636,16 +724,13 @@ class HDF5VideoRecorder:
             return False
             
         try:
-            # Create recording info subgroup in metadata
-            recording_group = self.metadata_group.create_group('recording_info')
-            recording_group.attrs['description'] = b'Recording timestamps and session information'
-            recording_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
-            
-            # Add basic recording info
-            recording_group.attrs['recording_started'] = self.start_time.isoformat().encode('utf-8') if self.start_time else b'unknown'
-            recording_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
-            recording_group.attrs['target_fps'] = self.fps
-            recording_group.attrs['compression'] = getattr(self, 'compression', 'lzf').encode('utf-8')
+            # Get recording_info group (already created in _create_metadata_group)
+            if 'recording_info' not in self.metadata_group:
+                recording_group = self.metadata_group.create_group('recording_info')
+                recording_group.attrs['description'] = b'Recording timestamps and session information'
+                recording_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            else:
+                recording_group = self.metadata_group['recording_info']
             
             # Add user metadata
             for key, value in metadata.items():
@@ -707,11 +792,17 @@ class HDF5VideoRecorder:
             return False
     
     def _create_fg_timeline_dataset(self):
-        """Create the function generator timeline dataset."""
+        """Create the function generator timeline dataset under /data/function_generator_timeline."""
         if not self.h5_file:
             return
             
         try:
+            # Get or create /data group
+            if 'data' not in self.h5_file:
+                data_group = self.h5_file.create_group('data')
+            else:
+                data_group = self.h5_file['data']
+            
             # Define compound datatype for timeline entries
             timeline_dtype = np.dtype([
                 ('timestamp', 'f8'),        # Relative time from recording start (seconds)
@@ -721,14 +812,15 @@ class HDF5VideoRecorder:
                 ('event_type', 'S20')        # Event type: 'parameter_change', 'output_on', 'output_off', etc.
             ])
             
-            # Create extensible dataset directly in root
-            self.fg_timeline_dataset = self.h5_file.create_dataset(
+            # Create extensible dataset under /data
+            self.fg_timeline_dataset = data_group.create_dataset(
                 'function_generator_timeline',
                 shape=(0,),
                 maxshape=(None,),
                 dtype=timeline_dtype,
                 chunks=True,
-                compression='lzf'
+                compression='gzip',
+                compression_opts=9
             )
             
             # Add metadata about the timeline dataset
@@ -737,7 +829,7 @@ class HDF5VideoRecorder:
             self.fg_timeline_dataset.attrs['frequency_units'] = b'MHz'
             self.fg_timeline_dataset.attrs['amplitude_units'] = b'Volts peak-to-peak'
             
-            logger.debug("Function generator timeline dataset created")
+            logger.debug("Function generator timeline dataset created under /data")
             
         except Exception as e:
             logger.error(f"Error creating FG timeline dataset: {e}")
@@ -768,37 +860,70 @@ class HDF5VideoRecorder:
             logger.error(f"Error flushing FG timeline buffer: {e}")
     
     def _create_metadata_group(self):
-        """Create metadata group for settings and regeneration info (excludes video and FG timeline)."""
+        """Create /meta_data group structure for hardware settings and recording info."""
         if not self.h5_file:
             return
             
         try:
-            # Create metadata group
-            self.metadata_group = self.h5_file.create_group('metadata')
-            self.metadata_group.attrs['description'] = b'Camera settings, timestamps, and regeneration info'
+            # Create main metadata group
+            self.metadata_group = self.h5_file.create_group('meta_data')
+            self.metadata_group.attrs['description'] = b'Hardware settings, recording info, and configuration'
             self.metadata_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
             
-            logger.debug("Metadata group created")
+            # Create hardware_settings subgroup
+            hardware_group = self.metadata_group.create_group('hardware_settings')
+            hardware_group.attrs['description'] = b'Camera and stage hardware configuration'
+            
+            # Create recording_info subgroup (always create it)
+            recording_group = self.metadata_group.create_group('recording_info')
+            recording_group.attrs['description'] = b'Recording session metadata and timestamps'
+            recording_group.attrs['recording_started'] = datetime.now().isoformat().encode('utf-8')
+            recording_group.attrs['compression_level'] = self.compression_level
+            recording_group.attrs['downscale_factor'] = self.downscale_factor
+            recording_group.attrs['target_fps'] = self.fps
+            recording_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
+            recording_group.attrs['original_frame_shape'] = str(self.original_frame_shape).encode('utf-8')
+            
+            # Store reference for later use
+            self.recording_info_group = recording_group
+            
+            logger.info(f"/meta_data group structure created with recording_info")
             
         except Exception as e:
-            logger.error(f"Error creating metadata group: {e}")
+            logger.error(f"Error creating metadata group: {e}", exc_info=True)
             self.metadata_group = None
 
     def _create_execution_data_group(self):
-        """Create execution data group for storing force path execution and other execution logs."""
+        """Create /data/LUT group structure (to be implemented - placeholder for now)."""
         if not self.h5_file:
             return
             
         try:
-            # Create execution data group
-            self.execution_data_group = self.h5_file.create_group('execution_data')
-            self.execution_data_group.attrs['description'] = b'Execution logs and data (force paths, etc.)'
-            self.execution_data_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            # Get or create /data group
+            if 'data' not in self.h5_file:
+                data_group = self.h5_file.create_group('data')
+            else:
+                data_group = self.h5_file['data']
             
-            logger.debug("Execution data group created")
+            # Create LUT subgroup (placeholder for future implementation)
+            lut_group = data_group.create_group('LUT')
+            lut_group.attrs['description'] = b'Look-up tables and z-stage data (to be implemented)'
+            lut_group.attrs['status'] = b'placeholder'
+            
+            # Placeholder subgroups
+            # lut_table_group = lut_group.create_group('LUT_table')
+            # lut_table_group.attrs['description'] = b'LUT table data (to be implemented)'
+            
+            # z_stage_group = lut_group.create_group('z_stage_heights')
+            # z_stage_group.attrs['description'] = b'Z-stage height data (to be implemented)'
+            
+            logger.debug("/data/LUT placeholder group created")
+            
+            # Keep reference for compatibility
+            self.execution_data_group = lut_group
             
         except Exception as e:
-            logger.error(f"Error creating execution data group: {e}")
+            logger.error(f"Error creating LUT group: {e}")
             self.execution_data_group = None
     
     def log_execution_data(self, execution_type: str, data: dict) -> bool:
@@ -1124,150 +1249,208 @@ class HDF5VideoRecorder:
     
     def stop_recording(self) -> bool:
         """
-        Stop recording with immediate UI response and background finalization.
+        Stop recording and ensure file is fully closed before returning.
+        Robust error handling to prevent crashes.
         
         Returns:
-            True if recording stop initiated successfully
+            True if recording stopped successfully
         """
         if not self.is_recording or self._closed:
             logger.warning("No recording in progress")
             return False
         
-        # Set closed flag to prevent further writes
-        self._closed = True
-        
-        logger.info(f"Stopping HDF5 recording after {self.frame_count} frames...")
-        
-        # Stop accepting new frames immediately for UI responsiveness
-        self.is_recording = False
-        
-        # Start background finalization (non-blocking)
-        import threading
-        finalize_thread = threading.Thread(
-            target=self._finalize_recording_background,
-            name="HDF5Finalizer",
-            daemon=True
-        )
-        finalize_thread.start()
-        
-        return True
-        
-    def _finalize_recording_background(self):
-        """Complete recording finalization in background thread."""
         try:
-            # Stop async writer and wait for queue to drain
-            self._stop_async_writer()
+            # Set closed flag to prevent further writes
+            self._closed = True
             
+            logger.info(f"Stopping HDF5 recording after {self.frame_count} frames...")
+            
+            # Stop accepting new frames immediately
+            self.is_recording = False
+            
+            # Stop async writer and wait for all frames to be written
+            try:
+                self._stop_async_writer_sync()
+            except Exception as e:
+                logger.error(f"Error stopping async writer: {e}", exc_info=True)
+                # Continue with finalization even if writer stop fails
+            
+            # Finalize recording immediately (not in background)
+            try:
+                self._finalize_recording()
+            except Exception as e:
+                logger.error(f"Error in finalization: {e}", exc_info=True)
+                # Ensure file is closed even if finalization fails
+                if hasattr(self, 'h5_file') and self.h5_file:
+                    try:
+                        logger.warning("Force closing HDF5 file due to finalization error")
+                        self.h5_file.close()
+                        self.h5_file = None
+                    except Exception as close_err:
+                        logger.error(f"Failed to force close file: {close_err}")
+                raise
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Critical error in stop_recording: {e}", exc_info=True)
+            # Attempt emergency cleanup
+            try:
+                if hasattr(self, 'h5_file') and self.h5_file:
+                    self.h5_file.close()
+                    self.h5_file = None
+            except:
+                pass
+            raise
+        
+    def _stop_async_writer_sync(self):
+        """Stop the async writer thread and wait for completion (synchronous)."""
+        try:
+            if self._write_thread and self._write_thread.is_alive():
+                queue_size = self._write_queue.qsize()
+                logger.info(f"Stopping async writer: {queue_size} frames in queue, {self._frames_written} frames written so far")
+                
+                # Signal shutdown immediately
+                self._stop_writing.set()
+                
+                # Send shutdown signal to queue (non-blocking)
+                try:
+                    self._write_queue.put(None, timeout=0.1)
+                except queue.Full:
+                    logger.debug("Write queue full, clearing for shutdown")
+                except Exception as e:
+                    logger.warning(f"Could not send shutdown signal to queue: {e}")
+                
+                # Wait for thread to complete with progress logging
+                # Timeout: minimum 10s or 30ms per queued frame (reduced from 50ms for speed)
+                timeout = max(10.0, queue_size * 0.03)
+                logger.info(f"Waiting for writer thread (timeout: {timeout:.1f}s)...")
+                
+                start_wait = time.time()
+                self._write_thread.join(timeout=timeout)
+                wait_duration = time.time() - start_wait
+                
+                if self._write_thread.is_alive():
+                    logger.warning(f"Async writer still running after {wait_duration:.1f}s - may lose data")
+                else:
+                    logger.info(f"Async writer completed in {wait_duration:.1f}s: {self._frames_written} frames written")
+            else:
+                logger.debug("No async writer thread to stop")
+        except Exception as e:
+            logger.error(f"Exception in _stop_async_writer_sync: {e}", exc_info=True)
+            # Continue execution - finalization will handle cleanup
+    
+    def _finalize_recording(self):
+        """Complete recording finalization synchronously with optimized operations."""
+        logger.info("Finalizing HDF5 recording...")
+        start_finalize = time.time()
+        
+        try:
             # Finalize HDF5 file with statistics
             if self.video_dataset and self.frame_count > 0:
-                final_shape = (self.frame_count, *self.frame_shape)
-                self.video_dataset.resize(final_shape)
+                try:
+                    # Resize dataset to exact frame count (fast operation)
+                    final_shape = (self.frame_count, *self.frame_shape)
+                    self.video_dataset.resize(final_shape)
+                    logger.debug(f"Dataset resized to {final_shape}")
+                except Exception as e:
+                    logger.error(f"Failed to resize dataset: {e}")
                 
-                # Add comprehensive recording statistics
-                if self.start_time:
-                    duration = (datetime.now() - self.start_time).total_seconds()
-                    actual_fps = self.frame_count / duration if duration > 0 else 0
-                    
-                    # Basic recording stats
-                    self.video_dataset.attrs['recording_duration_s'] = duration
-                    self.video_dataset.attrs['total_frames'] = self.frame_count
-                    self.video_dataset.attrs['actual_fps'] = actual_fps
-                    self.video_dataset.attrs['finished_at'] = datetime.now().isoformat()
-                    
-                    # Performance statistics
-                    frame_size_bytes = self.frame_shape[0] * self.frame_shape[1] * self.frame_shape[2]
-                    total_data_mb = (self.frame_count * frame_size_bytes) / (1024 * 1024)
-                    
-                    self.video_dataset.attrs['frame_size_bytes'] = frame_size_bytes
-                    self.video_dataset.attrs['total_data_mb'] = total_data_mb
-                    self.video_dataset.attrs['fps_efficiency'] = (actual_fps / self.fps * 100) if self.fps > 0 else 0
-                    
-                    # File size information (estimated compressed size)
-                    try:
-                        import os
-                        if os.path.exists(self.file_path):
-                            file_size_mb = os.path.getsize(self.file_path) / (1024 * 1024)
-                            self.video_dataset.attrs['file_size_mb'] = file_size_mb
-                            compression_ratio = (total_data_mb / file_size_mb) if file_size_mb > 0 else 1.0
-                            self.video_dataset.attrs['compression_ratio'] = compression_ratio
-                    except Exception as e:
-                        logger.debug(f"Could not calculate file size: {e}")
+                # Add comprehensive recording statistics (fast - just metadata)
+                try:
+                    if self.start_time:
+                        duration = (datetime.now() - self.start_time).total_seconds()
+                        actual_fps = self.frame_count / duration if duration > 0 else 0
+                        
+                        # Batch attribute writes for efficiency
+                        attrs = {
+                            'recording_duration_s': duration,
+                            'total_frames': self.frame_count,
+                            'actual_fps': actual_fps,
+                            'finished_at': datetime.now().isoformat(),
+                        }
+                        
+                        # Performance statistics
+                        frame_size_bytes = self.frame_shape[0] * self.frame_shape[1] * self.frame_shape[2]
+                        total_data_mb = (self.frame_count * frame_size_bytes) / (1024 * 1024)
+                        
+                        attrs.update({
+                            'frame_size_bytes': frame_size_bytes,
+                            'total_data_mb': total_data_mb,
+                            'fps_efficiency': (actual_fps / self.fps * 100) if self.fps > 0 else 0,
+                        })
+                        
+                        # Write all attributes at once
+                        for key, value in attrs.items():
+                            try:
+                                self.video_dataset.attrs[key] = value
+                            except Exception as attr_err:
+                                logger.warning(f"Failed to write attribute {key}: {attr_err}")
+                        
+                        logger.debug(f"Recording stats: {self.frame_count} frames, {duration:.1f}s, {actual_fps:.1f} fps")
+                except Exception as e:
+                    logger.warning(f"Failed to write recording statistics: {e}")
             
-            # Flush any remaining function generator timeline events
+            # Flush function generator timeline (fast - small data)
             try:
                 self._flush_fg_timeline_buffer()
             except Exception as e:
                 logger.warning(f"Error flushing timeline buffer: {e}")
             
-            # Final flush before closing
+            # Final flush and close (the slowest operations due to compression)
             if self.h5_file:
                 try:
+                    logger.debug("Flushing HDF5 file (may take a moment for compression)...")
+                    flush_start = time.time()
                     self.h5_file.flush()
+                    flush_duration = time.time() - flush_start
+                    logger.debug(f"HDF5 flush completed in {flush_duration:.2f}s")
                 except Exception as e:
                     logger.warning(f"Final flush failed: {e}")
             
             # Close HDF5 file safely
             if self.h5_file:
                 try:
+                    logger.debug("Closing HDF5 file...")
+                    close_start = time.time()
                     self.h5_file.close()
+                    close_duration = time.time() - close_start
+                    logger.debug(f"HDF5 file closed in {close_duration:.2f}s")
+                    
+                    # Quick verification - just check file exists and is readable
+                    try:
+                        import os
+                        if os.path.exists(self.file_path):
+                            file_size_mb = os.path.getsize(self.file_path) / (1024 * 1024)
+                            logger.info(f"HDF5 file saved: {file_size_mb:.1f} MB")
+                    except Exception as verify_error:
+                        logger.debug(f"Verification skipped: {verify_error}")
+                        
                 except Exception as e:
-                    logger.warning(f"Error closing HDF5 file: {e}")
+                    logger.error(f"Error closing HDF5 file: {e}", exc_info=True)
+                    raise
                 finally:
                     self.h5_file = None
             
             # Reset state
             self.video_dataset = None
             
-            duration = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
-            logger.info(f"HDF5 recording completed: {self.frame_count} frames in {duration:.1f}s")
+            total_duration = time.time() - start_finalize
+            rec_duration = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+            logger.info(f"Recording finalized in {total_duration:.2f}s: {self.frame_count} frames in {rec_duration:.1f}s")
             logger.info(f"File saved: {self.file_path}")
             
         except Exception as e:
-            logger.error(f"Error in background recording finalization: {e}")
+            logger.error(f"Error in recording finalization: {e}", exc_info=True)
             # Ensure file is closed even if error occurs
             if hasattr(self, 'h5_file') and self.h5_file:
                 try:
+                    logger.warning("Emergency close of HDF5 file")
                     self.h5_file.close()
                     self.h5_file = None
-                except:
-                    pass
-    
-    def _stop_async_writer(self):
-        """Stop the async writer thread with non-blocking approach."""
-        if self._write_thread and self._write_thread.is_alive():
-            queue_size = self._write_queue.qsize()
-            logger.debug(f"Stopping async writer: {queue_size} frames in queue")
-            
-            # Signal shutdown immediately
-            self._stop_writing.set()
-            
-            # Send shutdown signal to queue (non-blocking)
-            try:
-                self._write_queue.put(None, timeout=0.1)
-            except queue.Full:
-                # Force clear queue if full
-                try:
-                    while True:
-                        self._write_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                try:
-                    self._write_queue.put(None, timeout=0.1)
-                except:
-                    pass
-            
-            # Use shorter, more reasonable timeout for responsiveness
-            # Still scale with queue size but cap at reasonable limit
-            base_timeout = 2.0  # Shorter base timeout
-            timeout = min(5.0, max(base_timeout, queue_size * 0.02))  # More reasonable scaling
-            
-            self._write_thread.join(timeout=timeout)
-            if self._write_thread.is_alive():
-                # Continue in background - don't block UI
-                logger.info(f"Async writer continuing in background ({queue_size} frames remaining)")
-                # Don't force terminate - let it finish gracefully in background
-            else:
-                logger.info(f"Async writer stopped: {self._frames_written} frames written, {self._batch_writes} batches")
+                except Exception as emergency_err:
+                    logger.error(f"Emergency close failed: {emergency_err}")
+            raise
     
     def get_recording_info(self) -> Dict[str, Any]:
         """Get current recording information."""
@@ -1314,9 +1497,9 @@ def load_hdf5_video_info(file_path: str) -> Dict[str, Any]:
         with h5py.File(file_path, 'r') as f:
             info = {}
             
-            # Dataset information (simple structure - video dataset in root)
-            if 'video' in f:
-                video_ds = f['video']
+            # Dataset information (new structure - /data/main_video)
+            if 'data' in f and 'main_video' in f['data']:
+                video_ds = f['data/main_video']
                 info['shape'] = video_ds.shape
                 info['dtype'] = str(video_ds.dtype)
                 info['compression'] = video_ds.compression
@@ -1328,6 +1511,18 @@ def load_hdf5_video_info(file_path: str) -> Dict[str, Any]:
                         info[key] = value.decode('utf-8')
                     else:
                         info[key] = value
+            
+            # Load metadata from /meta_data group
+            if 'meta_data' in f:
+                info['meta_data'] = {}
+                for group_name in f['meta_data']:
+                    info['meta_data'][group_name] = {}
+                    group = f[f'meta_data/{group_name}']
+                    for key, value in group.attrs.items():
+                        if isinstance(value, bytes):
+                            info['meta_data'][group_name][key] = value.decode('utf-8')
+                        else:
+                            info['meta_data'][group_name][key] = value
             
             return info
             
@@ -1349,10 +1544,10 @@ def load_hdf5_frame(file_path: str, frame_index: int) -> Optional[np.ndarray]:
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'video' not in f:
+            if 'data' not in f or 'main_video' not in f['data']:
                 return None
                 
-            video_ds = f['video']
+            video_ds = f['data/main_video']
             if frame_index >= video_ds.shape[0]:
                 return None
                 
@@ -1377,10 +1572,10 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'video' not in f:
+            if 'data' not in f or 'main_video' not in f['data']:
                 return None
                 
-            video_ds = f['video']
+            video_ds = f['data/main_video']
             if end_frame > video_ds.shape[0]:
                 end_frame = video_ds.shape[0]
                 

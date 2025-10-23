@@ -49,6 +49,10 @@ class CameraWidget(QGroupBox):
         
         # Frame data
         self.current_frame_data: Optional[FrameData] = None
+        
+        # Recording state
+        self.is_recording = False
+        self.is_saving = False  # Track if we're in the middle of saving
         self.last_frame_timestamp = 0
         
         # Performance monitoring
@@ -56,8 +60,7 @@ class CameraWidget(QGroupBox):
         self.display_fps_start_time = time.time()
         self.last_display_fps = 0
         
-        # Recording state
-        self.is_recording = False
+        # Recording objects
         self.hdf5_recorder = None
         self.recording_path = ""
         self.recording_start_time = None
@@ -75,6 +78,15 @@ class CameraWidget(QGroupBox):
             'brightness': 50,  # Standard brightness
             'contrast': 50,    # Standard contrast
             'saturation': 50   # Standard saturation
+        }
+        
+        # Recording compression and resolution settings
+        # Optimized for offline analysis: maximum compression, half resolution
+        # compression_level: 0=none, 1-3=fast/LZF, 4-9=best/GZIP
+        # downscale_factor: 1=full res, 2=half, 4=quarter
+        self.recording_settings = {
+            'compression_level': 9,  # Maximum GZIP compression for smallest files
+            'downscale_factor': 2    # Half resolution for 4x smaller files
         }
         
         # UI components - optimized for fullscreen viewing
@@ -415,11 +427,13 @@ class CameraWidget(QGroupBox):
             else:
                 frame_shape = (480, 640, 3)
             
-            # Create recorder
+            # Create recorder with compression and resolution settings
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
-                fps=30.0
+                fps=30.0,
+                compression_level=self.recording_settings['compression_level'],
+                downscale_factor=self.recording_settings['downscale_factor']
             )
             
             # Prepare metadata
@@ -488,63 +502,96 @@ class CameraWidget(QGroupBox):
             return False
     
     def stop_recording(self) -> Optional[str]:
-        """Stop HDF5 recording with non-blocking shutdown."""
+        """Stop HDF5 recording with progress feedback and robust error handling."""
         if not self.is_recording:
             return None
         
+        # Store paths and set flags immediately
+        saved_path = self.recording_path
+        self.is_recording = False
+        self.is_saving = True
+        
+        logger.info("Stopping HDF5 recorder and saving file...")
+        
         try:
-            self.is_recording = False
-            
-            # Wait for any pending processing tasks (non-blocking with timeout)
-            try:
-                logger.debug("Waiting for frame processing tasks to complete...")
-                sync_future = self.frame_processing_executor.submit(lambda: True)
-                sync_future.result(timeout=0.5)  # Shorter timeout for responsiveness
-            except Exception as e:
-                logger.debug(f"Frame processing sync timeout: {e}")
-            
-            # Store paths before shutdown
-            saved_path = self.recording_path
-            
             if self.hdf5_recorder:
-                # Start non-blocking shutdown of recorder
-                logger.info("Starting recorder shutdown...")
+                # Show progress dialog
+                from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
+                from PyQt5.QtCore import Qt, QTimer
                 
-                # Submit recorder shutdown to background thread to avoid UI freeze
-                shutdown_future = self.frame_processing_executor.submit(
-                    self._shutdown_recorder_background, self.hdf5_recorder
+                progress = QProgressDialog(
+                    "Saving recording...\nPlease wait, this may take a moment.",
+                    None,
+                    0, 0,
+                    self
                 )
+                progress.setWindowTitle("Saving Recording")
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.show()
                 
-                # Don't wait for completion - let it finish in background
+                # Process events to show dialog
+                QApplication.processEvents()
+                
+                # Call stop_recording directly (synchronously) - no background thread
+                # This is safer and prevents Qt crashes
+                logger.info("Calling HDF5 recorder stop_recording()...")
+                
+                try:
+                    self.hdf5_recorder.stop_recording()
+                    logger.info("HDF5 file fully written and closed")
+                    success = True
+                    error_msg = None
+                except Exception as e:
+                    logger.error(f"Error stopping HDF5 recorder: {e}", exc_info=True)
+                    success = False
+                    error_msg = str(e)
+                
+                # Close progress dialog
+                progress.close()
+                QApplication.processEvents()
+                
+                # Show error if failed
+                if not success:
+                    QMessageBox.critical(
+                        self,
+                        "Save Error",
+                        f"Failed to save recording:\n\n{error_msg}\n\nCheck the logs for details."
+                    )
+                    self.is_saving = False
+                    return None
+                
                 self.hdf5_recorder = None
-                
-                logger.info("Recorder shutdown initiated in background")
             
+            # Log completion
             if self.recording_start_time:
                 duration = datetime.now() - self.recording_start_time
-                logger.info(f"Recording UI stopped. Duration: {duration.total_seconds():.1f}s, "
+                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
                            f"Frames: {self.recorded_frames}")
             
-            # Reset state immediately for UI responsiveness
+            # Reset state
             self.recording_path = ""
             self.recording_start_time = None
             self.recorded_frames = 0
+            self.is_saving = False
             
             return saved_path
             
         except Exception as e:
-            logger.error(f"Error stopping recording: {e}")
+            logger.error(f"Critical error in stop_recording: {e}", exc_info=True)
+            self.is_saving = False
+            
+            from PyQt5.QtWidgets import QMessageBox
+            try:
+                QMessageBox.critical(
+                    self,
+                    "Recording Stop Error",
+                    f"A critical error occurred:\n\n{e}\n\nCheck the logs for details."
+                )
+            except:
+                pass
+            
             return None
-
-    def _shutdown_recorder_background(self, recorder):
-        """Shutdown recorder in background thread to avoid UI blocking."""
-        try:
-            logger.debug("Background recorder shutdown starting...")
-            if recorder:
-                recorder.stop_recording()
-            logger.info("Background recorder shutdown completed")
-        except Exception as e:
-            logger.error(f"Error in background recorder shutdown: {e}")
     
     def _record_frame_async(self, frame):
         """High-performance asynchronous frame recording."""
@@ -619,6 +666,38 @@ class CameraWidget(QGroupBox):
         self.display_label.setPixmap(scaled_pixmap)
     
     # Function generator logging methods (preserved)
+    def update_image_settings(self, settings: dict):
+        """Update image processing settings from camera settings dialog."""
+        if 'brightness' in settings:
+            self.image_settings['brightness'] = settings['brightness']
+        if 'contrast' in settings:
+            self.image_settings['contrast'] = settings['contrast']
+        if 'saturation' in settings:
+            self.image_settings['saturation'] = settings['saturation']
+        logger.debug(f"Image settings updated: {self.image_settings}")
+    
+    def set_recording_compression(self, compression_level: int):
+        """Set compression level for HDF5 recording.
+        
+        Args:
+            compression_level: 0=none, 1-3=fast LZF, 4-9=best GZIP
+        """
+        self.recording_settings['compression_level'] = max(0, min(9, compression_level))
+        logger.info(f"Recording compression level set to: {self.recording_settings['compression_level']}")
+    
+    def set_recording_resolution(self, downscale_factor: int):
+        """Set downscale factor for HDF5 recording.
+        
+        Args:
+            downscale_factor: 1=full resolution, 2=half, 4=quarter
+        """
+        valid_factors = [1, 2, 4]
+        if downscale_factor not in valid_factors:
+            downscale_factor = min(valid_factors, key=lambda x: abs(x - downscale_factor))
+        
+        self.recording_settings['downscale_factor'] = downscale_factor
+        logger.info(f"Recording downscale factor set to: {self.recording_settings['downscale_factor']}")
+    
     def log_function_generator_event(self, frequency_mhz: float, amplitude_vpp: float,
                                    output_enabled: bool = True, event_type: str = 'parameter_change'):
         """Log function generator events."""

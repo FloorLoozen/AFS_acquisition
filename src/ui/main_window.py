@@ -464,6 +464,69 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle application close with proper cleanup."""
+        # Check if recording is still active or currently saving
+        if hasattr(self, 'camera_widget') and self.camera_widget:
+            if self.camera_widget.is_recording or self.camera_widget.is_saving:
+                # Determine the message based on state
+                if self.camera_widget.is_saving:
+                    message = (
+                        "The recording is currently being saved.\n\n"
+                        "Please wait for the save operation to complete.\n\n"
+                        "You cannot close the application while saving is in progress."
+                    )
+                    title = "Save in Progress"
+                else:
+                    message = (
+                        "A recording is currently in progress.\n\n"
+                        "The recording will be stopped and saved.\n"
+                        "The application will remain open.\n\n"
+                        "Do you want to stop the recording now?"
+                    )
+                    title = "Recording in Progress"
+                
+                # Show appropriate dialog
+                if self.camera_widget.is_saving:
+                    # Just inform - don't allow close
+                    QMessageBox.warning(
+                        self,
+                        title,
+                        message
+                    )
+                    event.ignore()
+                    return
+                else:
+                    # Ask to stop recording
+                    reply = QMessageBox.question(
+                        self,
+                        title,
+                        message,
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        # Stop recording but DON'T close the application
+                        logger.info("Stopping recording (application will stay open)")
+                        try:
+                            self.camera_widget.stop_recording()
+                            logger.info("Recording stopped - application remains open")
+                            # Prevent closing - just stop the recording
+                            event.ignore()
+                            return
+                        except Exception as e:
+                            logger.error(f"Error stopping recording: {e}")
+                            QMessageBox.warning(
+                                self,
+                                "Error",
+                                f"Failed to stop recording properly.\n\nError: {e}"
+                            )
+                            event.ignore()
+                            return
+                    else:
+                        # User chose to keep recording
+                        event.ignore()
+                        return
+        
         logger.info("Application closing - cleaning up")
         
         try:
@@ -531,6 +594,9 @@ class MainWindow(QMainWindow):
             return
         
         try:
+            # Compression and resolution are now fixed defaults in camera_widget
+            # Maximum compression (9) and half resolution (2) for offline analysis
+            
             if hasattr(self.camera_widget, 'start_recording'):
                 # Gather metadata from measurement settings
                 metadata = {}
