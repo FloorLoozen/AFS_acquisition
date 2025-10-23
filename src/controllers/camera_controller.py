@@ -771,7 +771,18 @@ class CameraController:
             return False
     
     def set_exposure(self, exposure_ms: float) -> bool:
-        """Set camera exposure time in milliseconds."""
+        """Set camera exposure time in milliseconds.
+        
+        Args:
+            exposure_ms: Exposure time in milliseconds (must be > 0)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if exposure_ms <= 0:
+            logger.error(f"Invalid exposure time: {exposure_ms} ms (must be > 0)")
+            return False
+            
         exposure = ueye.DOUBLE(exposure_ms)
         return self._set_camera_parameter(
             "exposure", exposure_ms,
@@ -781,7 +792,18 @@ class CameraController:
         )
     
     def set_gain(self, gain: int) -> bool:
-        """Set camera master gain (0-100)."""
+        """Set camera master gain (0-100).
+        
+        Args:
+            gain: Master gain value (0-100)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not (0 <= gain <= 100):
+            logger.error(f"Invalid gain: {gain} (must be 0-100)")
+            return False
+            
         return self._set_camera_parameter(
             "gain", gain,
             lambda: ueye.is_SetHardwareGain(self.h_cam, gain, ueye.IS_IGNORE_PARAMETER, 
@@ -791,7 +813,18 @@ class CameraController:
         )
     
     def set_framerate(self, fps: float) -> bool:
-        """Set camera frame rate in frames per second."""
+        """Set camera frame rate in frames per second.
+        
+        Args:
+            fps: Frame rate in FPS (must be > 0)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if fps <= 0:
+            logger.error(f"Invalid frame rate: {fps} fps (must be > 0)")
+            return False
+            
         new_fps = ueye.DOUBLE(fps)
         return self._set_camera_parameter(
             "framerate", fps,

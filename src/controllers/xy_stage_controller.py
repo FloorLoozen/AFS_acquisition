@@ -5,9 +5,11 @@ This module provides an interface to the XY stage hardware using MCL's MicroDriv
 
 import ctypes
 import time
-from typing import Tuple
+from typing import Tuple, Optional
 # Import logger from package
 from src.utils.logger import get_logger
+from src.utils.exceptions import StageError
+from src.utils.validation import validate_positive_number
 
 # Get logger for this module
 logger = get_logger("xy_stage")
@@ -190,6 +192,16 @@ class XYStageController:
                 
         return False  # Timeout
 
+    @property
+    def is_connected(self) -> bool:
+        """Check if stage is connected."""
+        return self.handle is not None and not self._is_disconnected
+    
+    @property
+    def _is_connected(self) -> bool:
+        """Internal check - alias for is_connected."""
+        return self.is_connected
+    
     def disconnect(self) -> None:
         """Disconnect from the XY stage."""
         if self.handle is not None and not self._is_disconnected:
@@ -225,20 +237,32 @@ class XYStageController:
             logger.error(f"Invalid axis: {axis}. Use 1 for X or 2 for Y.")
             return 0.0
 
-    def move_axis(self, axis: int, distance_mm: float, velocity: float = 0.5, rounding: int = 0):
+    def move_axis(self, axis: int, distance_mm: float, velocity: float = 0.5, rounding: int = 0) -> bool:
         """
         Move a single axis by the specified distance.
         
         Args:
             axis (int): The axis to move (1=X, 2=Y)
             distance_mm (float): The distance to move in mm
-            velocity (float): The velocity to move at in mm/s
+            velocity (float): The velocity to move at in mm/s (must be > 0)
             rounding (int): Rounding parameter for the movement
             
         Returns:
             bool: True if the movement was successful, False otherwise
+            
+        Raises:
+            ValueError: If parameters are invalid
         """
-        # Move a single axis by the specified distance
+        # Validation
+        if axis not in (1, 2):
+            raise ValueError(f"Invalid axis: {axis}. Use 1 for X or 2 for Y.")
+        
+        try:
+            validate_positive_number(velocity, "velocity")
+        except Exception as e:
+            logger.error(f"Invalid velocity: {e}")
+            return False
+        
         if self.handle is None:
             logger.error("No XY stage connected")
             return False

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Real-time control of cameras, positioning stages, function generators, and oscilloscopes with scientific data recording in HDF5 format. Features comprehensive experimental metadata, automated measurement sequences, and resonance analysis.
+Real-time control of cameras, positioning stages, function generators, and oscilloscopes with scientific data recording in HDF5 format.
 
 **Key Features:**
 - 🎥 High-performance video recording with metadata
@@ -26,7 +26,7 @@ pip install -r requirements.txt
 python src/main.py
 ```
 
-**Requirements:** Python 3.8+, Windows 10/11 (primary), 4+ GB RAM
+**Requirements:** Python 3.8+, Windows 10/11, 4+ GB RAM
 
 ## Hardware Support
 
@@ -67,36 +67,6 @@ experiment.hdf5
 - `Ctrl + Shift + Arrow`: Stage movement (coarse)  
 - `Space`: Start/stop recording
 - `F11`: Toggle fullscreen
-
-## Architecture
-
-**Robust Design:**
-- Multi-threaded video capture and processing
-- Comprehensive error handling and recovery
-- Hardware abstraction with graceful fallbacks
-- Scientific-grade data validation
-- Performance optimization for real-time operation
-
-**Core Structure:**
-- `src/main.py`: Application entry point
-- `src/ui/`: PyQt5 user interface
-- `src/controllers/`: Hardware communication
-- `src/utils/`: Data management and utilities
-
-## API Example
-
-```python
-from src.controllers.camera_controller import CameraController
-from src.utils.hdf5_video_recorder import HDF5VideoRecorder
-
-# Initialize components
-camera = CameraController(camera_id=0)
-recorder = HDF5VideoRecorder("experiment.hdf5", frame_shape=(480, 640, 3))
-
-# Start recording with metadata
-camera.start_capture()
-recorder.start_recording(metadata={"experiment": "resonance_analysis"})
-```
 
 ---
 

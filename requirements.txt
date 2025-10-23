@@ -1,5 +1,6 @@
 # AFS Acquisition Dependencies
 # Install with: pip install -r requirements.txt
+# Tested with Python 3.8+ (including Python 3.13)
 
 # Core scientific computing and data handling
 numpy>=1.24.0                 # Numerical arrays, mathematical operations, frame processing
@@ -15,8 +16,13 @@ psutil>=5.9.0                 # System resource monitoring (CPU, memory, disk us
 
 # Hardware communication
 pyvisa>=1.13.0                # VISA instrument communication (oscilloscope, function generator)
-pyueye>=4.1.0                 # IDS uEye camera SDK support
+pyueye>=4.1.0                 # IDS uEye camera SDK support (optional - demo mode available)
 
 # Utility libraries
 colorama>=0.4.0               # Cross-platform colored terminal text output
+
+# Development tools (optional)
+# pytest>=7.0.0               # Unit testing framework
+# black>=23.0.0               # Code formatting
+# mypy>=1.0.0                 # Static type checking
   

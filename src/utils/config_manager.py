@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, ClassVar, Union, List, Callable
 from dataclasses import dataclass, asdict, field
 import threading
 
-from src.utils.imports import get_logger
+from src.utils.logger import get_logger
 from src.utils.exceptions import ConfigurationError
 
 logger = get_logger("config")
@@ -286,14 +286,26 @@ class ConfigManager:
             return False
     
     def save_config(self) -> bool:
-        """Save current configuration to file with backup."""
+        """Save current configuration to file with backup and atomic write.
+        
+        Returns:
+            True if save successful, False otherwise
+        """
         try:
             with self._lock:
                 # Validate before saving
-                self._validate_all_sections()
+                try:
+                    self._validate_all_sections()
+                except ConfigurationError as e:
+                    logger.error(f"Cannot save invalid configuration: {e}")
+                    return False
                 
                 # Ensure config directory exists
-                self.config_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    self.config_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(f"Cannot create config directory: {e}")
+                    return False
                 
                 # Create backup of existing config
                 if self.config_file.exists():
@@ -301,6 +313,7 @@ class ConfigManager:
                         self.config_file.replace(self.backup_file)
                     except Exception as e:
                         logger.warning(f"Failed to create config backup: {e}")
+                        # Continue anyway - backup failure shouldn't prevent saving
                 
                 # Prepare data for serialization
                 data = {
@@ -317,17 +330,37 @@ class ConfigManager:
                 
                 # Write to temporary file first for atomic operation
                 temp_file = self.config_file.with_suffix('.tmp')
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, sort_keys=True)
+                try:
+                    with open(temp_file, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=2, sort_keys=True)
+                except (OSError, IOError) as e:
+                    logger.error(f"Failed to write config to temporary file: {e}")
+                    # Clean up temp file if it exists
+                    if temp_file.exists():
+                        try:
+                            temp_file.unlink()
+                        except:
+                            pass
+                    return False
                 
                 # Atomic replace
-                temp_file.replace(self.config_file)
+                try:
+                    temp_file.replace(self.config_file)
+                except (OSError, IOError) as e:
+                    logger.error(f"Failed to replace config file: {e}")
+                    # Clean up temp file
+                    if temp_file.exists():
+                        try:
+                            temp_file.unlink()
+                        except:
+                            pass
+                    return False
                 
                 logger.debug(f"Configuration saved to {self.config_file}")
                 return True
                 
         except Exception as e:
-            logger.error(f"Error saving config: {e}")
+            logger.error(f"Unexpected error saving config: {e}")
             return False
     
     def _validate_all_sections(self) -> None:

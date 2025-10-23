@@ -30,17 +30,17 @@ from PyQt5.QtGui import (
     QBrush, QPen, QIntValidator, QDoubleValidator
 )
 
-# Project-specific imports that are used frequently
-from src.utils.logger import get_logger
-from src.utils.exceptions import (
-    AFSTrackingError, HardwareError, ValidationError, ConfigurationError,
-    CameraError, StageError, FunctionGeneratorError, RecordingError,
-    FileSystemError, MeasurementError
-)
-from src.utils.validation import (
-    validate_positive_number, validate_frame_shape,
-    validate_file_path, validate_range
-)
+# Project-specific imports - importing here can cause circular dependencies
+# Import these directly in modules that need them instead:
+# from src.utils.logger import get_logger
+# from src.utils.exceptions import ...
+# from src.utils.validation import ...
+
+# Keep a lazy import function for logger to avoid circular imports
+def get_logger_safe(name: str = None):
+    """Safe logger import to avoid circular dependencies."""
+    from src.utils.logger import get_logger as _get_logger
+    return _get_logger(name)
 
 # Common constants
 DEFAULT_TIMEOUT = 5000  # ms
@@ -76,13 +76,8 @@ __all__ = [
     'QFont', 'QColor', 'QPainter', 'QPixmap', 'QIcon', 'QPalette',
     'QBrush', 'QPen', 'QIntValidator', 'QDoubleValidator',
     
-    # Project utilities
-    'get_logger',
-    'AFSTrackingError', 'HardwareError', 'ValidationError', 'ConfigurationError',
-    'CameraError', 'StageError', 'FunctionGeneratorError', 'RecordingError',
-    'FileSystemError', 'MeasurementError',
-    'validate_positive_number', 'validate_frame_shape',
-    'validate_file_path', 'validate_range',
+    # Project utilities (safe import function)
+    'get_logger_safe',
     
     # Constants
     'DEFAULT_TIMEOUT', 'DEFAULT_RETRY_ATTEMPTS', 'DEFAULT_RETRY_DELAY'

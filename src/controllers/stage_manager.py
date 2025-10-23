@@ -3,7 +3,7 @@ XY Stage Manager singleton for AFS Acquisition.
 Provides global access to the XY stage controller.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from src.controllers.xy_stage_controller import XYStageController
 from src.utils.logger import get_logger
@@ -39,8 +39,12 @@ class StageManager:
         return cls._instance
 
     # --- Settings access ---
-    def get_stage_settings(self) -> dict:
-        """Get current stage settings for metadata storage."""
+    def get_stage_settings(self) -> Dict[str, Any]:
+        """Get current stage settings for metadata storage.
+        
+        Returns:
+            Dictionary containing stage configuration and state
+        """
         from datetime import datetime
         
         settings = {

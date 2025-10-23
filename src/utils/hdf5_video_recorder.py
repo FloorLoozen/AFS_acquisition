@@ -1560,6 +1560,19 @@ class HDF5VideoRecorder:
                     self.h5_file.close()
             except Exception as e:
                 logger.debug(f"Error in HDF5 recorder destructor: {e}")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensure recording is stopped."""
+        if self.is_recording:
+            try:
+                self.stop_recording()
+            except Exception as e:
+                logger.error(f"Error stopping recording in context manager: {e}")
+        return False  # Don't suppress exceptions
 
 
 # Utility functions for reading HDF5 video files
