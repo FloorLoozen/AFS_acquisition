@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
         self._create_central_layout()
 
         QApplication.restoreOverrideCursor()
-        self.statusBar().showMessage("Ready - Press F11 to toggle maximize")
+        self.statusBar().showMessage("Ready")
         
         # Ensure main window has focus to capture keyboard shortcuts
         self.setFocus()
@@ -964,15 +964,9 @@ class MainWindow(QMainWindow):
         """Update status bar with camera information."""
         try:
             if self.camera_widget and hasattr(self.camera_widget, 'camera') and self.camera_widget.camera:
-                stats = self.camera_widget.camera.get_statistics()
-                fps = stats.get('fps', 0)
-                mode = "Hardware" if not stats.get('use_test_pattern', True) else "Test Pattern"
-                total_frames = stats.get('total_frames', 0)
-                
-                status_msg = f"Camera: {mode} | FPS: {fps:.1f} | Frames: {total_frames} | Press F11 to toggle maximize"
-                self.statusBar().showMessage(status_msg)
+                pass  # Status updates disabled
             else:
-                self.statusBar().showMessage("Camera: Initializing... | Press F11 to toggle maximize")
+                pass  # Status updates disabled
         except Exception as e:
             logger.debug(f"Error updating camera status: {e}")
     

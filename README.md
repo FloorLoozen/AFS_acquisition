@@ -67,7 +67,7 @@ experiment.hdf5
 
 - `Ctrl + Arrow Keys`: Stage movement (fine)
 - `Ctrl + Shift + Arrow`: Stage movement (coarse)  
-- `Space`: Start/stop recording
+- `Ctrl + Space`: Start/stop recording
 - `F11`: Toggle fullscreen
 
 ---

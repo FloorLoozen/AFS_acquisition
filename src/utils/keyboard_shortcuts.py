@@ -10,7 +10,7 @@ logger = get_logger("keyboard_shortcuts")
 
 
 class KeyboardShortcutManager(QObject):
-    """Global shortcuts for XY stage movement (Ctrl + arrow keys)."""
+    """Global shortcuts for XY stage movement (Ctrl + arrow keys) and recording (Ctrl+Space)."""
     
     # Movement mapping for DRY principle
     MOVEMENT_MAPPINGS = {
@@ -30,6 +30,7 @@ class KeyboardShortcutManager(QObject):
         QApplication.instance().installEventFilter(self)
         
         self._setup_stage_shortcuts()
+        self._setup_recording_shortcut()
 
     def _setup_stage_shortcuts(self) -> None:
         """Set up stage movement shortcuts using a mapping-based approach."""
@@ -46,6 +47,32 @@ class KeyboardShortcutManager(QObject):
         except Exception as e:
             logger.error(f"Shortcut setup failed: {e}")
             self.stage_manager = None
+    
+    def _setup_recording_shortcut(self) -> None:
+        """Set up Ctrl+Space shortcut for start/stop recording."""
+        try:
+            shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Space), self.main_window)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.activated.connect(self._toggle_recording)
+            logger.info("Recording keyboard shortcut initialized: Ctrl+Space")
+        except Exception as e:
+            logger.error(f"Recording shortcut setup failed: {e}")
+    
+    def _toggle_recording(self) -> None:
+        """Toggle recording on/off with Ctrl+Space."""
+        try:
+            if hasattr(self.main_window, 'acquisition_controls_widget'):
+                widget = self.main_window.acquisition_controls_widget
+                if widget.is_recording:
+                    # Stop recording
+                    widget.stop_recording()
+                    logger.debug("Recording stopped via Ctrl+Space")
+                else:
+                    # Start recording
+                    widget.start_recording()
+                    logger.debug("Recording started via Ctrl+Space")
+        except Exception as e:
+            logger.error(f"Error toggling recording: {e}")
 
     def _execute_stage_movement(self, method_name: str) -> None:
         """Execute a stage movement method with error handling."""
@@ -60,14 +87,18 @@ class KeyboardShortcutManager(QObject):
             logger.error(f"Error executing {method_name}: {e}")
 
     def eventFilter(self, obj, event) -> bool:
-        """Event filter to intercept Ctrl+Arrow keys before they reach text controls."""
-        if (event.type() == QEvent.KeyPress and 
-            event.modifiers() == Qt.ControlModifier and
-            event.key() in self.MOVEMENT_MAPPINGS):
+        """Event filter to intercept Ctrl+Arrow keys and Ctrl+Space before they reach text controls."""
+        if event.type() == QEvent.KeyPress and event.modifiers() == Qt.ControlModifier:
+            # Handle Ctrl+Arrow for stage movement
+            if event.key() in self.MOVEMENT_MAPPINGS:
+                method_name = self.MOVEMENT_MAPPINGS[event.key()]
+                self._execute_stage_movement(method_name)
+                return True  # Event handled, don't pass to other widgets
             
-            method_name = self.MOVEMENT_MAPPINGS[event.key()]
-            self._execute_stage_movement(method_name)
-            return True  # Event handled, don't pass to other widgets
+            # Handle Ctrl+Space for recording toggle
+            elif event.key() == Qt.Key_Space:
+                self._toggle_recording()
+                return True  # Event handled, don't pass to other widgets
         
         # Pass other events to the default handler
         return super().eventFilter(obj, event)
