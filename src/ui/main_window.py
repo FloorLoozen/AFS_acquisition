@@ -69,12 +69,12 @@ class MainWindow(QMainWindow):
             # Initialize DeviceManager and hardware
             try:
                 self.device_manager = DeviceManager.get_instance()
-                logger.info("DeviceManager initialized successfully")
+                logger.info("DeviceManager initialized")
                 # Start background health monitor for reconnects (non-blocking)
                 try:
                     self.device_manager.start_health_monitor(interval=5.0)
                 except Exception:
-                    logger.debug("Failed to start device health monitor")
+                    pass  # Health monitor optional
             except Exception:
                 self.device_manager = None
 
@@ -102,7 +102,6 @@ class MainWindow(QMainWindow):
         All data is consolidated into video HDF5 files. Session files are not created.
         This method is kept for backwards compatibility but does nothing.
         """
-        logger.debug("Session HDF5 creation disabled - all data goes to video HDF5 files")
         self.session_hdf5_file = None
         return True
 
@@ -187,7 +186,6 @@ class MainWindow(QMainWindow):
             self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.camera_widget.setMinimumWidth(400)
             layout.addWidget(self.camera_widget, 0, 1, 3, 1)
-            logger.debug("Camera widget created successfully")
         except Exception as e:
             logger.error(f"Error creating camera widget: {e}")
             raise
@@ -207,7 +205,6 @@ class MainWindow(QMainWindow):
             from src.ui.frequency_settings_widget import FrequencySettingsWidget
             self.frequency_settings_widget = FrequencySettingsWidget()
             layout.addWidget(self.frequency_settings_widget, row, col)
-            logger.debug("Measurement settings widget created successfully")
         except Exception as e:
             logger.error(f"Error creating measurement settings widget: {e}")
             raise
@@ -228,7 +225,6 @@ class MainWindow(QMainWindow):
             self.acquisition_controls_widget.save_recording_requested.connect(self._handle_save_recording)
             
             layout.addWidget(self.acquisition_controls_widget, row, col)
-            logger.debug("Acquisition controls widget created successfully")
             
         except Exception as e:
             logger.error(f"Error creating acquisition controls widget: {e}")
@@ -245,7 +241,6 @@ class MainWindow(QMainWindow):
             self.measurement_controls_widget.function_generator_settings_changed.connect(self._on_function_generator_settings_changed)
             
             layout.addWidget(self.measurement_controls_widget, row, col)
-            logger.debug("Measurement controls widget created successfully")
             
         except Exception as e:
             logger.error(f"Error creating measurement controls widget: {e}")
@@ -303,7 +298,6 @@ class MainWindow(QMainWindow):
     
     def _on_camera_settings_applied(self, settings: dict):
         """Handle camera settings being applied."""
-        logger.debug(f"Camera settings updated from dialog: {settings}")
         # The settings have already been applied to the camera controller
         # Also update image processing settings in the camera widget
         if self.camera_widget and hasattr(self.camera_widget, 'update_image_settings'):
@@ -452,15 +446,15 @@ class MainWindow(QMainWindow):
                 if hdf5_recorder.is_recording:
                     success = hdf5_recorder.log_execution_data(execution_type, data)
                     if success:
-                        logger.debug(f"Execution data logged to video HDF5: {execution_type}")
+                        pass  # Data logged successfully
                     else:
                         logger.warning(f"Failed to log execution data to video HDF5: {execution_type}")
                 else:
-                    logger.debug("No active video recording - execution data not logged")
+                    pass  # Not recording
             else:
-                logger.debug("No HDF5 recorder available - execution data not logged")
+                pass  # No recorder
         else:
-            logger.debug("No camera widget available - execution data not logged")
+            pass  # No camera widget
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle application close with proper cleanup."""
@@ -553,7 +547,7 @@ class MainWindow(QMainWindow):
                 try:
                     self.camera_widget.close()
                 except Exception as e:
-                    logger.debug(f"Camera cleanup error: {e}")
+                    pass  # Camera cleanup error
             
             # Cleanup stage controller
             try:
@@ -561,7 +555,7 @@ class MainWindow(QMainWindow):
                 stage_manager = StageManager.get_instance()
                 stage_manager.disconnect()
             except Exception as e:
-                logger.debug(f"Stage cleanup error: {e}")
+                pass  # Stage cleanup error
             
             logger.info("Cleanup completed")
             
@@ -763,7 +757,6 @@ class MainWindow(QMainWindow):
             # DISABLED: Oscilloscope functionality commented out for now
             # This will be re-enabled when oscilloscope integration is complete
             self.oscilloscope_controller = None
-            logger.info("Oscilloscope functionality disabled (not included in hardware status)")
             
             # # FUTURE: Uncomment this when oscilloscope is ready
             # if hasattr(self, 'device_manager') and getattr(self.device_manager, '_disable_osc', False):
@@ -783,7 +776,6 @@ class MainWindow(QMainWindow):
             #         except Exception as e:
             #             hardware_status["Oscilloscope"] = {"connected": False, "message": f"Fast connect failed: {str(e)}"}
             #     except Exception as e:
-            #         logger.debug(f"Could not create shared oscilloscope controller: {e}")
             #         self.oscilloscope_controller = None
 
             # Handle camera separately - wait for it to fully initialize
@@ -958,7 +950,6 @@ class MainWindow(QMainWindow):
         self.setFocus()
         self.activateWindow()
         self.raise_()
-        logger.debug("Main window focus set for keyboard shortcuts")
     
     def update_camera_status(self):
         """Update status bar with camera information."""
@@ -968,7 +959,7 @@ class MainWindow(QMainWindow):
             else:
                 pass  # Status updates disabled
         except Exception as e:
-            logger.debug(f"Error updating camera status: {e}")
+            pass  # Status update error
     
     def start_status_updates(self):
         """Start periodic status updates."""

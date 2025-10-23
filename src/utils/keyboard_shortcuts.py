@@ -43,7 +43,6 @@ class KeyboardShortcutManager(QObject):
                 shortcut.setContext(Qt.WindowShortcut)
                 shortcut.activated.connect(lambda method=method_name: self._execute_stage_movement(method))
             
-            logger.info("Stage keyboard shortcuts initialized: Ctrl+Arrow keys with WindowShortcut context")
         except Exception as e:
             logger.error(f"Shortcut setup failed: {e}")
             self.stage_manager = None
@@ -54,7 +53,6 @@ class KeyboardShortcutManager(QObject):
             shortcut = QShortcut(QKeySequence(Qt.CTRL + Qt.Key_Space), self.main_window)
             shortcut.setContext(Qt.WindowShortcut)
             shortcut.activated.connect(self._toggle_recording)
-            logger.info("Recording keyboard shortcut initialized: Ctrl+Space")
         except Exception as e:
             logger.error(f"Recording shortcut setup failed: {e}")
     
@@ -66,11 +64,9 @@ class KeyboardShortcutManager(QObject):
                 if widget.is_recording:
                     # Stop recording
                     widget.stop_recording()
-                    logger.debug("Recording stopped via Ctrl+Space")
                 else:
                     # Start recording
                     widget.start_recording()
-                    logger.debug("Recording started via Ctrl+Space")
         except Exception as e:
             logger.error(f"Error toggling recording: {e}")
 

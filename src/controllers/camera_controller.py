@@ -138,7 +138,6 @@ class CameraController:
         # Thread pool for parallel operations
         self._thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="camera_worker")
         
-        logger.debug(f"CameraController created (ID: {camera_id}, queue_size: {max_queue_size})")
     
     @property
     def is_running(self) -> bool:
@@ -213,7 +212,7 @@ class CameraController:
                     'sensor_color_mode': sensor_info.nColorMode,
                 })
         except Exception as e:
-            logger.debug(f"Could not get sensor info: {e}")
+            pass  # Sensor info error
         return settings
     
     def _get_timing_settings(self) -> Dict[str, Any]:
@@ -227,7 +226,7 @@ class CameraController:
             if ret == ueye.IS_SUCCESS:
                 settings['pixel_clock_mhz'] = pixel_clock.value
         except Exception as e:
-            logger.debug(f"Could not get pixel clock: {e}")
+            pass  # Pixel clock error
         
         # Frame rate
         try:
@@ -236,7 +235,7 @@ class CameraController:
             if ret == ueye.IS_SUCCESS:
                 settings['frame_rate_fps'] = fps_ptr.value
         except Exception as e:
-            logger.debug(f"Could not get frame rate: {e}")
+            pass  # Frame rate error
         
         # Exposure time
         try:
@@ -245,7 +244,7 @@ class CameraController:
             if ret == ueye.IS_SUCCESS:
                 settings['exposure_ms'] = exposure.value
         except Exception as e:
-            logger.debug(f"Could not get exposure: {e}")
+            pass  # Exposure error
         
         return settings
     
@@ -264,7 +263,6 @@ class CameraController:
             else:
                 settings['gain_master'] = 'unavailable'
         except Exception as e:
-            logger.debug(f"Could not get gain settings: {e}")
             settings['gain_master'] = 'unavailable'
         
         # Color mode (known value since we configure it)
@@ -282,7 +280,7 @@ class CameraController:
                     'aoi_height': rect_aoi.s32Height,
                 })
         except Exception as e:
-            logger.debug(f"Could not get AOI: {e}")
+            pass  # AOI error
         
         return settings
     
@@ -299,7 +297,7 @@ class CameraController:
                     'camera_date': cam_info.Date.decode('utf-8').strip(),
                 })
         except Exception as e:
-            logger.debug(f"Could not get camera info: {e}")
+            pass  # Camera info error
         return settings
     
     def _get_optional_settings(self) -> Dict[str, Any]:
@@ -444,15 +442,15 @@ class CameraController:
                     max_pixel_clock = pixel_clock_range[1]  # Maximum value
                     ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_SET, max_pixel_clock, 4)
                     if ret == ueye.IS_SUCCESS:
-                        logger.debug(f"Set pixel clock to maximum: {max_pixel_clock} MHz")
+                        pass  # Pixel clock set
                 
                 # Try to get and set maximum frame rate
                 fps_ptr = ueye.DOUBLE()
                 ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
                 if ret == ueye.IS_SUCCESS:
-                    logger.debug(f"Current camera frame rate: {fps_ptr.value:.1f} FPS")
+                    pass  # Frame rate retrieved
             except Exception as e:
-                logger.debug(f"Frame rate optimization failed: {e}")
+                pass  # Frame rate optimization error
             
             # Start continuous capture
             ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_DONT_WAIT)
@@ -511,7 +509,6 @@ class CameraController:
             self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
             self.capture_thread.start()
             
-            logger.info("Background capture started")
             return True
     
     def stop_capture(self) -> None:
@@ -528,7 +525,6 @@ class CameraController:
             if self.capture_thread.is_alive():
                 logger.warning("Capture thread did not stop cleanly")
         
-        logger.info("Background capture stopped")
     
     def get_latest_frame(self, timeout: float = 0.1) -> Optional[FrameData]:
         """
@@ -589,7 +585,6 @@ class CameraController:
     
     def _capture_loop(self) -> None:
         """Main capture loop running in background thread."""
-        logger.debug(f"Capture loop started (test_pattern: {self.use_test_pattern})")
         
         last_capture_time = 0
         
@@ -643,7 +638,6 @@ class CameraController:
                 with self.stats_lock:
                     self.consecutive_errors += 1
         
-        logger.debug("Capture loop ended")
     
     def _capture_single_frame(self) -> Optional[np.ndarray]:
         """Capture a single frame from camera or generate test pattern."""
@@ -745,7 +739,7 @@ class CameraController:
                 ueye.is_FreeImageMem(self.h_cam, self.mem_ptr, self.mem_id)
                 ueye.is_ExitCamera(self.h_cam)
         except Exception as e:
-            logger.debug(f"Error during hardware cleanup: {e}")
+            pass  # Hardware cleanup error
         
         self.h_cam = None
         self.mem_ptr = None
@@ -857,7 +851,6 @@ class CameraController:
 
     def close(self) -> None:
         """Close camera and clean up all resources efficiently."""
-        logger.debug("Closing camera controller")
         
         # Stop capture thread
         self.stop_capture()
@@ -877,7 +870,7 @@ class CameraController:
                 break
         
         if frames_returned > 0:
-            logger.debug(f"Returned {frames_returned} frames to pool during cleanup")
+            pass  # Frames returned to pool
         
         # Shutdown thread pool
         if hasattr(self, '_thread_pool'):

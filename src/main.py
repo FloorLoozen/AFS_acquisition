@@ -146,11 +146,9 @@ def main() -> NoReturn:
         # Initialize configuration
         from src.utils.config_manager import get_config
         config = get_config()
-        logger.info("Configuration loaded successfully")
         
         # Create PyQt5 application
         app = create_application()
-        logger.info("PyQt5 application created")
         
         # Import and create main window
         from src.ui.main_window import MainWindow
@@ -158,17 +156,13 @@ def main() -> NoReturn:
         
         # Start in maximized mode for better visibility
         window.showMaximized()
-        logger.info("Main window displayed")
-        logger.info("AFS Acquisition started successfully")
         
         # Start the Qt event loop
         exit_code = app.exec_()
-        logger.info(f"Event loop finished with code {exit_code}")
         
         # Save configuration on normal exit
         try:
             config.save_config()
-            logger.info("Configuration saved successfully")
         except Exception as e:
             logger.warning(f"Failed to save configuration: {e}")
         
@@ -199,7 +193,7 @@ def main() -> NoReturn:
         
     finally:
         if logger:
-            logger.info(f"Application exiting with code {exit_code}")
+            logger.info(f"Exiting (code {exit_code})")
         sys.exit(exit_code)
 
 
@@ -232,9 +226,7 @@ def _check_system_requirements(logger: 'Logger') -> None:
         if memory_gb < 4:
             logger.warning(f"Low system memory: {memory_gb:.1f} GB (4+ GB recommended)")
     except ImportError:
-        logger.debug("psutil not available for memory check")
-    
-    logger.info(f"System: {platform.system()} {platform.release()}, Python {sys.version}")
+        pass  # psutil not available
 
 
 if __name__ == "__main__":

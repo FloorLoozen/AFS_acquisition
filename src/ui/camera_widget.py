@@ -461,7 +461,6 @@ class CameraWidget(QGroupBox):
                     })
                     
                     self.hdf5_recorder.add_camera_settings(camera_settings)
-                    logger.info(f"Saved camera settings: {len(camera_settings)} parameters (including image processing)")
                 except Exception as e:
                     logger.warning(f"Failed to save camera settings: {e}")
             
@@ -472,7 +471,6 @@ class CameraWidget(QGroupBox):
                 if stage_manager:
                     stage_settings = stage_manager.get_stage_settings()
                     self.hdf5_recorder.add_stage_settings(stage_settings)
-                    logger.info(f"Saved stage settings: {len(stage_settings)} parameters")
             except Exception as e:
                 logger.warning(f"Failed to save stage settings: {e}")
             
@@ -511,7 +509,6 @@ class CameraWidget(QGroupBox):
         self.is_recording = False
         self.is_saving = True
         
-        logger.info("Stopping HDF5 recorder and saving file...")
         
         try:
             if self.hdf5_recorder:
@@ -533,7 +530,6 @@ class CameraWidget(QGroupBox):
                 QApplication.processEvents()
                 
                 # Call stop_recording with periodic event processing
-                logger.info("Calling HDF5 recorder stop_recording()...")
                 
                 success = False
                 error_msg = None
@@ -550,7 +546,6 @@ class CameraWidget(QGroupBox):
                     
                     try:
                         self.hdf5_recorder.stop_recording()
-                        logger.info("HDF5 file fully written and closed")
                         success = True
                     finally:
                         # Stop timer
@@ -582,8 +577,7 @@ class CameraWidget(QGroupBox):
             # Log completion
             if self.recording_start_time:
                 duration = datetime.now() - self.recording_start_time
-                logger.info(f"Recording stopped. Duration: {duration.total_seconds():.1f}s, "
-                           f"Frames: {self.recorded_frames}")
+                # Recording completed
             
             # Reset state
             self.recording_path = ""
@@ -633,7 +627,6 @@ class CameraWidget(QGroupBox):
         """Clean up resources including thread pool."""
         try:
             # Shutdown thread pool gracefully
-            logger.debug("Shutting down frame processing thread pool...")
             self.frame_processing_executor.shutdown(wait=True, timeout=2.0)
         except Exception as e:
             logger.warning(f"Error shutting down thread pool: {e}")
@@ -690,7 +683,6 @@ class CameraWidget(QGroupBox):
             self.image_settings['contrast'] = settings['contrast']
         if 'saturation' in settings:
             self.image_settings['saturation'] = settings['saturation']
-        logger.debug(f"Image settings updated: {self.image_settings}")
     
     def set_recording_compression(self, compression_level: int):
         """Set compression level for HDF5 recording.
@@ -768,7 +760,6 @@ class CameraWidget(QGroupBox):
         
         try:
             result = self.camera.apply_settings(default_settings)
-            logger.debug(f"Applied default brighter camera settings: {result}")
             
             # Also update image processing settings for live view
             self.update_image_settings(default_settings)

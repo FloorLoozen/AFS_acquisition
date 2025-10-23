@@ -126,7 +126,6 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def start_recording(self):
         """Start recording measurement data and video."""
-        logger.info("Recording started")
         
         # Check if frequency settings are configured
         if not self.frequency_settings_widget or not self.frequency_settings_widget.is_configured():
@@ -170,7 +169,6 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def stop_recording(self):
         """Stop recording measurement data and trigger automatic saving."""
-        logger.info("Recording stopped")
         
         try:
             # Update status immediately to show saving is in progress

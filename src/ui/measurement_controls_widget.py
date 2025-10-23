@@ -214,7 +214,6 @@ class MeasurementControlsWidget(QGroupBox):
                     self.fg_status_display.set_status("Disconnected")
                     return False
             except Exception as e:
-                logger.debug(f"Reconnection failed: {e}")
                 self.fg_status_display.set_status("Disconnected")
                 return False
         
@@ -264,7 +263,6 @@ class MeasurementControlsWidget(QGroupBox):
                     self.fg_status_display.set_status("Error")
                     self._output_enabled = False
                 else:
-                    logger.info(f"Function generator ON: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
                     self.fg_toggle_button.setText("ON")
                     self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
                     self._output_enabled = True
@@ -516,4 +514,3 @@ class MeasurementControlsWidget(QGroupBox):
             finally:
                 # Always clear the reference regardless of errors
                 self.fg_controller = None
-                logger.info("Measurement controls: Function generator cleanup completed")

@@ -172,7 +172,6 @@ class FunctionGeneratorController:
         try:
             rm = pyvisa.ResourceManager()
             resources = rm.list_resources()
-            logger.debug(f"Available VISA resources: {list(resources)}")
             
             if not resources:
                 raise FunctionGeneratorError("No VISA resources found")
@@ -289,7 +288,6 @@ class FunctionGeneratorController:
             try:
                 if attempt > 0:
                     delay = self.BASE_RETRY_DELAY * (2 ** (attempt - 1))
-                    logger.debug(f"Retrying {operation_name}, attempt {attempt + 1}, delay: {delay:.2f}s")
                     time.sleep(delay)
                 
                 result = operation(*args, **kwargs)
@@ -334,11 +332,9 @@ class FunctionGeneratorController:
             raise FunctionGeneratorError("Function generator not connected")
 
         try:
-            logger.debug(f"Sending command: {command}")
             with self._lock:
                 if read_response:
                     response = self.function_generator.query(command).strip()
-                    logger.debug(f"Received response: {response}")
                     return response
                 else:
                     self.function_generator.write(command)
@@ -402,11 +398,9 @@ class FunctionGeneratorController:
         # Smart caching to avoid redundant operations
         current = (round(frequency_mhz, 6), round(amplitude, 6), int(channel))
         if self._output_on and self._last_sine == current:
-            logger.debug("Parameters unchanged, skipping update")
             return True
         
         try:
-            logger.info(f"Setting sine wave: {frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp on channel {channel}")
             
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
@@ -422,7 +416,6 @@ class FunctionGeneratorController:
                 self._output_on = True
             
             self._last_sine = current
-            logger.info("Sine wave configured successfully")
             return True
             
         except Exception as e:
@@ -465,7 +458,7 @@ class FunctionGeneratorController:
             amp_change = abs(amplitude - (self._last_sine[1] if self._last_sine else 0)) > 0.01
             
             if freq_change or amp_change:
-                logger.debug(f"Updating parameters: {frequency_mhz:.3f} MHz @ {amplitude:.2f} Vpp")
+                pass  # Significant change detected
             
             # Fast parameter updates with reduced timeout
             channel_str = f"C{channel}"
@@ -518,7 +511,6 @@ class FunctionGeneratorController:
                 self._send_command("C2:OUTP OFF")
                 
                 self._output_on = False
-                logger.info("All outputs turned off successfully")
                 return True
                 
             finally:

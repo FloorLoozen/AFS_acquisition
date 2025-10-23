@@ -141,7 +141,6 @@ def show_hardware_status_warning(hardware_status, parent=None):
                              if not status.get('connected', False)]
     
     if not disconnected_components:
-        logger.info("All hardware components connected - no warning dialog needed")
         return None
     
     logger.info(f"Hardware connection issues detected: {', '.join(disconnected_components)}")
