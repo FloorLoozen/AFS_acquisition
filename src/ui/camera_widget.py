@@ -81,12 +81,12 @@ class CameraWidget(QGroupBox):
         }
         
         # Recording compression and resolution settings
-        # Optimized for offline analysis: maximum compression, half resolution
-        # compression_level: 0=none, 1-3=fast/LZF, 4-9=best/GZIP
+        # MAXIMUM OPTIMIZATION: Quarter resolution + no real-time compression
+        # compression_level: 0=none (FASTEST), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
         self.recording_settings = {
-            'compression_level': 9,  # Maximum GZIP compression for smallest files
-            'downscale_factor': 2    # Half resolution for 4x smaller files
+            'compression_level': 0,  # NO compression during recording = MAX FPS
+            'downscale_factor': 4    # QUARTER resolution = 16x smaller + MUCH FASTER FPS
         }
         
         # UI components - optimized for fullscreen viewing
@@ -102,10 +102,10 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # High-frequency timer for smooth fullscreen video
+        # Display timer - SLOWED DOWN to reduce CPU load during recording
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(16)  # 60 FPS display for smoother fullscreen viewing
+        self.update_timer.setInterval(20)  # 50 FPS display (camera can do 50+ FPS!)
         
         self.init_ui()
         self.update_status("Initializing...")
@@ -308,7 +308,7 @@ class CameraWidget(QGroupBox):
         self.update_button_states()
     
     def update_frame(self):
-        """Update display with latest camera frame."""
+        """Update display with latest camera frame - OPTIMIZED for recording performance."""
         if not self.is_running or not self.is_live or not self.camera:
             return
         
@@ -321,14 +321,29 @@ class CameraWidget(QGroupBox):
             self.last_frame_timestamp = frame_data.timestamp
             self.current_frame_data = frame_data
             
-            # Parallel processing for recording and display
+            # CRITICAL: Recording takes priority over display
             if self.is_recording:
-                # Submit recording task to thread pool (non-blocking)
+                # Ensure frame maintains shape when copying (grayscale needs explicit copy)
+                frame_to_record = np.array(frame_data.frame, copy=True)
+                
+                # Submit recording task to thread pool (non-blocking, HIGH PRIORITY)
                 self.frame_processing_executor.submit(
-                    self._record_frame_async, frame_data.frame.copy()
+                    self._record_frame_async, frame_to_record
                 )
+                
+                # OPTIMIZATION: Reduce display updates during recording to save CPU
+                # Only update display every 5th frame when recording (was every 3rd)
+                if not hasattr(self, '_recording_display_skip_counter'):
+                    self._recording_display_skip_counter = 0
+                    
+                self._recording_display_skip_counter += 1
+                if self._recording_display_skip_counter % 5 != 0:
+                    return  # Skip display update, focus on recording
+            else:
+                # Reset skip counter when not recording
+                self._recording_display_skip_counter = 0
             
-            # Submit display processing to thread pool (non-blocking)
+            # Submit display processing to thread pool (non-blocking, LOWER PRIORITY)
             self.frame_processing_executor.submit(
                 self._process_display_frame, frame_data.frame.copy()
             )
@@ -421,20 +436,34 @@ class CameraWidget(QGroupBox):
             
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # Get frame shape
+            # Get frame shape from camera (MONO8 = 1 channel, not 3!)
             if self.camera:
                 frame_shape = self.camera.frame_shape
             else:
-                frame_shape = (480, 640, 3)
+                frame_shape = (480, 640, 1)  # Default to grayscale
             
             # Create recorder with compression and resolution settings
+            # CAMERA CAPABLE: 50+ FPS! Setting target to 30 FPS for stability
+            TARGET_FPS = 30.0
+            MIN_FPS = 25.0  # Camera can easily maintain this
+            
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
-                fps=30.0,
+                fps=TARGET_FPS,
+                min_fps=MIN_FPS,  # Enforce minimum FPS
                 compression_level=self.recording_settings['compression_level'],
                 downscale_factor=self.recording_settings['downscale_factor']
             )
+            
+            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), quarter resolution + MONO8 for optimal files")
+            
+            # Track FPS performance during recording
+            self.recording_fps_tracker = {
+                'frame_times': [],
+                'warnings_issued': 0,
+                'below_min_count': 0
+            }
             
             # Prepare metadata
             recording_metadata = {
@@ -500,7 +529,7 @@ class CameraWidget(QGroupBox):
             return False
     
     def stop_recording(self) -> Optional[str]:
-        """Stop HDF5 recording with progress feedback and robust error handling."""
+        """Stop HDF5 recording with post-processing compression and robust error handling."""
         if not self.is_recording:
             return None
         
@@ -508,6 +537,21 @@ class CameraWidget(QGroupBox):
         saved_path = self.recording_path
         self.is_recording = False
         self.is_saving = True
+        
+        # Calculate actual FPS performance
+        if hasattr(self, 'recording_fps_tracker') and self.recording_fps_tracker['frame_times']:
+            frame_times = self.recording_fps_tracker['frame_times']
+            if len(frame_times) > 1:
+                avg_fps = len(frame_times) / (frame_times[-1] - frame_times[0])
+                min_fps_achieved = 1.0 / max([frame_times[i+1] - frame_times[i] for i in range(len(frame_times)-1)])
+                logger.info(f"Recording FPS Performance: Avg={avg_fps:.1f}, Min={min_fps_achieved:.1f}")
+                
+                if avg_fps < 25.0:
+                    logger.warning(f"WARNING: Recording below target 25 FPS (achieved {avg_fps:.1f})")
+                elif min_fps_achieved < 20.0:
+                    logger.warning(f"WARNING: Some frames below 20 FPS (lowest {min_fps_achieved:.1f})")
+                else:
+                    logger.info(f"✓ Recording excellent at {avg_fps:.1f} FPS!")
         
         
         try:
@@ -547,23 +591,101 @@ class CameraWidget(QGroupBox):
                     try:
                         self.hdf5_recorder.stop_recording()
                         success = True
-                    finally:
-                        # Stop timer
+                        
+                        # Stop timer before starting background compression
                         timer.stop()
                         timer.deleteLater()
+                        
+                        # IMPORTANT: Wait for file to be fully closed and flushed
+                        import time
+                        time.sleep(0.5)  # Give HDF5 time to close file properly
+                        
+                        # Update message box
+                        msg_box.setInformativeText("Recording saved. Starting background compression...")
+                        msg_box.repaint()
+                        QApplication.processEvents()
+                        
+                        # Start post-processing compression in background thread (NON-BLOCKING)
+                        import threading
+                        from src.utils.hdf5_video_recorder import post_process_compress_hdf5
+                        
+                        def compress_in_background():
+                            """Run compression in background thread."""
+                            try:
+                                # Add small delay to ensure file is fully written
+                                time.sleep(1.0)
+                                logger.info("Starting background post-processing compression...")
+                                compressed_path = post_process_compress_hdf5(
+                                    saved_path, 
+                                    quality_reduction=True,  # Accept quality reduction
+                                    parallel=True  # Use parallel processing
+                                )
+                                if compressed_path:
+                                    logger.info(f"Background compression completed: {compressed_path}")
+                                    # Compression replaces the original file, so no temp file to remove
+                                    
+                                    # Show completion popup on main thread
+                                    from PyQt5.QtCore import QMetaObject, Qt
+                                    def show_completion():
+                                        QMessageBox.information(
+                                            None,
+                                            "Compression Complete",
+                                            f"Recording saved and compressed successfully!\n\nFile: {compressed_path}",
+                                            QMessageBox.Ok
+                                        )
+                                        # Close the application after user clicks OK
+                                        QApplication.quit()
+                                    
+                                    # Schedule popup on main thread (safely check if app still running)
+                                    try:
+                                        app = QApplication.instance()
+                                        if app is not None:
+                                            from PyQt5.QtCore import QTimer
+                                            QTimer.singleShot(0, show_completion)
+                                    except Exception as qt_error:
+                                        # App already closed, just log success
+                                        logger.info(f"Compression completed: {compressed_path}")
+                                    
+                                else:
+                                    logger.warning("Background compression returned no path")
+                            except Exception as comp_error:
+                                logger.error(f"Background compression failed: {comp_error}", exc_info=True)
+                        
+                        # Launch compression thread and continue
+                        compression_thread = threading.Thread(
+                            target=compress_in_background,
+                            name="CompressionThread",
+                            daemon=False  # Keep program alive until compression completes
+                        )
+                        compression_thread.start()
+                        logger.info("Compression started in background - UI will remain responsive, program stays open")
+                        
+                        # Close message box immediately (compression continues in background)
+                        msg_box.close()
+                        msg_box.deleteLater()
+                        QApplication.processEvents()
+                        
+                    except Exception as stop_error:
+                        # Stop timer on error
+                        timer.stop()
+                        timer.deleteLater()
+                        raise stop_error
                         
                 except Exception as e:
                     logger.error(f"Error stopping HDF5 recorder: {e}", exc_info=True)
                     success = False
                     error_msg = str(e)
-                
-                # Close message box
-                msg_box.close()
-                msg_box.deleteLater()
-                QApplication.processEvents()
+                    
+                    # Close message box on error
+                    try:
+                        msg_box.close()
+                        msg_box.deleteLater()
+                        QApplication.processEvents()
+                    except:
+                        pass
                 
                 # Show error if failed
-                if not success:
+                if not success and error_msg:
                     QMessageBox.critical(
                         self,
                         "Save Error",
@@ -604,11 +726,22 @@ class CameraWidget(QGroupBox):
             return None
     
     def _record_frame_async(self, frame):
-        """High-performance asynchronous frame recording."""
+        """High-performance asynchronous frame recording with FPS tracking."""
         if not self.is_recording or not self.hdf5_recorder:
             return
         
         try:
+            # Track frame time for FPS monitoring
+            if hasattr(self, 'recording_fps_tracker'):
+                current_time = time.time()
+                self.recording_fps_tracker['frame_times'].append(current_time)
+                
+                # Keep only recent frame times (last 5 seconds)
+                cutoff_time = current_time - 5.0
+                self.recording_fps_tracker['frame_times'] = [
+                    t for t in self.recording_fps_tracker['frame_times'] if t > cutoff_time
+                ]
+            
             # Use async recording for maximum performance
             if self.hdf5_recorder.record_frame(frame, use_async=True):
                 with self.processing_lock:
@@ -636,15 +769,14 @@ class CameraWidget(QGroupBox):
         return self._record_frame_async(frame)
     
     def _process_display_frame(self, frame):
-        """Process frame for display in parallel thread."""
+        """Process grayscale frame for display."""
         try:
-            # Convert BGR to RGB for Qt display
-            if frame.shape[2] == 3:
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            else:
-                rgb_frame = frame
+            # Always grayscale: Convert to RGB for Qt display
+            if len(frame.shape) == 3 and frame.shape[2] == 1:
+                frame = frame.squeeze()  # Remove single channel dimension
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
-            # Apply image processing settings (optimized for performance)
+            # Apply image processing settings (brightness/contrast only, no saturation)
             processed_frame = self._apply_image_processing(rgb_frame)
             
             # Update display in main thread

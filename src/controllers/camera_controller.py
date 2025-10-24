@@ -104,7 +104,11 @@ class CameraController:
         self.mem_id = None
         self.width = 0
         self.height = 0
-        self.bits_per_pixel = 24  # BGR8
+        
+        # ALWAYS BLACK & WHITE (MONO8) - 3x faster than color
+        self.bits_per_pixel = 8  # Grayscale: 1 byte per pixel
+        self.color_mode = ueye.IS_CM_MONO8
+        self.channels = 1
         
         # Thread control
         self.capture_thread: Optional[threading.Thread] = None
@@ -327,8 +331,8 @@ class CameraController:
     def frame_shape(self) -> Tuple[int, int, int]:
         """Get the frame dimensions (height, width, channels)."""
         if self.use_test_pattern:
-            return (480, 640, 3)
-        return (int(self.height), int(self.width), 3)
+            return (480, 640, 1)  # Test pattern is also MONO8
+        return (int(self.height), int(self.width), self.channels)  # Use actual channel count (1 for MONO8)
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get current capture statistics."""
@@ -409,12 +413,15 @@ class CameraController:
             self.width = int(sensor_info.nMaxWidth)
             self.height = int(sensor_info.nMaxHeight)
             
-            # Set color mode
-            ret = ueye.is_SetColorMode(self.h_cam, ueye.IS_CM_BGR8_PACKED)
+            # Set MONO8 mode (black & white, better for analysis)
+            ret = ueye.is_SetColorMode(self.h_cam, ueye.IS_CM_MONO8)
             if ret != ueye.IS_SUCCESS:
-                logger.error(f"SetColorMode failed: {ret}")
+                logger.error(f"SetColorMode MONO8 failed: {ret}")
                 self._cleanup_hardware()
                 return False
+            
+            logger.info("Camera mode: MONO8 (black & white, better compression & file sizes)")
+            # Note: Actual FPS will be logged after frame rate configuration below
             
             # Allocate memory
             ret = ueye.is_AllocImageMem(
@@ -442,15 +449,22 @@ class CameraController:
                     max_pixel_clock = pixel_clock_range[1]  # Maximum value
                     ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_SET, max_pixel_clock, 4)
                     if ret == ueye.IS_SUCCESS:
-                        pass  # Pixel clock set
+                        logger.info(f"Pixel clock set to maximum: {max_pixel_clock.value} MHz")
                 
-                # Try to get and set maximum frame rate
+                # Get and log the achievable frame rate
                 fps_ptr = ueye.DOUBLE()
                 ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
                 if ret == ueye.IS_SUCCESS:
-                    pass  # Frame rate retrieved
+                    logger.info(f"Camera maximum FPS: {fps_ptr.value:.1f} FPS")
+                
+                # Try to set to maximum (usually auto after pixel clock set)
+                target_fps = ueye.DOUBLE(200.0)  # Request very high FPS, camera will cap to max
+                actual_fps = ueye.DOUBLE()
+                ret = ueye.is_SetFrameRate(self.h_cam, target_fps, actual_fps)
+                if ret == ueye.IS_SUCCESS:
+                    logger.info(f"Camera configured for: {actual_fps.value:.1f} FPS")
             except Exception as e:
-                pass  # Frame rate optimization error
+                logger.warning(f"Frame rate optimization error: {e}")
             
             # Start continuous capture
             ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_DONT_WAIT)
@@ -459,9 +473,10 @@ class CameraController:
                 self._cleanup_hardware()
                 return False
             
-            # Initialize frame pool with actual camera dimensions
+            # Initialize frame pool with actual camera dimensions (grayscale)
             if self.frame_pool is None:
-                self.frame_pool = FramePool((self.height, self.width, 3), pool_size=3)
+                frame_shape = (self.height, self.width, 1)  # Always grayscale
+                self.frame_pool = FramePool(frame_shape, pool_size=3)
             
             return True
             
@@ -665,65 +680,64 @@ class CameraController:
                         self.use_test_pattern = True
                 return None
             
-            # Get frame data
+            # Get frame data (grayscale)
             height = int(self.height)
             width = int(self.width)
-            channels = int(self.bits_per_pixel / 8)
             
             array = ueye.get_data(
                 self.mem_ptr, width, height,
-                self.bits_per_pixel, width * channels, copy=True
+                8, width, copy=True  # 8 bits per pixel, width bytes per line
             )
             
             frame = np.frombuffer(array, dtype=np.uint8)
-            return frame.reshape((height, width, channels))
+            # Grayscale: (height, width) -> (height, width, 1) for consistency
+            return frame.reshape((height, width, 1))
             
         except Exception as e:
             return None
     
     def _generate_test_pattern(self) -> np.ndarray:
-        """Generate test pattern frame with frame pooling for better performance."""
-        import cv2  # Import here to avoid dependency when not needed
+        """Generate grayscale test pattern frame."""
+        import cv2
         
         width, height = 640, 480
         
-        # Try to get frame from pool for memory efficiency
+        # Create grayscale frame
         if self.frame_pool:
             frame = self.frame_pool.get_frame()
             if frame is None:
-                frame = np.zeros((height, width, 3), dtype=np.uint8)
+                frame = np.zeros((height, width, 1), dtype=np.uint8)
             else:
-                # Clear the frame for reuse
                 frame.fill(0)
         else:
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            frame = np.zeros((height, width, 1), dtype=np.uint8)
         
-        # Grid pattern
+        # Grid pattern (grayscale)
         for i in range(0, height, 50):
-            cv2.line(frame, (0, i), (width, i), (50, 50, 50), 1)
+            cv2.line(frame, (0, i), (width, i), 50, 1)
         for i in range(0, width, 50):
-            cv2.line(frame, (i, 0), (i, height), (50, 50, 50), 1)
+            cv2.line(frame, (i, 0), (i, height), 50, 1)
         
         # Animated elements
-        t = self.test_frame_counter / 60.0  # Time in seconds at 60 FPS
+        t = self.test_frame_counter / 60.0
         
         # Moving crosshair
         center_x = int(width // 2 + 100 * np.sin(t))
         center_y = int(height // 2 + 50 * np.cos(t * 1.3))
-        cv2.line(frame, (center_x, 0), (center_x, height), (0, 255, 0), 2)
-        cv2.line(frame, (0, center_y), (width, center_y), (0, 255, 0), 2)
+        cv2.line(frame, (center_x, 0), (center_x, height), 200, 2)
+        cv2.line(frame, (0, center_y), (width, center_y), 200, 2)
         
         # Pulsing circle
         radius = int(30 + 20 * np.sin(t * 3))
-        cv2.circle(frame, (width // 2, height // 2), radius, (0, 0, 255), 2)
+        cv2.circle(frame, (width // 2, height // 2), radius, 150, 2)
         
         # Frame counter
         cv2.putText(frame, f"Frame: {self.test_frame_counter}", (20, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, 255, 2)
         
         # FPS indicator
         cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (20, height - 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, 180, 2)
         
         self.test_frame_counter += 1
         return frame

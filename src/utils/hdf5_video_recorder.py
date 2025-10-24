@@ -35,14 +35,15 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
-                 fps: float = 60.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
+                 fps: float = 60.0, min_fps: float = 20.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
         """
         Initialize the HDF5 video recorder with configurable compression.
         
         Args:
             file_path: Path to save the HDF5 file (str or Path object)
             frame_shape: Shape of each frame (height, width, channels)
-            fps: Frames per second for metadata (must be > 0)
+            fps: Target frames per second for metadata (must be > 0)
+            min_fps: CRITICAL minimum FPS - recording will log errors if below this (must be > 0)
             compression_level: Compression level (0=none, 1-3=fast/LZF, 4-9=best/GZIP)
             downscale_factor: Factor to downscale frames (1=no downscale, 2=half size, 4=quarter size)
             
@@ -53,6 +54,13 @@ class HDF5VideoRecorder:
         # Input validation using validation utilities
         self.original_frame_shape = validate_frame_shape(frame_shape, "frame_shape")
         self.fps = validate_positive_number(fps, "fps")
+        self.min_fps = validate_positive_number(min_fps, "min_fps")
+        
+        # CRITICAL: Enforce minimum FPS requirement
+        if self.min_fps > self.fps:
+            logger.warning(f"min_fps ({self.min_fps}) > fps ({self.fps}), adjusting fps to match min_fps")
+            self.fps = self.min_fps
+        
         file_path_obj = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
         
         # Compression settings
@@ -100,22 +108,29 @@ class HDF5VideoRecorder:
         # Execution data logging (for force path execution, etc.)
         self.execution_data_group = None
         
-        # High-performance asynchronous writing
-        self._write_queue = queue.Queue(maxsize=200)  # Increased buffer for high FPS
+        # High-performance asynchronous writing - MAXIMUM BUFFER for constant FPS
+        self._write_queue = queue.Queue(maxsize=1000)  # Very large buffer for constant FPS (was 500)
         self._write_thread = None
         self._stop_writing = threading.Event()
         self._write_lock = threading.RLock()  # Reentrant lock for thread safety
         
-        # Optimized frame batching
+        # Optimized frame batching for constant performance
         self._frame_batch = []
         self._batch_indices = []
-        self._batch_size = 25  # Larger batches for better I/O efficiency
+        self._batch_size = 50  # Larger batches for consistent performance (was 25)
         self._batch_lock = threading.Lock()
         
         # Performance counters
         self._frames_queued = 0
         self._frames_written = 0
         self._batch_writes = 0
+        
+        # FPS enforcement and tracking (CRITICAL)
+        self._frame_timestamps = []
+        self._last_fps_check = 0
+        self._fps_check_interval = 2.0  # Check FPS every 2 seconds
+        self._fps_violations = 0
+        self._max_fps_violations = 5  # Stop recording after 5 consecutive violations
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
@@ -261,13 +276,13 @@ class HDF5VideoRecorder:
             return False
     
     def _create_video_dataset(self):
-        """Create the main video dataset with configurable compression under /data/main_video."""
-        # Create /data group if it doesn't exist
-        if 'data' not in self.h5_file:
-            data_group = self.h5_file.create_group('data')
-            data_group.attrs['description'] = b'All measurement data including video and timelines'
+        """Create the main video dataset with configurable compression under /raw_data/main_video."""
+        # Create /raw_data group if it doesn't exist (RENAMED from 'data' to 'raw_data')
+        if 'raw_data' not in self.h5_file:
+            data_group = self.h5_file.create_group('raw_data')
+            data_group.attrs['description'] = b'All raw measurement data including video and timelines'
         else:
-            data_group = self.h5_file['data']
+            data_group = self.h5_file['raw_data']
         
         # Shape: (n_frames, height, width, channels)
         initial_shape = (self.initial_size, *self.frame_shape)
@@ -379,6 +394,7 @@ class HDF5VideoRecorder:
             
         # Recording parameters
         self.video_dataset.attrs['fps'] = self.fps
+        self.video_dataset.attrs['min_fps'] = self.min_fps
         self.video_dataset.attrs['frame_shape'] = self.frame_shape
         self.video_dataset.attrs['original_frame_shape'] = self.original_frame_shape
         self.video_dataset.attrs['downscale_factor'] = self.downscale_factor
@@ -434,6 +450,7 @@ class HDF5VideoRecorder:
     def record_frame(self, frame: np.ndarray, use_async: bool = True) -> bool:
         """
         Record a single frame with optional downscaling and compression.
+        CRITICAL: Enforces minimum FPS requirements with harsh monitoring.
         
         Args:
             frame: Frame data as numpy array (height, width, channels)
@@ -444,6 +461,15 @@ class HDF5VideoRecorder:
         """
         if not self.is_recording or not self.video_dataset or self._closed:
             return False
+        
+        # CRITICAL FPS ENFORCEMENT: Track frame timing
+        current_time = time.time()
+        self._frame_timestamps.append(current_time)
+        
+        # Periodic FPS check (every 2 seconds)
+        if current_time - self._last_fps_check >= self._fps_check_interval:
+            self._check_fps_performance(current_time)
+            self._last_fps_check = current_time
         
         # Check for too many write errors
         if self.write_errors >= self.max_write_errors:
@@ -468,12 +494,67 @@ class HDF5VideoRecorder:
             import cv2
             new_height = self.frame_shape[0]
             new_width = self.frame_shape[1]
-            # Use INTER_AREA for downscaling - best quality and fast
-            downscaled = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            
+            # Handle grayscale frames (H, W, 1) - squeeze before resize, then reshape
+            is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
+            if is_grayscale:
+                frame_2d = frame.squeeze()  # (H, W, 1) -> (H, W)
+                downscaled_2d = cv2.resize(frame_2d, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                downscaled = downscaled_2d.reshape((new_height, new_width, 1))  # -> (H, W, 1)
+            else:
+                # Color frames work normally
+                downscaled = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            
             return downscaled
         except Exception as e:
             logger.error(f"Error downscaling frame: {e}")
             return frame  # Return original on error
+    
+    def _check_fps_performance(self, current_time: float):
+        """
+        CRITICAL: Check if recording is maintaining minimum FPS requirements.
+        This is harsh - will log errors and potentially stop recording if FPS is too low.
+        """
+        if len(self._frame_timestamps) < 10:
+            return  # Need at least 10 frames to calculate FPS
+        
+        # Calculate FPS over last 2 seconds
+        recent_timestamps = [t for t in self._frame_timestamps if current_time - t <= self._fps_check_interval]
+        
+        if len(recent_timestamps) < 2:
+            return
+        
+        time_span = recent_timestamps[-1] - recent_timestamps[0]
+        if time_span <= 0:
+            return
+        
+        actual_fps = (len(recent_timestamps) - 1) / time_span
+        
+        # HARSH FPS ENFORCEMENT
+        if actual_fps < self.min_fps:
+            self._fps_violations += 1
+            logger.error(
+                f"CRITICAL FPS VIOLATION #{self._fps_violations}: "
+                f"Recording at {actual_fps:.1f} FPS (minimum required: {self.min_fps:.1f} FPS)"
+            )
+            
+            if self._fps_violations >= self._max_fps_violations:
+                logger.error(
+                    f"STOPPING RECORDING: Too many FPS violations "
+                    f"({self._fps_violations} consecutive violations). "
+                    f"System cannot maintain minimum {self.min_fps} FPS."
+                )
+                self._closed = True
+                # Don't call stop_recording here to avoid recursion
+        else:
+            # Reset violation counter if FPS is good
+            if self._fps_violations > 0:
+                logger.info(f"FPS recovered: {actual_fps:.1f} FPS (violations reset)")
+            self._fps_violations = 0
+        
+        # Trim old timestamps to prevent memory growth
+        cutoff_time = current_time - 10.0  # Keep last 10 seconds
+        self._frame_timestamps = [t for t in self._frame_timestamps if t > cutoff_time]
     
     def _record_frame_async(self, frame: np.ndarray) -> bool:
         """Memory-efficient asynchronous frame recording."""
@@ -855,16 +936,16 @@ class HDF5VideoRecorder:
             return False
     
     def _create_fg_timeline_dataset(self):
-        """Create the function generator timeline dataset under /data/function_generator_timeline."""
+        """Create the function generator timeline dataset under /raw_data/function_generator_timeline."""
         if not self.h5_file:
             return
             
         try:
-            # Get or create /data group
-            if 'data' not in self.h5_file:
-                data_group = self.h5_file.create_group('data')
+            # Get or create /raw_data group
+            if 'raw_data' not in self.h5_file:
+                data_group = self.h5_file.create_group('raw_data')
             else:
-                data_group = self.h5_file['data']
+                data_group = self.h5_file['raw_data']
             
             # Define compound datatype for timeline entries
             timeline_dtype = np.dtype([
@@ -875,7 +956,7 @@ class HDF5VideoRecorder:
                 ('event_type', 'S20')        # Event type: 'parameter_change', 'output_on', 'output_off', etc.
             ])
             
-            # Create extensible dataset under /data
+            # Create extensible dataset under /raw_data
             self.fg_timeline_dataset = data_group.create_dataset(
                 'function_generator_timeline',
                 shape=(0,),
@@ -942,6 +1023,7 @@ class HDF5VideoRecorder:
             recording_group.attrs['compression_level'] = self.compression_level
             recording_group.attrs['downscale_factor'] = self.downscale_factor
             recording_group.attrs['target_fps'] = self.fps
+            recording_group.attrs['min_fps'] = self.min_fps
             recording_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
             recording_group.attrs['original_frame_shape'] = str(self.original_frame_shape).encode('utf-8')
             
@@ -954,16 +1036,16 @@ class HDF5VideoRecorder:
             self.metadata_group = None
 
     def _create_execution_data_group(self):
-        """Create /data/LUT group structure (to be implemented - placeholder for now)."""
+        """Create /raw_data/LUT group structure (to be implemented - placeholder for now)."""
         if not self.h5_file:
             return
             
         try:
-            # Get or create /data group
-            if 'data' not in self.h5_file:
-                data_group = self.h5_file.create_group('data')
+            # Get or create /raw_data group
+            if 'raw_data' not in self.h5_file:
+                data_group = self.h5_file.create_group('raw_data')
             else:
-                data_group = self.h5_file['data']
+                data_group = self.h5_file['raw_data']
             
             # Create LUT subgroup (placeholder for future implementation)
             lut_group = data_group.create_group('LUT')
@@ -1555,9 +1637,9 @@ def load_hdf5_video_info(file_path: str) -> Dict[str, Any]:
         with h5py.File(file_path, 'r') as f:
             info = {}
             
-            # Dataset information (new structure - /data/main_video)
-            if 'data' in f and 'main_video' in f['data']:
-                video_ds = f['data/main_video']
+            # Dataset information (new structure - /raw_data/main_video)
+            if 'raw_data' in f and 'main_video' in f['raw_data']:
+                video_ds = f['raw_data/main_video']
                 info['shape'] = video_ds.shape
                 info['dtype'] = str(video_ds.dtype)
                 info['compression'] = video_ds.compression
@@ -1602,10 +1684,10 @@ def load_hdf5_frame(file_path: str, frame_index: int) -> Optional[np.ndarray]:
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'data' not in f or 'main_video' not in f['data']:
+            if 'raw_data' not in f or 'main_video' not in f['raw_data']:
                 return None
                 
-            video_ds = f['data/main_video']
+            video_ds = f['raw_data/main_video']
             if frame_index >= video_ds.shape[0]:
                 return None
                 
@@ -1630,10 +1712,10 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
     """
     try:
         with h5py.File(file_path, 'r') as f:
-            if 'data' not in f or 'main_video' not in f['data']:
+            if 'raw_data' not in f or 'main_video' not in f['raw_data']:
                 return None
                 
-            video_ds = f['data/main_video']
+            video_ds = f['raw_data/main_video']
             if end_frame > video_ds.shape[0]:
                 end_frame = video_ds.shape[0]
                 
@@ -1644,6 +1726,216 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
             
     except Exception as e:
         logger.error(f"Error loading frames {start_frame}-{end_frame} from {file_path}: {e}")
+        return None
+
+
+def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True, 
+                                parallel: bool = True) -> Optional[str]:
+    """
+    Apply aggressive post-processing compression to HDF5 video file.
+    This is done AFTER recording completes to maximize compression.
+    
+    Strategy:
+    1. Recompress video dataset with higher compression (GZIP level 9)
+    2. Apply additional frame quality reduction if requested
+    3. Use parallel processing for speed
+    
+    Args:
+        file_path: Path to the HDF5 file to compress
+        quality_reduction: If True, reduce quality slightly for better compression
+        parallel: If True, use parallel processing (highly recommended)
+        
+    Returns:
+        Path to compressed file (same as input, modified in-place) or None if error
+    """
+    logger.info(f"Starting post-processing compression: {file_path}")
+    start_time = time.time()
+    
+    try:
+        import shutil
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+        
+        # Create temporary file for recompressed data
+        temp_file = file_path + ".tmp.hdf5"
+        
+        try:
+            # Open original and create new compressed file
+            with h5py.File(file_path, 'r') as f_in:
+                with h5py.File(temp_file, 'w', libver='latest') as f_out:
+                    
+                    # Copy and recompress video data with maximum compression
+                    if 'raw_data' in f_in and 'main_video' in f_in['raw_data']:
+                        logger.info("Recompressing video dataset with maximum compression...")
+                        
+                        video_in = f_in['raw_data/main_video']
+                        n_frames = video_in.shape[0]
+                        frame_shape = video_in.shape[1:]
+                        
+                        # Create output group and dataset with max compression
+                        raw_data_out = f_out.create_group('raw_data')
+                        raw_data_out.attrs['description'] = f_in['raw_data'].attrs.get('description', b'')
+                        
+                        # Maximum compression settings - OPTIMIZED FOR SIZE AND SPEED
+                        video_out = raw_data_out.create_dataset(
+                            'main_video',
+                            shape=(n_frames, *frame_shape),
+                            dtype=np.uint8,
+                            chunks=(20, *frame_shape),  # Even larger chunks = faster (was 10)
+                            compression='gzip',
+                            compression_opts=9,  # Maximum compression for smallest files (was 6)
+                            shuffle=True,  # Improves compression ratio
+                            fletcher32=False  # Disable checksum for speed
+                        )
+                        
+                        # Copy attributes
+                        for key, value in video_in.attrs.items():
+                            video_out.attrs[key] = value
+                        video_out.attrs['post_compressed'] = True
+                        video_out.attrs['post_compression_level'] = 'maximum'
+                        
+                        # Process frames in parallel batches - OPTIMIZED FOR SPEED
+                        if parallel and n_frames > 100:
+                            logger.info(f"Processing {n_frames} frames in parallel...")
+                            
+                            # LARGER batches for better speed (was 100)
+                            batch_size = 500  # Process 500 frames at once
+                            num_batches = (n_frames + batch_size - 1) // batch_size
+                            
+                            def process_batch(batch_idx):
+                                start_idx = batch_idx * batch_size
+                                end_idx = min(start_idx + batch_size, n_frames)
+                                batch_frames = video_in[start_idx:end_idx]
+                                
+                                # Apply quality reduction if requested (FASTER: skip float conversion)
+                                if quality_reduction:
+                                    # More aggressive quality reduction for better compression (90% instead of 95%)
+                                    batch_frames = ((batch_frames.astype(np.uint16) * 230) >> 8).astype(np.uint8)  # ~90%
+                                
+                                return start_idx, end_idx, batch_frames
+                            
+                            # Use MORE workers for speed (was 4)
+                            with ThreadPoolExecutor(max_workers=8) as executor:
+                                futures = [executor.submit(process_batch, i) for i in range(num_batches)]
+                                
+                                for future in futures:
+                                    start_idx, end_idx, batch_frames = future.result()
+                                    video_out[start_idx:end_idx] = batch_frames
+                                    
+                                    if start_idx % 1000 == 0:  # Log less frequently
+                                        logger.info(f"Compressed {start_idx}/{n_frames} frames...")
+                        else:
+                            # Sequential processing for small files
+                            logger.info(f"Processing {n_frames} frames sequentially...")
+                            for i in range(0, n_frames, 500):  # Larger batches
+                                end_idx = min(i + 500, n_frames)
+                                batch = video_in[i:end_idx]
+                                
+                                if quality_reduction:
+                                    batch = ((batch.astype(np.uint16) * 230) >> 8).astype(np.uint8)  # ~90%
+                                
+                                video_out[i:end_idx] = batch
+                                
+                                if i % 1000 == 0:
+                                        logger.info(f"Compressed {i}/{n_frames} frames...")
+                    
+                    # Copy all other groups and datasets recursively
+                    def copy_group(src_group, dst_group, path=''):
+                        for key in src_group.keys():
+                            if key == 'raw_data':
+                                continue  # Already handled
+                            
+                            item = src_group[key]
+                            item_path = f"{path}/{key}" if path else key
+                            
+                            if isinstance(item, h5py.Group):
+                                # Copy group
+                                new_group = dst_group.create_group(key)
+                                # Copy attributes
+                                for attr_key, attr_val in item.attrs.items():
+                                    new_group.attrs[attr_key] = attr_val
+                                # Recurse
+                                copy_group(item, new_group, item_path)
+                            elif isinstance(item, h5py.Dataset):
+                                # Copy dataset with compression
+                                dst_group.create_dataset(
+                                    key,
+                                    data=item[()],
+                                    compression='gzip',
+                                    compression_opts=9
+                                )
+                                # Copy attributes
+                                for attr_key, attr_val in item.attrs.items():
+                                    dst_group[key].attrs[attr_key] = attr_val
+                    
+                    logger.info("Copying metadata and other datasets...")
+                    copy_group(f_in, f_out)
+                    
+                    # Add post-processing metadata
+                    f_out.attrs['post_processed'] = True
+                    f_out.attrs['post_processing_timestamp'] = datetime.now().isoformat()
+                    f_out.attrs['quality_reduction_applied'] = quality_reduction
+            
+            # Get file sizes for comparison
+            original_size = os.path.getsize(file_path)
+            compressed_size = os.path.getsize(temp_file)
+            compression_ratio = (1 - compressed_size / original_size) * 100
+            
+            logger.info(
+                f"Post-compression complete: "
+                f"Original {original_size/(1024**2):.1f} MB -> "
+                f"Compressed {compressed_size/(1024**2):.1f} MB "
+                f"({compression_ratio:.1f}% reduction)"
+            )
+            
+            # CRITICAL: Force garbage collection BEFORE attempting file operations
+            # This ensures h5py context managers are fully released
+            import gc
+            gc.collect()
+            time.sleep(1)  # Give OS time to release file handles
+            
+            # Replace original file with compressed version (with retry logic for file locks)
+            max_retries = 10  # More retries for robustness
+            for attempt in range(max_retries):
+                try:
+                    # Additional garbage collection per attempt
+                    gc.collect()
+                    
+                    # Remove original file first, then rename temp
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    time.sleep(0.2)  # Brief pause after delete
+                    os.rename(temp_file, file_path)
+                    logger.info("Successfully replaced original file with compressed version")
+                    break
+                except (PermissionError, FileExistsError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"File lock detected, retrying ({attempt + 1}/{max_retries})...")
+                        time.sleep(1.5)  # Wait longer between retries
+                    else:
+                        logger.error(f"Failed to replace file after {max_retries} attempts: {e}")
+                        logger.warning(f"Compressed file saved as: {temp_file}")
+                        # Don't raise - just leave temp file and return it
+                        return temp_file
+            
+            duration = time.time() - start_time
+            logger.info(f"Post-processing completed in {duration:.1f} seconds")
+            
+            return file_path
+            
+        except Exception as e:
+            logger.error(f"Error during post-processing compression: {e}", exc_info=True)
+            # Clean up temp file if it exists
+            if os.path.exists(temp_file):
+                try:
+                    time.sleep(1)
+                    os.remove(temp_file)
+                except:
+                    pass
+            return None
+            
+    except Exception as e:
+        logger.error(f"Failed to post-process compress HDF5: {e}", exc_info=True)
         return None
 
 
