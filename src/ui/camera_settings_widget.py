@@ -26,9 +26,9 @@ class CameraSettingsWidget(QDialog):
     
     # Default settings constants for better maintainability
     DEFAULT_SETTINGS = {
-        'exposure_ms': 15.0,
-        'gain_master': 2,
-        'frame_rate_fps': 30.0,
+        'exposure_ms': 5.0,  # MUCH FASTER: 5ms allows up to 200 FPS! (was 15ms = 66 FPS max)
+        'gain_master': 4,    # Slightly higher gain to compensate for shorter exposure
+        'frame_rate_fps': 100.0,  # Request 100 FPS (camera will cap to its max)
         'brightness': 50,
         'contrast': 75,
         'saturation': 70
@@ -67,9 +67,9 @@ class CameraSettingsWidget(QDialog):
         
         # Create parameter controls using helper method to reduce redundancy
         parameter_configs = [
-            ("exposure", "Exposure (ms):", "15.0"),
-            ("gain", "Gain:", "2"),
-            ("fps", "Frame Rate (fps):", "30.0"),
+            ("exposure", "Exposure (ms):", "5.0"),     # Faster exposure for high FPS
+            ("gain", "Gain:", "4"),                     # Higher gain for short exposure
+            ("fps", "Frame Rate (fps):", "100.0"),     # Request high FPS
             ("brightness", "Brightness:", "50"),
             ("contrast", "Contrast:", "75"),
             ("saturation", "Saturation:", "70")

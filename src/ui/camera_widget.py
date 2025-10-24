@@ -102,10 +102,10 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Display timer - SLOWED DOWN to reduce CPU load during recording
+        # Display timer - OPTIMIZED for maximum recording FPS
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(20)  # 50 FPS display (camera can do 50+ FPS!)
+        self.update_timer.setInterval(10)  # 100 FPS polling (much faster to catch all frames!)
         
         self.init_ui()
         self.update_status("Initializing...")

@@ -598,7 +598,7 @@ class HDF5VideoRecorder:
                 # Use view when possible to reduce memory usage
                 frame_copy = np.copy(frame) if not frame.flags.owndata else frame
                 
-                self._write_queue.put((frame_copy, frame_index), timeout=0.001)
+                self._write_queue.put((frame_copy, frame_index), timeout=0.001)  # 1ms timeout (was 1ms - keep fast!)
                 self.frame_count += 1
                 self._frames_queued += 1
                 
@@ -1140,7 +1140,7 @@ class HDF5VideoRecorder:
         batch_frames = []
         batch_indices = []
         last_batch_time = time.time()
-        batch_timeout = 0.05  # 50ms max batch delay for responsiveness
+        batch_timeout = 0.01  # 10ms max batch delay for MAXIMUM FPS (was 50ms!)
         
         while not self._stop_writing.is_set() or not self._write_queue.empty():
             try:
@@ -1154,7 +1154,7 @@ class HDF5VideoRecorder:
                        not self._stop_writing.is_set()):
                     
                     try:
-                        frame_data = self._write_queue.get(timeout=0.01)
+                        frame_data = self._write_queue.get(timeout=0.005)  # 5ms timeout for faster polling
                         if frame_data is None:  # Shutdown signal
                             break
                         
@@ -1179,9 +1179,9 @@ class HDF5VideoRecorder:
                     batch_indices.clear()
                     last_batch_time = current_time
                     
-                # Small sleep to prevent busy waiting
-                if not batch_frames:
-                    time.sleep(0.001)  # 1ms sleep
+                # Tiny sleep only if queue is empty to prevent CPU spinning
+                if not batch_frames and self._write_queue.empty():
+                    time.sleep(0.0001)  # 0.1ms sleep only when truly idle (was 1ms!)
                     
             except Exception as e:
                 logger.error(f"Error in optimized async write worker: {e}")
