@@ -1809,8 +1809,9 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                                 
                                 # Apply quality reduction if requested (FASTER: skip float conversion)
                                 if quality_reduction:
-                                    # More aggressive quality reduction for better compression (90% instead of 95%)
-                                    batch_frames = ((batch_frames.astype(np.uint16) * 230) >> 8).astype(np.uint8)  # ~90%
+                                    # AGGRESSIVE quality reduction: 80% for maximum compression
+                                    # Still preserves enough detail for bead tracking
+                                    batch_frames = ((batch_frames.astype(np.uint16) * 204) >> 8).astype(np.uint8)  # ~80%
                                 
                                 return start_idx, end_idx, batch_frames
                             
@@ -1832,7 +1833,7 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                                 batch = video_in[i:end_idx]
                                 
                                 if quality_reduction:
-                                    batch = ((batch.astype(np.uint16) * 230) >> 8).astype(np.uint8)  # ~90%
+                                    batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)  # ~80%
                                 
                                 video_out[i:end_idx] = batch
                                 
