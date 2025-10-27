@@ -602,10 +602,20 @@ class CameraController:
         """Main capture loop running in background thread."""
         
         last_capture_time = 0
+        target_frame_interval = 1.0 / 30.0  # 30 FPS for test pattern mode
         
         while self.running:
             try:
                 current_time = time.time()
+                
+                # Frame rate limiting for test pattern mode (enforce 30 FPS)
+                if self.use_test_pattern:
+                    time_since_last_capture = current_time - last_capture_time
+                    if time_since_last_capture < target_frame_interval:
+                        # Sleep for remaining time to maintain 30 FPS
+                        sleep_time = target_frame_interval - time_since_last_capture
+                        time.sleep(sleep_time)
+                        current_time = time.time()  # Update time after sleep
                 
                 # Capture frame
                 frame = self._capture_single_frame()

@@ -55,8 +55,7 @@ class CameraWidget(QGroupBox):
         self.is_saving = False  # Track if we're in the middle of saving
         self.last_frame_timestamp = 0
         
-        # Performance monitoring
-        self.display_fps_counter = 0
+        # Performance monitoring (for FPS display updates)
         self.display_fps_start_time = time.time()
         self.last_display_fps = 0
         
@@ -348,21 +347,25 @@ class CameraWidget(QGroupBox):
                 self._process_display_frame, frame_data.frame.copy()
             )
             
-            # Update performance stats (optimized)
-            self.display_fps_counter += 1
+            # Get REAL camera capture FPS from camera controller (not display FPS)
             current_time = time.time()
             time_elapsed = current_time - self.display_fps_start_time
             
-            # Update FPS display every 2 seconds to reduce overhead
-            if time_elapsed >= 2.0:
-                display_fps = self.display_fps_counter / time_elapsed
-                self.last_display_fps = display_fps
-                self.display_fps_counter = 0
+            # Update FPS display every 0.5 seconds for real-time feedback
+            if time_elapsed >= 0.5:
+                # Get actual camera statistics for real FPS
+                if self.camera and hasattr(self.camera, 'get_statistics'):
+                    stats = self.camera.get_statistics()
+                    actual_camera_fps = stats.get('fps', 0.0)
+                else:
+                    actual_camera_fps = 0.0
+                
+                self.last_display_fps = actual_camera_fps
                 self.display_fps_start_time = current_time
                 
-                # Simplified status update (less string processing)
+                # Display ACTUAL camera FPS (not display refresh rate)
                 status_prefix = "Recording" if self.is_recording else "Live"
-                self.update_status(f"{status_prefix} @ {display_fps:.0f} FPS")
+                self.update_status(f"{status_prefix} @ {actual_camera_fps:.1f} FPS")
         
         except Exception as e:
             if str(e) != self.camera_error:
