@@ -1929,14 +1929,15 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                         raw_data_out = f_out.create_group('raw_data')
                         raw_data_out.attrs['description'] = f_in['raw_data'].attrs.get('description', b'')
                         
-                        # Maximum compression settings - OPTIMIZED FOR SIZE AND SPEED
+                        # Maximum compression settings - OPTIMIZED FOR MAXIMUM COMPRESSION
+                        # Smaller chunks = better compression but slower random access
                         video_out = raw_data_out.create_dataset(
                             'main_video',
                             shape=(n_frames, *frame_shape),
                             dtype=np.uint8,
-                            chunks=(20, *frame_shape),  # Even larger chunks = faster (was 10)
+                            chunks=(1, *frame_shape),  # Single frame chunks for maximum compression
                             compression='gzip',
-                            compression_opts=9,  # Maximum compression for smallest files (was 6)
+                            compression_opts=9,  # Maximum compression for smallest files
                             shuffle=True,  # Improves compression ratio
                             fletcher32=False  # Disable checksum for speed
                         )
@@ -2033,10 +2034,18 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                     logger.info("Copying metadata and other datasets...")
                     copy_group(f_in, f_out)
                     
-                    # Add post-processing metadata
+                    # Update root metadata to reflect post-processing compression
+                    # Copy all original attributes first
+                    for attr_key, attr_val in f_in.attrs.items():
+                        f_out.attrs[attr_key] = attr_val
+                    
+                    # Update compression metadata to reflect final state
+                    f_out.attrs['compression_level'] = 9  # GZIP level 9 applied in post-processing
+                    f_out.attrs['compression'] = 'gzip'
                     f_out.attrs['post_processed'] = True
                     f_out.attrs['post_processing_timestamp'] = datetime.now().isoformat()
                     f_out.attrs['quality_reduction_applied'] = quality_reduction
+                    f_out.attrs['original_compression_level'] = 0  # Record original recording compression
             
             # Get file sizes for comparison
             original_size = os.path.getsize(file_path)
