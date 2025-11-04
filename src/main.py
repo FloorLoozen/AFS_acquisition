@@ -1,7 +1,7 @@
 """
 Main application entry point for AFS Acquisition.
 
-This module provides the main entry point for the AFS (Atomic Force Spectroscopy)
+This module provides the main entry point for the AFS (Acoustic Force Spectroscopy)
 Acquisition, a comprehensive laboratory instrumentation control and data
 acquisition software. The system interfaces with cameras, stages, function
 generators, and oscilloscopes to provide real-time experimental control and

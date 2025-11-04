@@ -44,7 +44,7 @@ python src/main.py
 HDF5 scientific format with hierarchical structure:
 ```
 experiment.hdf5
-├── data/
+├── raw_data/
 │   ├── main_video                     # 4D video dataset (frames, height, width, channels)
 │   ├── function_generator_timeline    # FG parameter changes over time
 │   └── LUT/                           # Lookup tables (placeholder)
@@ -55,6 +55,22 @@ experiment.hdf5
     ├── recording_info                 # Recording session metadata
     └── force_path_execution           # Force path table (optional, if used)
 ```
+
+### Camera Frame Format
+
+**Expected format:** MONO8 (grayscale, 8-bit unsigned)
+- Shape: `(height, width, 1)` - single channel for grayscale
+- Data type: `numpy.uint8`
+- HDF5 storage: 4D dataset `(n_frames, height, width, 1)`
+
+**Example shapes:**
+- Full resolution: `(1200, 1920, 1)` → stored as `(n_frames, 1200, 1920, 1)`
+- Quarter resolution (downscale=4): `(300, 480, 1)` → stored as `(n_frames, 300, 480, 1)`
+
+**Performance optimization:**
+- Real-time compression: LZF (fast) or GZIP (best)
+- Downscale options: 1x (full), 2x (half), 4x (quarter)
+- Post-recording compression: configurable via `ConfigManager`
 
 ## Key Components
 

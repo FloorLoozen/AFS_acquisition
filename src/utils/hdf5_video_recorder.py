@@ -21,6 +21,27 @@ from src.utils.validation import validate_positive_number, validate_frame_shape,
 
 logger = get_logger("hdf5_recorder")
 
+# Check for GPU acceleration support (OpenCL for AMD/NVIDIA or CUDA for NVIDIA)
+_GPU_AVAILABLE = False
+_USE_GPU = False
+try:
+    import cv2
+    # Try OpenCL first (works with AMD and NVIDIA GPUs)
+    if cv2.ocl.haveOpenCL():
+        cv2.ocl.setUseOpenCL(True)
+        if cv2.ocl.useOpenCL():
+            _GPU_AVAILABLE = True
+            _USE_GPU = True
+            logger.info("GPU acceleration available: OpenCL enabled (AMD/NVIDIA GPU)")
+        else:
+            logger.info("OpenCL detected but failed to enable - using CPU")
+    else:
+        logger.info("GPU acceleration not available (no OpenCL) - using CPU")
+except Exception as e:
+    logger.debug(f"GPU check failed: {e} - using CPU")
+    _GPU_AVAILABLE = False
+    _USE_GPU = False
+
 
 class HDF5VideoRecorder:
     """
@@ -85,7 +106,7 @@ class HDF5VideoRecorder:
         
         # Dataset parameters - optimized for performance (use downscaled frame shape for chunks)
         self.chunk_size = self._calculate_optimal_chunk_size(self.frame_shape)
-        self.initial_size = 2000  # Larger initial allocation to reduce resizing
+        self.initial_size = 500  # Smaller initial allocation to reduce file size (was 2000)
         self.growth_factor = 2.0  # Exponential growth for better amortized performance
         
         # Performance tracking
@@ -125,12 +146,12 @@ class HDF5VideoRecorder:
         self._frames_written = 0
         self._batch_writes = 0
         
-        # FPS enforcement and tracking (CRITICAL)
+        # FPS enforcement and tracking (ADVISORY - warns but doesn't stop)
         self._frame_timestamps = []
         self._last_fps_check = 0
         self._fps_check_interval = 2.0  # Check FPS every 2 seconds
         self._fps_violations = 0
-        self._max_fps_violations = 5  # Stop recording after 5 consecutive violations
+        self._max_fps_violations = 100  # Very high threshold = advisory only (was 5, too harsh)
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
@@ -287,6 +308,9 @@ class HDF5VideoRecorder:
         # Shape: (n_frames, height, width, channels)
         initial_shape = (self.initial_size, *self.frame_shape)
         max_shape = (None, *self.frame_shape)  # Unlimited frames
+        
+        # Log dataset configuration
+        logger.info(f"Creating HDF5 dataset: shape={self.frame_shape}, downscale={self.downscale_factor}x, compression_level={self.compression_level}")
         
         # Base dataset parameters
         dataset_kwargs = {
@@ -479,7 +503,11 @@ class HDF5VideoRecorder:
         
         # Apply downscaling if enabled
         if self.downscale_factor > 1:
+            original_shape = frame.shape
             frame = self._downscale_frame(frame)
+            if self.frame_count == 0:  # Log once at start
+                logger.info(f"Downscaling enabled: {original_shape} -> {frame.shape} (factor={self.downscale_factor}x)")
+
         
         # Fast async path for high performance
         if use_async:
@@ -489,13 +517,39 @@ class HDF5VideoRecorder:
         return self._record_frame_sync(frame)
     
     def _downscale_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Downscale frame using fast area interpolation."""
+        """Downscale frame using fast area interpolation (GPU-accelerated via OpenCL if available)."""
+        global _USE_GPU  # Declare global at the start of the function
         try:
             import cv2
             new_height = self.frame_shape[0]
             new_width = self.frame_shape[1]
             
-            # Handle grayscale frames (H, W, 1) - squeeze before resize, then reshape
+            # GPU-accelerated path using OpenCL (works with AMD and NVIDIA GPUs)
+            if _USE_GPU:
+                try:
+                    # Handle grayscale frames (H, W, 1) - squeeze before resize
+                    is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
+                    if is_grayscale:
+                        frame_2d = frame.squeeze()  # (H, W, 1) -> (H, W)
+                        # Use UMat for OpenCL GPU acceleration
+                        gpu_frame = cv2.UMat(frame_2d)
+                        gpu_resized = cv2.resize(gpu_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                        downscaled_2d = gpu_resized.get()  # Download from GPU
+                        downscaled = downscaled_2d.reshape((new_height, new_width, 1))  # -> (H, W, 1)
+                    else:
+                        # Use UMat for OpenCL GPU acceleration
+                        gpu_frame = cv2.UMat(frame)
+                        gpu_resized = cv2.resize(gpu_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                        downscaled = gpu_resized.get()  # Download from GPU
+                    
+                    return downscaled
+                except Exception as gpu_error:
+                    # Fall back to CPU if GPU fails
+                    logger.warning(f"GPU downscaling failed, falling back to CPU: {gpu_error}")
+                    # Don't try GPU again
+                    _USE_GPU = False
+            
+            # CPU path (fallback or no GPU)
             is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
             if is_grayscale:
                 frame_2d = frame.squeeze()  # (H, W, 1) -> (H, W)
@@ -530,12 +584,12 @@ class HDF5VideoRecorder:
         
         actual_fps = (len(recent_timestamps) - 1) / time_span
         
-        # HARSH FPS ENFORCEMENT
+        # ADVISORY FPS WARNING (not harsh enforcement)
         if actual_fps < self.min_fps:
             self._fps_violations += 1
-            logger.error(
-                f"CRITICAL FPS VIOLATION #{self._fps_violations}: "
-                f"Recording at {actual_fps:.1f} FPS (minimum required: {self.min_fps:.1f} FPS)"
+            logger.warning(
+                f"FPS Advisory #{self._fps_violations}: "
+                f"Recording at {actual_fps:.1f} FPS (recommended minimum: {self.min_fps:.1f} FPS)"
             )
             
             if self._fps_violations >= self._max_fps_violations:
@@ -598,9 +652,11 @@ class HDF5VideoRecorder:
                 # Use view when possible to reduce memory usage
                 frame_copy = np.copy(frame) if not frame.flags.owndata else frame
                 
-                self._write_queue.put((frame_copy, frame_index), timeout=0.001)  # 1ms timeout (was 1ms - keep fast!)
-                self.frame_count += 1
-                self._frames_queued += 1
+                self._write_queue.put((frame_copy, frame_index), timeout=0.001)  # 1ms timeout
+                # Protect shared counters with write lock
+                with self._write_lock:
+                    self.frame_count += 1
+                    self._frames_queued += 1
                 
                 # Periodic memory management
                 if self._frames_queued % 100 == 0:
@@ -1174,7 +1230,8 @@ class HDF5VideoRecorder:
                      self._write_queue.empty())):
                     
                     self._write_frame_batch_optimized(batch_frames, batch_indices)
-                    self._batch_writes += 1
+                    with self._write_lock:
+                        self._batch_writes += 1
                     batch_frames.clear()
                     batch_indices.clear()
                     last_batch_time = current_time
@@ -1193,7 +1250,10 @@ class HDF5VideoRecorder:
         if batch_frames:
             self._write_frame_batch_optimized(batch_frames, batch_indices)
             
-        logger.info(f"Async writer stopped: {self._frames_written} frames written in {self._batch_writes} batches")
+        with self._write_lock:
+            written = self._frames_written
+            batches = self._batch_writes
+        logger.info(f"Async writer stopped: {written} frames written in {batches} batches")
     
     def _write_frame_batch_optimized(self, frames: List[np.ndarray], indices: List[int]):
         """Memory-optimized batch writing with robust error handling."""
@@ -1226,7 +1286,8 @@ class HDF5VideoRecorder:
                     for frame, index in zip(sub_frames, sub_indices):
                         try:
                             self.video_dataset[index] = frame
-                            self._frames_written += 1
+                            with self._write_lock:
+                                self._frames_written += 1
                         except Exception as write_error:
                             logger.error(f"Failed to write frame {index}: {write_error}")
                             self.write_errors += 1
@@ -1267,42 +1328,6 @@ class HDF5VideoRecorder:
         # Resize dataset
         new_shape = (new_size, *self.frame_shape)
         self.video_dataset.resize(new_shape)
-    
-    def record_frame_async(self, frame: np.ndarray) -> bool:
-        """
-        Record a frame asynchronously for better performance.
-        
-        Args:
-            frame: Frame data as numpy array
-            
-        Returns:
-            True if frame queued successfully
-        """
-        if not self.is_recording or self._closed:
-            return False
-            
-        try:
-            # Validate frame
-            if frame.shape != self.frame_shape:
-                logger.warning(f"Frame shape mismatch: expected {self.frame_shape}, got {frame.shape}")
-                return False
-                
-            if frame.dtype != np.uint8:
-                frame = frame.astype(np.uint8)
-            
-            # Queue frame for async writing
-            frame_copy = frame.copy()  # Make copy to avoid race conditions
-            try:
-                self._write_queue.put((frame_copy, self.frame_count), block=False)
-                self.frame_count += 1
-                return True
-            except queue.Full:
-                logger.warning("Write queue full, dropping frame")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error queuing frame for async write: {e}")
-            return False
     
 
     

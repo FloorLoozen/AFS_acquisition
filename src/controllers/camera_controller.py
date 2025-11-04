@@ -898,7 +898,14 @@ class CameraController:
         
         # Shutdown thread pool
         if hasattr(self, '_thread_pool'):
-            self._thread_pool.shutdown(wait=False)
+            try:
+                # Block until worker threads finish to ensure clean shutdown
+                self._thread_pool.shutdown(wait=True)
+            except Exception:
+                try:
+                    self._thread_pool.shutdown(wait=False)
+                except Exception:
+                    pass
         
         # Clear frame pool
         self.frame_pool = None

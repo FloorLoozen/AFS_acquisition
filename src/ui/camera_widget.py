@@ -23,8 +23,20 @@ from src.utils.logger import get_logger
 from src.controllers.camera_controller import CameraController, FrameData
 from src.utils.status_display import StatusDisplay
 from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+from src.utils.config_manager import get_config
 
 logger = get_logger("camera_widget")
+
+# Check for GPU acceleration support for display processing (OpenCL)
+_GPU_AVAILABLE = False
+try:
+    if cv2.ocl.haveOpenCL():
+        cv2.ocl.setUseOpenCL(True)
+        if cv2.ocl.useOpenCL():
+            _GPU_AVAILABLE = True
+            logger.info("Camera widget: GPU acceleration available for display processing (OpenCL)")
+except Exception:
+    _GPU_AVAILABLE = False
 
 
 class CameraWidget(QGroupBox):
@@ -80,12 +92,14 @@ class CameraWidget(QGroupBox):
         }
         
         # Recording compression and resolution settings
-        # MAXIMUM OPTIMIZATION: Quarter resolution + no real-time compression
+        # MAXIMUM OPTIMIZATION: Half resolution + no real-time compression
         # compression_level: 0=none (FASTEST), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
+        # NOTE: Half resolution (2x) provides good balance between file size and FPS.
+        #       Post-processing compression (99%+ reduction) happens AFTER recording completes.
         self.recording_settings = {
             'compression_level': 0,  # NO compression during recording = MAX FPS
-            'downscale_factor': 4    # QUARTER resolution = 16x smaller + MUCH FASTER FPS
+            'downscale_factor': 2    # HALF resolution = Good balance of speed & file size
         }
         
         # UI components - optimized for fullscreen viewing
@@ -156,10 +170,6 @@ class CameraWidget(QGroupBox):
         layout.addLayout(control_layout)
         
         return section
-    
-    def update_button_states(self):
-        """Update button enabled states - minimal camera widget has no buttons."""
-        pass  # No buttons to update in minimal design
     
     def update_button_states(self):
         """Update button enabled states - minimal camera widget has no buttons."""
@@ -353,19 +363,33 @@ class CameraWidget(QGroupBox):
             
             # Update FPS display every 0.5 seconds for real-time feedback
             if time_elapsed >= 0.5:
-                # Get actual camera statistics for real FPS
-                if self.camera and hasattr(self.camera, 'get_statistics'):
-                    stats = self.camera.get_statistics()
-                    actual_camera_fps = stats.get('fps', 0.0)
+                # When recording, show actual recording FPS; otherwise show camera FPS
+                if self.is_recording and hasattr(self, 'recording_fps_tracker'):
+                    # Calculate recording FPS from recorded frame timestamps
+                    frame_times = self.recording_fps_tracker.get('frame_times', [])
+                    if len(frame_times) >= 2:
+                        time_span = frame_times[-1] - frame_times[0]
+                        if time_span > 0:
+                            recording_fps = (len(frame_times) - 1) / time_span
+                        else:
+                            recording_fps = 0.0
+                    else:
+                        recording_fps = 0.0
+                    actual_fps = recording_fps
                 else:
-                    actual_camera_fps = 0.0
+                    # Get actual camera statistics for real FPS
+                    if self.camera and hasattr(self.camera, 'get_statistics'):
+                        stats = self.camera.get_statistics()
+                        actual_fps = stats.get('fps', 0.0)
+                    else:
+                        actual_fps = 0.0
                 
-                self.last_display_fps = actual_camera_fps
+                self.last_display_fps = actual_fps
                 self.display_fps_start_time = current_time
                 
-                # Display ACTUAL camera FPS (not display refresh rate)
+                # Display ACTUAL recording/camera FPS
                 status_prefix = "Recording" if self.is_recording else "Live"
-                self.update_status(f"{status_prefix} @ {actual_camera_fps:.1f} FPS")
+                self.update_status(f"{status_prefix} @ {actual_fps:.1f} FPS")
         
         except Exception as e:
             if str(e) != self.camera_error:
@@ -391,18 +415,45 @@ class CameraWidget(QGroupBox):
             needs_contrast = self.image_settings['contrast'] != 50
             needs_saturation = (len(frame.shape) == 3 and self.image_settings['saturation'] != 50)
             
-            # Apply brightness/contrast together if needed (in-place when possible)
+            # Apply brightness/contrast together if needed (GPU-accelerated if available)
             if needs_brightness or needs_contrast:
                 brightness = (self.image_settings['brightness'] - 50) * 2.0
                 contrast = self.image_settings['contrast'] / 50.0
-                frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
+                
+                if _GPU_AVAILABLE:
+                    try:
+                        gpu_frame = cv2.UMat(frame)
+                        gpu_result = cv2.convertScaleAbs(gpu_frame, alpha=contrast, beta=brightness)
+                        frame = gpu_result.get()
+                    except Exception:
+                        # Fallback to CPU
+                        frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
+                else:
+                    frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
             
-            # Apply saturation only if needed (most expensive operation)
+            # Apply saturation only if needed (most expensive operation - GPU accelerated)
             if needs_saturation:
-                hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-                saturation_factor = self.image_settings['saturation'] / 50.0
-                hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
-                frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+                if _GPU_AVAILABLE:
+                    try:
+                        gpu_frame = cv2.UMat(frame)
+                        gpu_hsv = cv2.cvtColor(gpu_frame, cv2.COLOR_RGB2HSV)
+                        hsv = gpu_hsv.get()
+                        saturation_factor = self.image_settings['saturation'] / 50.0
+                        hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
+                        gpu_hsv_adj = cv2.UMat(hsv)
+                        gpu_rgb = cv2.cvtColor(gpu_hsv_adj, cv2.COLOR_HSV2RGB)
+                        frame = gpu_rgb.get()
+                    except Exception:
+                        # Fallback to CPU
+                        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+                        saturation_factor = self.image_settings['saturation'] / 50.0
+                        hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
+                        frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+                else:
+                    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+                    saturation_factor = self.image_settings['saturation'] / 50.0
+                    hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
+                    frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
             
             return frame
             
@@ -448,7 +499,7 @@ class CameraWidget(QGroupBox):
             # Create recorder with compression and resolution settings
             # CAMERA CAPABLE: 50+ FPS! Setting target to 30 FPS for stability
             TARGET_FPS = 30.0
-            MIN_FPS = 25.0  # Camera can easily maintain this
+            MIN_FPS = 20.0  # Realistic minimum (was 25.0, caused false violations with downscaling)
             
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
@@ -459,7 +510,10 @@ class CameraWidget(QGroupBox):
                 downscale_factor=self.recording_settings['downscale_factor']
             )
             
-            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), quarter resolution + MONO8 for optimal files")
+            # Build info message based on actual settings
+            resolution_desc = {1: "full resolution", 2: "half resolution", 4: "quarter resolution"}
+            res_text = resolution_desc.get(self.recording_settings['downscale_factor'], f"{self.recording_settings['downscale_factor']}x downscale")
+            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), {res_text} + MONO8 for optimal files")
             
             # Track FPS performance during recording
             self.recording_fps_tracker = {
@@ -608,65 +662,74 @@ class CameraWidget(QGroupBox):
                         msg_box.repaint()
                         QApplication.processEvents()
                         
-                        # Start post-processing compression in background thread (NON-BLOCKING)
+                        # Decide whether to run post-processing compression based on user config
                         import threading
                         from src.utils.hdf5_video_recorder import post_process_compress_hdf5
-                        
-                        def compress_in_background():
-                            """Run compression in background thread."""
+                        cfg = get_config()
+
+                        def compress_and_notify(path: str):
                             try:
-                                # Add small delay to ensure file is fully written
                                 time.sleep(1.0)
-                                logger.info("Starting background post-processing compression...")
+                                logger.info("Starting post-processing compression...")
                                 compressed_path = post_process_compress_hdf5(
-                                    saved_path, 
-                                    quality_reduction=True,  # Accept quality reduction
-                                    parallel=True  # Use parallel processing
+                                    path,
+                                    quality_reduction=True,
+                                    parallel=True
                                 )
                                 if compressed_path:
-                                    logger.info(f"Background compression completed: {compressed_path}")
-                                    # Compression replaces the original file, so no temp file to remove
-                                    
-                                    # Show completion popup on main thread
-                                    from PyQt5.QtCore import QMetaObject, Qt
-                                    def show_completion():
-                                        QMessageBox.information(
-                                            None,
-                                            "Compression Complete",
-                                            f"Recording saved and compressed successfully!\n\nFile: {compressed_path}",
-                                            QMessageBox.Ok
-                                        )
-                                        # Close the application after user clicks OK
-                                        QApplication.quit()
-                                    
-                                    # Schedule popup on main thread (safely check if app still running)
+                                    logger.info(f"Compression completed: {compressed_path}")
                                     try:
                                         app = QApplication.instance()
                                         if app is not None:
                                             from PyQt5.QtCore import QTimer
+                                            def show_completion():
+                                                QMessageBox.information(
+                                                    None,
+                                                    "Compression Complete",
+                                                    f"Recording saved and compressed successfully!\n\nFile: {compressed_path}",
+                                                    QMessageBox.Ok
+                                                )
                                             QTimer.singleShot(0, show_completion)
-                                    except Exception as qt_error:
-                                        # App already closed, just log success
+                                    except Exception:
                                         logger.info(f"Compression completed: {compressed_path}")
-                                    
                                 else:
-                                    logger.warning("Background compression returned no path")
+                                    logger.warning("Compression returned no path")
                             except Exception as comp_error:
-                                logger.error(f"Background compression failed: {comp_error}", exc_info=True)
-                        
-                        # Launch compression thread and continue
-                        compression_thread = threading.Thread(
-                            target=compress_in_background,
-                            name="CompressionThread",
-                            daemon=False  # Keep program alive until compression completes
-                        )
-                        compression_thread.start()
-                        logger.info("Compression started in background - UI will remain responsive, program stays open")
-                        
-                        # Close message box immediately (compression continues in background)
-                        msg_box.close()
-                        msg_box.deleteLater()
-                        QApplication.processEvents()
+                                logger.error(f"Post-processing compression failed: {comp_error}", exc_info=True)
+
+                        # Run compression according to configuration
+                        try:
+                            if cfg.files.background_compression:
+                                if cfg.files.wait_for_compression:
+                                    # Run compression synchronously (UI will wait)
+                                    logger.info("Running synchronous post-processing compression per configuration")
+                                    compress_and_notify(saved_path)
+                                    # Close message box after synchronous compression
+                                    msg_box.close()
+                                    msg_box.deleteLater()
+                                    QApplication.processEvents()
+                                else:
+                                    # Run compression in a background daemon thread (non-blocking)
+                                    compression_thread = threading.Thread(
+                                        target=compress_and_notify,
+                                        name="CompressionThread",
+                                        args=(saved_path,),
+                                        daemon=True,
+                                    )
+                                    compression_thread.start()
+                                    logger.info("Compression started in background (daemon) - UI will remain responsive")
+                                    # Close message box and continue
+                                    msg_box.close()
+                                    msg_box.deleteLater()
+                                    QApplication.processEvents()
+                            else:
+                                # Compression disabled via config - just close dialog
+                                logger.info("Background compression disabled by configuration")
+                                msg_box.close()
+                                msg_box.deleteLater()
+                                QApplication.processEvents()
+                        except Exception as comp_ctrl_err:
+                            logger.error(f"Error controlling compression behavior: {comp_ctrl_err}", exc_info=True)
                         
                     except Exception as stop_error:
                         # Stop timer on error
@@ -762,8 +825,12 @@ class CameraWidget(QGroupBox):
     def cleanup(self):
         """Clean up resources including thread pool."""
         try:
-            # Shutdown thread pool gracefully
-            self.frame_processing_executor.shutdown(wait=True, timeout=2.0)
+            # Shutdown thread pool gracefully (wait=True ensures tasks complete)
+            try:
+                self.frame_processing_executor.shutdown(wait=True)
+            except TypeError:
+                # Some Python versions may not accept extra args; fallback to basic call
+                self.frame_processing_executor.shutdown()
         except Exception as e:
             logger.warning(f"Error shutting down thread pool: {e}")
     
@@ -771,13 +838,24 @@ class CameraWidget(QGroupBox):
         """Legacy synchronous frame recording for compatibility."""
         return self._record_frame_async(frame)
     
-    def _process_display_frame(self, frame):
-        """Process grayscale frame for display."""
+    def _process_display_frame(self, frame: np.ndarray):
+        """Process grayscale frame for display (GPU-accelerated if available)."""
         try:
             # Always grayscale: Convert to RGB for Qt display
             if len(frame.shape) == 3 and frame.shape[2] == 1:
                 frame = frame.squeeze()  # Remove single channel dimension
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            
+            # Use GPU acceleration for color conversion if available
+            if _GPU_AVAILABLE:
+                try:
+                    gpu_frame = cv2.UMat(frame)
+                    gpu_rgb = cv2.cvtColor(gpu_frame, cv2.COLOR_GRAY2RGB)
+                    rgb_frame = gpu_rgb.get()
+                except Exception:
+                    # Fallback to CPU if GPU fails
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            else:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
             # Apply image processing settings (brightness/contrast only, no saturation)
             processed_frame = self._apply_image_processing(rgb_frame)
@@ -883,11 +961,11 @@ class CameraWidget(QGroupBox):
         if not self.camera or not hasattr(self.camera, 'apply_settings'):
             return
         
-        # Brighter default settings (optimized for performance)
+        # Default settings optimized for live view (15 FPS for smooth, low-CPU display)
         default_settings = {
             'exposure_ms': 15.0,
             'gain_master': 2,  # Use integer for gain
-            'frame_rate_fps': 30.0,
+            'frame_rate_fps': 15.0,  # 15 FPS for live view (saves CPU, smooth display)
             'brightness': 50,   # Standard brightness
             'contrast': 50,     # No contrast change initially  
             'saturation': 50    # No saturation change initially

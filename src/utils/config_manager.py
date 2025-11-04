@@ -188,6 +188,9 @@ class FilesConfig:
     backup_count: int = 5
     temp_directory: str = "temp"
     max_file_age_days: int = 30
+    # Post-recording compression behavior
+    background_compression: bool = True  # If True, run post-process compression in background
+    wait_for_compression: bool = False    # If True, wait for compression to finish before returning
     
     def validate(self) -> None:
         """Validate files configuration."""
@@ -199,6 +202,7 @@ class FilesConfig:
             raise ConfigurationError("Backup count must be non-negative")
         if self.max_file_age_days <= 0:
             raise ConfigurationError("Max file age must be positive")
+        # background_compression and wait_for_compression are booleans - no further validation
 
 
 class ConfigManager:
