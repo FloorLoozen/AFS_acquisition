@@ -15,6 +15,7 @@ import threading
 from src.utils.logger import get_logger
 from src.utils.exceptions import FunctionGeneratorError, HardwareError
 from src.utils.validation import validate_positive_number, validate_range
+from src.utils.visa_helper import VISAHelper
 
 logger = get_logger("function_generator")
 
@@ -102,9 +103,8 @@ class FunctionGeneratorController:
     def _connect_impl_fast(self) -> bool:
         """Fast connection attempt with short timeout (for startup)."""
         try:
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
-            logger.info(f"Function generator: Found VISA resources: {list(resources)}")
+            resources = VISAHelper.list_resources()
+            logger.info(f"Function generator: Found VISA resources: {resources}")
             
             if not resources:
                 logger.info("Function generator: No VISA resources found")
@@ -129,7 +129,10 @@ class FunctionGeneratorController:
             logger.info(f"Function generator: Attempting to connect to {target_resource}")
             
             # Open with reasonable timeout for fast startup
-            self.function_generator = rm.open_resource(target_resource)
+            self.function_generator = VISAHelper.open_resource(target_resource)
+            if not self.function_generator:
+                return False
+                
             self.function_generator.timeout = 5000  # 5 seconds - devices need time to respond
             self.function_generator.read_termination = '\n'
             self.function_generator.write_termination = '\n'
@@ -170,8 +173,7 @@ class FunctionGeneratorController:
     def _connect_impl(self) -> bool:
         """Implementation of connection logic."""
         try:
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
+            resources = VISAHelper.list_resources()
             
             if not resources:
                 raise FunctionGeneratorError("No VISA resources found")
@@ -204,7 +206,10 @@ class FunctionGeneratorController:
             logger.info(f"Attempting to connect to: {target_resource}")
             
             # Open connection with optimal settings
-            self.function_generator = rm.open_resource(target_resource)
+            self.function_generator = VISAHelper.open_resource(target_resource)
+            if not self.function_generator:
+                raise FunctionGeneratorError(f"Failed to open resource: {target_resource}")
+                
             self.function_generator.timeout = self.DEFAULT_TIMEOUT
             self.function_generator.read_termination = '\n'
             self.function_generator.write_termination = '\n'

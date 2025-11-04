@@ -734,7 +734,7 @@ class CameraWidget(QGroupBox):
                 elif min_fps_achieved < 20.0:
                     logger.warning(f"WARNING: Some frames below 20 FPS (lowest {min_fps_achieved:.1f})")
                 else:
-                    logger.info(f"✓ Recording excellent at {avg_fps:.1f} FPS!")
+                    logger.info(f"Recording excellent at {avg_fps:.1f} FPS!")
         
         
         try:

@@ -1988,6 +1988,28 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
         import tempfile
         from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
         
+        # Check disk space BEFORE starting compression
+        try:
+            total, used, free = shutil.disk_usage(os.path.dirname(file_path) or '.')
+            free_gb = free / (1024**3)
+            free_mb = free / (1024**2)
+            file_size = os.path.getsize(file_path)
+            file_mb = file_size / (1024**2)
+            
+            # Need at least 2x the file size for safe compression (original + compressed temp)
+            required_mb = file_mb * 2
+            
+            if free_mb < required_mb:
+                logger.error(f"Insufficient disk space for compression: {free_mb:.1f}MB free, {required_mb:.1f}MB required")
+                logger.error(f"Please free up at least {required_mb - free_mb:.1f}MB of disk space before compressing")
+                return None
+            
+            logger.info(f"Disk space check: {free_mb:.1f}MB available, {required_mb:.1f}MB required")
+            
+        except Exception as space_check_error:
+            logger.warning(f"Could not check disk space: {space_check_error}")
+            # Continue anyway, will fail later if truly out of space
+        
         # Create temporary file for recompressed data
         temp_file = file_path + ".tmp.hdf5"
         
@@ -2198,14 +2220,26 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
             
         except Exception as e:
             logger.error(f"Error during post-processing compression: {e}", exc_info=True)
+            
+            # Check if it's a disk space error
+            error_str = str(e).lower()
+            if 'errno 28' in error_str or 'no space left' in error_str or 'disk full' in error_str:
+                logger.error("DISK FULL: Compression failed due to insufficient disk space")
+                logger.error("The original file is still intact. Please:")
+                logger.error("  1. Free up disk space (delete unnecessary files)")
+                logger.error("  2. Or move the file to a drive with more space")
+                logger.error("  3. Then try compression again")
+            
             # Clean up temp file if it exists
             if os.path.exists(temp_file):
                 try:
                     time.sleep(1)
                     os.remove(temp_file)
+                    logger.info(f"Cleaned up temporary file: {temp_file}")
                 except (OSError, IOError, PermissionError) as cleanup_error:
                     # File may be locked or in use - not critical
-                    logger.debug(f"Could not remove temp file during error cleanup: {cleanup_error}")
+                    logger.warning(f"Could not remove temp file during error cleanup: {cleanup_error}")
+                    logger.warning(f"You may need to manually delete: {temp_file}")
             return None
             
     except Exception as e:

@@ -33,7 +33,11 @@ Version:
 import sys
 import os
 import warnings
-from typing import NoReturn, Optional
+from typing import NoReturn, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt5.QtWidgets import QApplication
+    from logging import Logger
 
 # Suppress syntax warnings from pyueye library (harmless documentation issues)
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pyueye")
