@@ -2027,12 +2027,16 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                         video_out.attrs['post_compressed'] = True
                         video_out.attrs['post_compression_level'] = 'maximum'
                         
+                        # Report initial progress to show dialog immediately
+                        if progress_callback:
+                            progress_callback(0, n_frames, "Starting compression...")
+                        
                         # Process frames in parallel batches - OPTIMIZED FOR SPEED
                         if parallel and n_frames > 100:
                             logger.info(f"Processing {n_frames} frames in parallel...")
                             
-                            # LARGER batches for better speed (was 100)
-                            batch_size = 500  # Process 500 frames at once
+                            # Smaller batches for more frequent progress updates
+                            batch_size = 100  # Process 100 frames at once (shows progress every 100 frames)
                             num_batches = (n_frames + batch_size - 1) // batch_size
                             
                             def process_batch(batch_idx):
@@ -2065,8 +2069,13 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
                         else:
                             # Sequential processing for small files
                             logger.info(f"Processing {n_frames} frames sequentially...")
-                            for i in range(0, n_frames, 500):  # Larger batches
-                                end_idx = min(i + 500, n_frames)
+                            
+                            # Report initial progress to show dialog immediately
+                            if progress_callback:
+                                progress_callback(0, n_frames, "Starting compression...")
+                            
+                            for i in range(0, n_frames, 100):  # Smaller batches for more progress updates
+                                end_idx = min(i + 100, n_frames)
                                 batch = video_in[i:end_idx]
                                 
                                 if quality_reduction:

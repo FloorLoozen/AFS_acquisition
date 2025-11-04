@@ -235,16 +235,15 @@ class CameraWidget(QGroupBox):
             self.compression_progress_dialog.close()
             self.compression_progress_dialog = None
         
-        # Play system sound notification
+        # Play system sound notification (Windows native method first)
         try:
-            from PyQt5.QtMultimedia import QSound
-            # Use system beep or success sound
-            QSound.play("SystemAsterisk")  # Windows success sound
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)  # Windows asterisk/info sound
         except (ImportError, Exception):
-            # Fallback to simple beep if QSound not available
+            # Fallback to QSound if winsound not available
             try:
-                import winsound
-                winsound.MessageBeep(winsound.MB_ICONASTERISK)  # Windows asterisk/info sound
+                from PyQt5.QtMultimedia import QSound
+                QSound.play("SystemAsterisk")  # Windows success sound
             except (ImportError, Exception):
                 # Last resort - system bell
                 try:
