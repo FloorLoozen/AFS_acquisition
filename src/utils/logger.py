@@ -184,7 +184,8 @@ class SafeFileHandler(logging.FileHandler):
                 # Stop trying to write to file
                 try:
                     self.close()
-                except:
+                except Exception:
+                    # Suppress errors during emergency close to prevent cascade failures
                     pass
             # Don't re-raise the error to prevent logging cascade failures
 

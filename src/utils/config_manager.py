@@ -343,8 +343,8 @@ class ConfigManager:
                     if temp_file.exists():
                         try:
                             temp_file.unlink()
-                        except:
-                            pass
+                        except (OSError, PermissionError) as unlink_error:
+                            logger.debug(f"Could not remove temp config file: {unlink_error}")
                     return False
                 
                 # Atomic replace
@@ -356,8 +356,8 @@ class ConfigManager:
                     if temp_file.exists():
                         try:
                             temp_file.unlink()
-                        except:
-                            pass
+                        except (OSError, PermissionError) as unlink_error:
+                            logger.debug(f"Could not remove temp config file: {unlink_error}")
                     return False
                 
                 logger.debug(f"Configuration saved to {self.config_file}")

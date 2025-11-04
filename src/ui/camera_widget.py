@@ -1,6 +1,36 @@
 """
-Simplified Camera Widget for AFS Acquisition.
-Clean, minimal design without side controls.
+Camera Widget for AFS Acquisition - Minimal Design with Maximum Performance.
+
+This module provides a streamlined camera interface with professional-grade
+recording capabilities:
+
+Features:
+- Real-time camera feed at 50+ FPS with GPU-accelerated display
+- High-performance HDF5 recording with background compression
+- Live view with configurable FPS (15 FPS default for UI responsiveness)
+- Recording at full camera speed (30 FPS target, up to 50 FPS capable)
+- Automatic error recovery with test pattern fallback
+- Thread-safe compression progress notifications
+
+Architecture:
+- Main thread: Qt GUI and user interaction
+- Camera thread: Frame capture and queue management (in CameraController)
+- Processing thread: GPU downscaling and frame buffering
+- Writer thread: Asynchronous HDF5 writing
+- Compression thread: Background post-processing (daemon)
+
+Performance Optimizations:
+- GPU-accelerated display processing (OpenCL)
+- Lockless frame queue for zero-copy transfer
+- Async I/O to prevent blocking during recording
+- Background compression allows immediate workflow continuation
+- Smart FPS limiting (15 FPS display, 30+ FPS recording)
+
+User Experience:
+- Minimal, clean interface for maximum screen real estate
+- Non-blocking progress dialogs for compression
+- Automatic camera reconnection on errors
+- Real-time FPS performance monitoring
 """
 
 import time
@@ -27,7 +57,7 @@ from src.utils.config_manager import get_config
 
 logger = get_logger("camera_widget")
 
-# Check for GPU acceleration support for display processing (OpenCL)
+# GPU Display Processing Configuration (OpenCL for AMD/NVIDIA compatibility)
 _GPU_AVAILABLE = False
 try:
     if cv2.ocl.haveOpenCL():
@@ -50,7 +80,7 @@ class CameraWidget(QGroupBox):
     """
     
     # Signals to communicate from background thread to main GUI thread
-    compression_complete_signal = pyqtSignal(str)  # Emits compressed file path
+    compression_complete_signal = pyqtSignal(str, float, float, float)  # Emits (path, original_mb, compressed_mb, reduction_pct)
     compression_progress_signal = pyqtSignal(int, int, str)  # Emits (current, total, status_text)
     
     def __init__(self, parent=None):
@@ -190,23 +220,63 @@ class CameraWidget(QGroupBox):
         """Update status display."""
         self.status_display.set_status(text)
     
-    def _show_compression_complete(self, path: str):
-        """Show compression complete notification in main thread (slot for compression_complete_signal)."""
+    def _show_compression_complete(self, path: str, original_mb: float, compressed_mb: float, reduction_pct: float):
+        """
+        Show compression complete notification with statistics and sound alert.
+        
+        Args:
+            path: Path to the compressed file
+            original_mb: Original file size in MB
+            compressed_mb: Compressed file size in MB
+            reduction_pct: Compression percentage (0-100)
+        """
         # Close progress dialog if it exists
         if self.compression_progress_dialog:
             self.compression_progress_dialog.close()
             self.compression_progress_dialog = None
         
-        # Show completion notification
+        # Play system sound notification
+        try:
+            from PyQt5.QtMultimedia import QSound
+            # Use system beep or success sound
+            QSound.play("SystemAsterisk")  # Windows success sound
+        except (ImportError, Exception):
+            # Fallback to simple beep if QSound not available
+            try:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)  # Windows asterisk/info sound
+            except (ImportError, Exception):
+                # Last resort - system bell
+                try:
+                    print('\a')  # Terminal bell
+                except Exception:
+                    pass  # No sound available
+        
+        # Format file sizes for display
+        original_str = f"{original_mb:.1f} MB" if original_mb < 1024 else f"{original_mb/1024:.2f} GB"
+        compressed_str = f"{compressed_mb:.1f} MB" if compressed_mb < 1024 else f"{compressed_mb/1024:.2f} GB"
+        
+        # Create detailed completion message
+        message = (
+            f"Recording saved and compressed successfully!\n\n"
+            f"File: {path}\n\n"
+            f"Original size: {original_str}\n"
+            f"Compressed size: {compressed_str}\n"
+            f"Reduction: {reduction_pct:.1f}%\n\n"
+            f"✓ Lossless compression - 100% data preserved"
+        )
+        
+        # Show completion notification with statistics
         QMessageBox.information(
             self, 
             "Compression Complete", 
-            f"Recording saved and compressed successfully!\n\nFile: {path}", 
+            message,
             QMessageBox.Ok
         )
     
     def _update_compression_progress(self, current: int, total: int, status_text: str):
         """Update compression progress dialog (slot for compression_progress_signal)."""
+        logger.debug(f"_update_compression_progress called: {current}/{total} - {status_text}")
         if not self.compression_progress_dialog:
             # Create progress dialog
             self.compression_progress_dialog = QProgressDialog(
@@ -281,8 +351,8 @@ class CameraWidget(QGroupBox):
             if self.camera:
                 try:
                     self.camera.close()
-                except:
-                    pass
+                except Exception as close_error:
+                    logger.debug(f"Error closing camera during error recovery: {close_error}")
                 self.camera = None
             self._start_test_pattern_mode("Error - Test Pattern")
     
@@ -332,8 +402,8 @@ class CameraWidget(QGroupBox):
         if self.camera:
             try:
                 self.camera.close()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing camera: {e}")
             self.camera = None
         
         self.current_frame_data = None
@@ -637,8 +707,8 @@ class CameraWidget(QGroupBox):
             if self.hdf5_recorder:
                 try:
                     self.hdf5_recorder.stop_recording()
-                except:
-                    pass
+                except Exception as stop_error:
+                    logger.debug(f"Error stopping recorder during error recovery: {stop_error}")
                 self.hdf5_recorder = None
             return False
     
@@ -731,20 +801,26 @@ class CameraWidget(QGroupBox):
                                 
                                 # Progress callback to emit signal to main thread
                                 def progress_callback(current, total, status):
+                                    logger.debug(f"Compression progress: {current}/{total} - {status}")
                                     self.compression_progress_signal.emit(current, total, status)
                                 
-                                compressed_path = post_process_compress_hdf5(
+                                result = post_process_compress_hdf5(
                                     path,
                                     quality_reduction=False,  # Lossless: preserve 100% of scientific data
                                     parallel=True,
                                     progress_callback=progress_callback
                                 )
-                                if compressed_path:
-                                    logger.info(f"Compression completed: {compressed_path}")
-                                    # Emit signal to main thread instead of using QTimer from background thread
-                                    self.compression_complete_signal.emit(compressed_path)
+                                if result:
+                                    logger.info(f"Compression completed: {result['path']}")
+                                    # Emit signal to main thread with full statistics
+                                    self.compression_complete_signal.emit(
+                                        result['path'],
+                                        result['original_mb'],
+                                        result['compressed_mb'],
+                                        result['reduction_pct']
+                                    )
                                 else:
-                                    logger.warning("Compression returned no path")
+                                    logger.warning("Compression returned no result")
                             except Exception as comp_error:
                                 logger.error(f"Post-processing compression failed: {comp_error}", exc_info=True)
 
@@ -796,8 +872,9 @@ class CameraWidget(QGroupBox):
                         msg_box.close()
                         msg_box.deleteLater()
                         QApplication.processEvents()
-                    except:
-                        pass
+                    except RuntimeError as qt_error:
+                        # Qt object may already be deleted
+                        logger.debug(f"Qt object already deleted: {qt_error}")
                 
                 # Show error if failed
                 if not success and error_msg:
@@ -835,8 +912,9 @@ class CameraWidget(QGroupBox):
                     "Recording Stop Error",
                     f"A critical error occurred:\n\n{e}\n\nCheck the logs for details."
                 )
-            except:
-                pass
+            except RuntimeError as qt_error:
+                # Widget may be deleted, log instead
+                logger.error(f"Could not show error dialog (widget deleted): {qt_error}")
             
             return None
     

@@ -268,8 +268,8 @@ class OscilloscopeController:
                 # Clear input buffer before querying
                 try:
                     self.oscilloscope.clear()
-                except:
-                    pass
+                except Exception as clear_error:
+                    logger.debug(f"Could not clear oscilloscope buffer: {clear_error}")
                 
             # Query IDN to verify connection
             idn = self.oscilloscope.query("*IDN?").strip()
@@ -299,8 +299,8 @@ class OscilloscopeController:
             if hasattr(self, 'oscilloscope') and self.oscilloscope:
                 try:
                     self.oscilloscope.close()
-                except:
-                    pass
+                except Exception as close_error:
+                    logger.debug(f"Error closing VISA resource during error recovery: {close_error}")
                 self.oscilloscope = None
             return False
     
@@ -360,8 +360,8 @@ class OscilloscopeController:
                 # Clear input buffer before querying
                 try:
                     self.oscilloscope.clear()
-                except:
-                    pass
+                except Exception as clear_error:
+                    logger.debug(f"Could not clear oscilloscope buffer: {clear_error}")
             
             # Brief stabilization delay for serial ports
             if 'ASRL' in target_resource:
@@ -399,8 +399,8 @@ class OscilloscopeController:
             if hasattr(self, 'oscilloscope') and self.oscilloscope:
                 try:
                     self.oscilloscope.close()
-                except:
-                    pass
+                except Exception as close_error:
+                    logger.debug(f"Error closing VISA resource during error recovery: {close_error}")
                 self.oscilloscope = None
             raise OscilloscopeError(error_msg) from e
 
@@ -675,10 +675,11 @@ class OscilloscopeController:
         }
 
     def __del__(self):
-        """Cleanup on destruction."""
+        """Cleanup on destruction - suppress all errors during garbage collection."""
         try:
             self.disconnect()
-        except:
+        except Exception:
+            # Suppress errors during garbage collection to avoid warnings
             pass
 
 

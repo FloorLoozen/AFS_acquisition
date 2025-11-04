@@ -230,7 +230,8 @@ class MeasurementControlsWidget(QGroupBox):
             try:
                 frequency = float(self.frequency_edit.text())
                 self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
-            except:
+            except (ValueError, AttributeError):
+                # Invalid or missing frequency value
                 self.fg_status_display.set_status("ON")
         else:
             # Connected but output off

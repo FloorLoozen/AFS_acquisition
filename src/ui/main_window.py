@@ -481,8 +481,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'force_path_designer') and self.force_path_designer:
                 try:
                     self.force_path_designer.close()
-                except:
-                    pass
+                except RuntimeError as e:
+                    # Widget may already be deleted
+                    logger.debug(f"Force path designer already closed: {e}")
             
             # Cleanup function generator (critical for avoiding connection issues)
             if hasattr(self, 'measurement_controls_widget') and self.measurement_controls_widget:
@@ -650,8 +651,8 @@ class MainWindow(QMainWindow):
                         logger.info(f"Copied recording to: {dest_path}")
                         try:
                             os.remove(source_path)
-                        except:
-                            logger.warning(f"Could not remove original: {source_path}")
+                        except (OSError, PermissionError) as remove_error:
+                            logger.warning(f"Could not remove original file {source_path}: {remove_error}")
                         self.statusBar().showMessage(f"HDF5 recording saved: {dest_path}")
                         QTimer.singleShot(3000, self.acquisition_controls_widget.clear_status)
                         return

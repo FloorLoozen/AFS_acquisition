@@ -162,8 +162,9 @@ class XYStageController:
         
         try:
             last_x, last_y = self.get_position()
-        except:
+        except (OSError, RuntimeError, AttributeError) as e:
             # If we can't get position, use minimal delay as fallback
+            logger.debug(f"Could not get position for movement check: {e}")
             time.sleep(0.1)
             return True
         
@@ -186,8 +187,9 @@ class XYStageController:
                     stable_count = 0
                     
                 last_x, last_y = current_x, current_y
-            except:
+            except (OSError, RuntimeError, AttributeError) as e:
                 # If position reading fails, assume movement complete
+                logger.debug(f"Position reading failed during stabilization check: {e}")
                 return True
                 
         return False  # Timeout

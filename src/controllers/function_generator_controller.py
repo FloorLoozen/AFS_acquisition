@@ -162,8 +162,8 @@ class FunctionGeneratorController:
             if hasattr(self, 'function_generator') and self.function_generator:
                 try:
                     self.function_generator.close()
-                except:
-                    pass
+                except Exception as close_error:
+                    logger.debug(f"Error closing VISA resource during error recovery: {close_error}")
                 self.function_generator = None
             return False
     
@@ -244,11 +244,12 @@ class FunctionGeneratorController:
             if hasattr(self, 'function_generator') and self.function_generator:
                 try:
                     self.function_generator.close()
-                except:
-                    pass
+                except Exception as close_error:
+                    logger.debug(f"Error closing VISA resource during error recovery: {close_error}")
                 self.function_generator = None
             # Propagate exception to allow retry logic and callers to handle failure
             raise FunctionGeneratorError(error_msg) from e
+    
     @property
     def connection_state(self) -> ConnectionState:
         """Get current connection state."""

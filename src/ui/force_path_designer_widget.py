@@ -1074,7 +1074,9 @@ class ForcePathDesignerWidget(QWidget):
         # Use blit for faster rendering when possible
         try:
             self.canvas.draw_idle()  # Faster than draw() for real-time updates
-        except:
+        except RuntimeError as e:
+            # Canvas may not be ready, use regular draw
+            logger.debug(f"draw_idle failed, falling back to draw(): {e}")
             self.canvas.draw()  # Fallback
             
     def _validate_path(self):
@@ -1245,8 +1247,9 @@ class ForcePathDesignerWidget(QWidget):
             if self.live_line:
                 try:
                     self.live_line.remove()
-                except:
-                    pass
+                except (ValueError, AttributeError) as e:
+                    # Line may already be removed or invalid
+                    logger.debug(f"Could not remove live line: {e}")
                     
             # Add new live line if still within execution time
             if self.current_execution_time <= total_duration:
@@ -1282,8 +1285,9 @@ class ForcePathDesignerWidget(QWidget):
             try:
                 self.live_line.remove()
                 self.canvas.draw_idle()
-            except:
-                pass
+            except (ValueError, AttributeError, RuntimeError) as e:
+                # Line or canvas may be invalid
+                logger.debug(f"Could not remove/redraw live line: {e}")
             self.live_line = None
             
         # SAFETY NET: Turn off function generator output if worker hasn't done it yet
