@@ -14,9 +14,9 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QMessageBox, QProgressDialog
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 
 from src.utils.logger import get_logger
@@ -49,6 +49,10 @@ class CameraWidget(QGroupBox):
     - Minimal, clean interface
     """
     
+    # Signals to communicate from background thread to main GUI thread
+    compression_complete_signal = pyqtSignal(str)  # Emits compressed file path
+    compression_progress_signal = pyqtSignal(int, int, str)  # Emits (current, total, status_text)
+    
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
         
@@ -76,6 +80,9 @@ class CameraWidget(QGroupBox):
         self.recording_path = ""
         self.recording_start_time = None
         self.recorded_frames = 0
+        
+        # Compression progress tracking
+        self.compression_progress_dialog = None
         
         # High-performance parallel processing
         self.frame_processing_executor = ThreadPoolExecutor(
@@ -122,6 +129,10 @@ class CameraWidget(QGroupBox):
         
         self.init_ui()
         self.update_status("Initializing...")
+        
+        # Connect signals for compression notifications
+        self.compression_complete_signal.connect(self._show_compression_complete)
+        self.compression_progress_signal.connect(self._update_compression_progress)
         
         # Auto-connect shortly after startup
         QTimer.singleShot(100, self.connect_camera)
@@ -178,6 +189,52 @@ class CameraWidget(QGroupBox):
     def update_status(self, text: str):
         """Update status display."""
         self.status_display.set_status(text)
+    
+    def _show_compression_complete(self, path: str):
+        """Show compression complete notification in main thread (slot for compression_complete_signal)."""
+        # Close progress dialog if it exists
+        if self.compression_progress_dialog:
+            self.compression_progress_dialog.close()
+            self.compression_progress_dialog = None
+        
+        # Show completion notification
+        QMessageBox.information(
+            self, 
+            "Compression Complete", 
+            f"Recording saved and compressed successfully!\n\nFile: {path}", 
+            QMessageBox.Ok
+        )
+    
+    def _update_compression_progress(self, current: int, total: int, status_text: str):
+        """Update compression progress dialog (slot for compression_progress_signal)."""
+        if not self.compression_progress_dialog:
+            # Create progress dialog
+            self.compression_progress_dialog = QProgressDialog(
+                "Compressing recording...",
+                "Continue in Background",
+                0,
+                total,
+                self
+            )
+            self.compression_progress_dialog.setWindowTitle("Post-Processing Compression")
+            self.compression_progress_dialog.setMinimumDuration(0)  # Show immediately
+            self.compression_progress_dialog.setModal(False)  # Non-blocking
+            self.compression_progress_dialog.setAutoClose(False)  # Don't auto-close
+            self.compression_progress_dialog.setAutoReset(False)  # Don't auto-reset
+            
+            # When user clicks "Continue in Background", just close the dialog
+            def on_canceled():
+                if self.compression_progress_dialog:
+                    self.compression_progress_dialog.close()
+                    self.compression_progress_dialog = None
+                    logger.info("Compression continuing in background (progress dialog closed by user)")
+            
+            self.compression_progress_dialog.canceled.connect(on_canceled)
+        
+        # Update progress
+        self.compression_progress_dialog.setValue(current)
+        self.compression_progress_dialog.setMaximum(total)
+        self.compression_progress_dialog.setLabelText(f"{status_text}\n{current}/{total} frames processed")
     
     def connect_camera(self, camera_id: int = 0):
         """Connect to camera with improved error handling."""
@@ -671,27 +728,21 @@ class CameraWidget(QGroupBox):
                             try:
                                 time.sleep(1.0)
                                 logger.info("Starting post-processing compression...")
+                                
+                                # Progress callback to emit signal to main thread
+                                def progress_callback(current, total, status):
+                                    self.compression_progress_signal.emit(current, total, status)
+                                
                                 compressed_path = post_process_compress_hdf5(
                                     path,
-                                    quality_reduction=True,
-                                    parallel=True
+                                    quality_reduction=False,  # Lossless: preserve 100% of scientific data
+                                    parallel=True,
+                                    progress_callback=progress_callback
                                 )
                                 if compressed_path:
                                     logger.info(f"Compression completed: {compressed_path}")
-                                    try:
-                                        app = QApplication.instance()
-                                        if app is not None:
-                                            from PyQt5.QtCore import QTimer
-                                            def show_completion():
-                                                QMessageBox.information(
-                                                    None,
-                                                    "Compression Complete",
-                                                    f"Recording saved and compressed successfully!\n\nFile: {compressed_path}",
-                                                    QMessageBox.Ok
-                                                )
-                                            QTimer.singleShot(0, show_completion)
-                                    except Exception:
-                                        logger.info(f"Compression completed: {compressed_path}")
+                                    # Emit signal to main thread instead of using QTimer from background thread
+                                    self.compression_complete_signal.emit(compressed_path)
                                 else:
                                     logger.warning("Compression returned no path")
                             except Exception as comp_error:
@@ -700,16 +751,18 @@ class CameraWidget(QGroupBox):
                         # Run compression according to configuration
                         try:
                             if cfg.files.background_compression:
+                                # Close the initial saving message box
+                                msg_box.close()
+                                msg_box.deleteLater()
+                                QApplication.processEvents()
+                                
                                 if cfg.files.wait_for_compression:
                                     # Run compression synchronously (UI will wait)
                                     logger.info("Running synchronous post-processing compression per configuration")
                                     compress_and_notify(saved_path)
-                                    # Close message box after synchronous compression
-                                    msg_box.close()
-                                    msg_box.deleteLater()
-                                    QApplication.processEvents()
                                 else:
                                     # Run compression in a background daemon thread (non-blocking)
+                                    # Progress dialog will appear automatically via signal
                                     compression_thread = threading.Thread(
                                         target=compress_and_notify,
                                         name="CompressionThread",
@@ -718,10 +771,6 @@ class CameraWidget(QGroupBox):
                                     )
                                     compression_thread.start()
                                     logger.info("Compression started in background (daemon) - UI will remain responsive")
-                                    # Close message box and continue
-                                    msg_box.close()
-                                    msg_box.deleteLater()
-                                    QApplication.processEvents()
                             else:
                                 # Compression disabled via config - just close dialog
                                 logger.info("Background compression disabled by configuration")
