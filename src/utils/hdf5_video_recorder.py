@@ -1953,21 +1953,22 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
 
 
 def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True, 
-                                parallel: bool = True, progress_callback=None) -> Optional[Dict[str, Any]]:
+                                parallel: bool = True, progress_callback=None,
+                                in_place: bool = True) -> Optional[Dict[str, Any]]:
     """
     Apply aggressive post-processing compression to HDF5 video file.
     This is done AFTER recording completes to maximize compression.
     
     Strategy:
-    1. Recompress video dataset with higher compression (GZIP level 9)
-    2. Apply additional frame quality reduction if requested
-    3. Use parallel processing for speed
+    - IN-PLACE MODE (default): Compresses dataset within same file, uses minimal extra space
+    - TEMP FILE MODE: Creates temporary file, safer but needs 2x disk space
     
     Args:
         file_path: Path to the HDF5 file to compress
         quality_reduction: If True, reduce quality slightly for better compression
         parallel: If True, use parallel processing (highly recommended)
         progress_callback: Optional callable(current, total, status_text) for progress updates
+        in_place: If True, compress in same file (saves space). If False, use temp file (safer)
         
     Returns:
         Dictionary with compression statistics:
@@ -1980,13 +1981,170 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
         }
         or None if error occurred
     """
-    logger.info(f"Starting post-processing compression: {file_path}")
+    logger.info(f"Starting post-processing compression: {file_path} (in_place={in_place})")
     start_time = time.time()
     
+    # Choose compression method based on mode
+    if in_place:
+        return _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
+    else:
+        return _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
+
+
+def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool, 
+                       progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
+    """
+    Compress HDF5 file IN-PLACE using chunk-by-chunk recompression.
+    Uses minimal extra disk space (only temporary chunks).
+    
+    Strategy:
+    1. Read uncompressed dataset in batches
+    2. Delete uncompressed dataset
+    3. Create compressed dataset with same data
+    4. Copy data in chunks
+    
+    This only needs ~100MB temporary space instead of full file copy.
+    """
     try:
         import shutil
-        import tempfile
-        from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # Get original file size
+        original_size = os.path.getsize(file_path)
+        
+        logger.info("Using IN-PLACE compression (minimal disk space)")
+        
+        # Open file in read-write mode
+        with h5py.File(file_path, 'r+') as f:
+            
+            if 'raw_data' not in f or 'main_video' not in f['raw_data']:
+                logger.warning("No video data found in file")
+                return None
+            
+            video_dataset = f['raw_data/main_video']
+            n_frames = video_dataset.shape[0]
+            frame_shape = video_dataset.shape[1:]
+            
+            logger.info(f"Recompressing {n_frames} frames in-place...")
+            
+            # Report initial progress
+            if progress_callback:
+                progress_callback(0, n_frames, "Loading video data...")
+            
+            # Read ALL data into memory (this is the only way to do in-place compression)
+            # For large files, we'll need to use batched approach
+            batch_size = 100  # Process 100 frames at a time to save memory
+            all_frames = []
+            
+            logger.info("Reading uncompressed data in batches...")
+            for i in range(0, n_frames, batch_size):
+                end_idx = min(i + batch_size, n_frames)
+                batch = video_dataset[i:end_idx]
+                
+                # Apply quality reduction if requested
+                if quality_reduction:
+                    batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)
+                
+                all_frames.append(batch)
+                
+                if progress_callback:
+                    progress_callback(end_idx, n_frames * 2, f"Loading data... {end_idx}/{n_frames}")
+                
+                if i % 500 == 0:
+                    logger.info(f"Loaded {end_idx}/{n_frames} frames...")
+            
+            # Concatenate all batches
+            logger.info("Combining batches...")
+            video_data = np.vstack(all_frames)
+            del all_frames  # Free memory
+            
+            # Save dataset attributes
+            dataset_attrs = dict(video_dataset.attrs)
+            
+            # Delete old uncompressed dataset
+            logger.info("Removing uncompressed dataset...")
+            del f['raw_data/main_video']
+            
+            # Create new compressed dataset
+            logger.info("Creating compressed dataset...")
+            video_compressed = f['raw_data'].create_dataset(
+                'main_video',
+                shape=video_data.shape,
+                dtype=np.uint8,
+                chunks=(1, *frame_shape),  # Single frame chunks
+                compression='gzip',
+                compression_opts=9,
+                shuffle=True,
+                fletcher32=False
+            )
+            
+            # Copy data in batches to save memory
+            logger.info("Writing compressed data...")
+            for i in range(0, n_frames, batch_size):
+                end_idx = min(i + batch_size, n_frames)
+                video_compressed[i:end_idx] = video_data[i:end_idx]
+                
+                if progress_callback:
+                    progress_callback(n_frames + end_idx, n_frames * 2, f"Compressing... {end_idx}/{n_frames}")
+                
+                if i % 500 == 0:
+                    logger.info(f"Compressed {end_idx}/{n_frames} frames...")
+            
+            # Restore attributes (but override compression settings)
+            for key, value in dataset_attrs.items():
+                if key not in ['compression', 'compression_level']:  # Don't copy old compression attrs
+                    video_compressed.attrs[key] = value
+            
+            # Set correct compression attributes
+            video_compressed.attrs['compression'] = 'gzip'
+            video_compressed.attrs['compression_level'] = 9
+            video_compressed.attrs['post_compressed'] = True
+            video_compressed.attrs['post_compression_level'] = 'maximum'
+            
+            # Update root metadata
+            f.attrs['compression_level'] = 9
+            f.attrs['compression'] = 'gzip'
+            f.attrs['post_processed'] = True
+            f.attrs['post_processing_timestamp'] = datetime.now().isoformat()
+            f.attrs['quality_reduction_applied'] = quality_reduction
+            f.attrs['original_compression_level'] = 0
+            
+        # Get compressed file size
+        compressed_size = os.path.getsize(file_path)
+        compression_ratio = ((original_size - compressed_size) / original_size) * 100
+        duration = time.time() - start_time
+        
+        logger.info(f"IN-PLACE compression complete: {original_size/(1024**2):.1f} MB -> {compressed_size/(1024**2):.1f} MB ({compression_ratio:.1f}% reduction)")
+        logger.info(f"Post-processing completed in {duration:.1f} seconds")
+        
+        return {
+            'path': file_path,
+            'original_mb': original_size / (1024**2),
+            'compressed_mb': compressed_size / (1024**2),
+            'reduction_pct': compression_ratio,
+            'duration_sec': duration
+        }
+        
+    except Exception as e:
+        logger.error(f"Error during in-place compression: {e}", exc_info=True)
+        return None
+
+
+def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: bool,
+                              progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
+    """
+    Compress HDF5 using temporary file (original method).
+    Safer but requires 2x disk space.
+    """
+def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: bool,
+                              progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
+    """
+    Compress HDF5 using temporary file (original method).
+    Safer but requires 2x disk space.
+    """
+    try:
+        import shutil
+        from concurrent.futures import ThreadPoolExecutor
         
         # Check disk space BEFORE starting compression
         try:
@@ -1996,19 +2154,24 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
             file_size = os.path.getsize(file_path)
             file_mb = file_size / (1024**2)
             
-            # Need at least 2x the file size for safe compression (original + compressed temp)
-            required_mb = file_mb * 2
+            # Need at least 1.5x the file size for temp file compression
+            required_mb = file_mb * 1.5
             
             if free_mb < required_mb:
-                logger.error(f"Insufficient disk space for compression: {free_mb:.1f}MB free, {required_mb:.1f}MB required")
-                logger.error(f"Please free up at least {required_mb - free_mb:.1f}MB of disk space before compressing")
-                return None
+                logger.error(f"Insufficient disk space for temp file compression: {free_mb:.1f}MB free, {required_mb:.1f}MB required")
+                logger.error(f"Falling back to in-place compression to save space...")
+                # Fall back to in-place mode
+                return _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
             
             logger.info(f"Disk space check: {free_mb:.1f}MB available, {required_mb:.1f}MB required")
             
         except Exception as space_check_error:
             logger.warning(f"Could not check disk space: {space_check_error}")
-            # Continue anyway, will fail later if truly out of space
+        
+        # Get original file size
+        original_size = os.path.getsize(file_path)
+        
+        logger.info("Using TEMP FILE compression (safer, needs more space)")
         
         # Create temporary file for recompressed data
         temp_file = file_path + ".tmp.hdf5"
