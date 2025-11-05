@@ -1,7 +1,7 @@
 """
 Device Manager
 
-Centralized manager for hardware controllers (function generator).
+Centralized manager for hardware controllers (function generator and oscilloscope).
 Provides a single access point for controllers and an optional background health monitor
 that can attempt reconnects if devices drop.
 
@@ -23,11 +23,13 @@ class DeviceManager:
     _instance_lock = threading.Lock()
 
     def __init__(self):
-        """Initialize device manager with function generator controller."""
+        """Initialize device manager with function generator and oscilloscope controllers."""
         from src.controllers.function_generator_controller import get_function_generator_controller
+        from src.controllers.oscilloscope_controller import get_oscilloscope_controller
         
         # Controllers (singletons provided by their modules)
         self._fg = get_function_generator_controller()
+        self._osc = get_oscilloscope_controller()
 
         # Health monitor thread
         self._monitor_thread: Optional[threading.Thread] = None
@@ -55,6 +57,14 @@ class DeviceManager:
         """
         return self._fg
 
+    def get_oscilloscope(self):
+        """Get the oscilloscope controller.
+        
+        Returns:
+            OscilloscopeController: The oscilloscope controller instance
+        """
+        return self._osc
+
     def connect_all(self, fast_fail: bool = True) -> Dict[str, Any]:
         """Attempt to connect to all managed devices.
 
@@ -77,7 +87,37 @@ class DeviceManager:
                 logger.error(f"Failed to connect function generator: {e}")
                 results['function_generator'] = {'connected': False, 'error': str(e)}
 
+            # Oscilloscope
+            try:
+                if not self._osc.is_connected:
+                    self._osc.connect(fast_fail=fast_fail)
+                results['oscilloscope'] = {'connected': self._osc.is_connected}
+            except Exception as e:
+                logger.error(f"Failed to connect oscilloscope: {e}")
+                results['oscilloscope'] = {'connected': False, 'error': str(e)}
+
         return results
+
+    def disconnect_all(self) -> None:
+        """Disconnect all managed devices."""
+        with self._lock:
+            logger.info("Disconnecting all devices")
+            
+            # Disconnect function generator
+            try:
+                if self._fg.is_connected:
+                    self._fg.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting function generator: {e}")
+            
+            # Disconnect oscilloscope
+            try:
+                if self._osc.is_connected:
+                    self._osc.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting oscilloscope: {e}")
+            
+            logger.info("All devices disconnected")
 
     def start_health_monitor(self, interval: float = 5.0):
         """Start a background thread that periodically checks device connections
@@ -117,6 +157,13 @@ class DeviceManager:
                                 logger.info("Function generator reconnected successfully")
                         except Exception as e:
                             logger.debug(f"Failed to reconnect function generator: {e}")
+                    
+                    if not self._osc.is_connected:
+                        try:
+                            if self._osc.connect(fast_fail=True):
+                                logger.info("Oscilloscope reconnected successfully")
+                        except Exception as e:
+                            logger.debug(f"Failed to reconnect oscilloscope: {e}")
                             
             except Exception as e:
                 logger.error(f"Error in health monitor loop: {e}")

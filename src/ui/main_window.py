@@ -314,42 +314,42 @@ class MainWindow(QMainWindow):
     
     def _open_resonance_finder(self):
         """Open resonance finder window with oscilloscope display."""
-        # DISABLED: Resonance finder functionality commented out for now
-        # Oscilloscope integration will be added in the future
-        logger.info("Resonance Finder is currently disabled (not implemented)")
-        QMessageBox.information(self, "Feature Disabled", 
-                              "Resonance Finder is currently disabled.\n\n"
-                              "This feature will be re-enabled in a future update when "
-                              "oscilloscope integration is complete.")
-        
-        # # FUTURE: Uncomment this code when oscilloscope is ready
-        # try:
-        #     from src.ui.resonance_finder_widget import ResonanceFinderWidget
-        #     
-        #     # Create or show resonance finder window
-        #     if not hasattr(self, '_resonance_finder_window') or not self._resonance_finder_window:
-        #         # Get shared oscilloscope controller if available
-        #         osc = getattr(self, 'oscilloscope_controller', None)
-        #         fg = None
-        #         if self.measurement_controls_widget:
-        #             fg = self.measurement_controls_widget.get_function_generator_controller()
-        #         
-        #         self._resonance_finder_window = ResonanceFinderWidget(funcgen=fg, oscilloscope=osc)
-        #     
-        #     # Show and bring to front
-        #     self._resonance_finder_window.show()
-        #     self._resonance_finder_window.activateWindow()
-        #     self._resonance_finder_window.raise_()
-        #     
-        #     logger.info("Opened Resonance Finder window")
-        #     
-        # except Exception as e:
-        #     logger.error(f"Failed to open Resonance Finder: {e}")
-        #     import traceback
-        #     error_details = traceback.format_exc()
-        #     QMessageBox.critical(self, "Error", 
-        #         f"Failed to open Resonance Finder:\n{e}\n\nCheck the log for details.")
-        #     logger.error(f"Resonance Finder error details:\n{error_details}")
+        try:
+            from src.ui.resonance_finder_widget import ResonanceFinderWidget
+            
+            # Create or show resonance finder window
+            if not hasattr(self, '_resonance_finder_window') or not self._resonance_finder_window:
+                # Get shared controllers from DeviceManager
+                fg = None
+                osc = None
+                
+                if self.device_manager:
+                    fg = self.device_manager.get_function_generator()
+                    osc = self.device_manager.get_oscilloscope()
+                elif self.measurement_controls_widget:
+                    # Fallback to measurement controls widget
+                    fg = self.measurement_controls_widget.get_function_generator_controller()
+                
+                # If oscilloscope not available from DeviceManager, try instance variable
+                if not osc:
+                    osc = getattr(self, 'oscilloscope_controller', None)
+                
+                self._resonance_finder_window = ResonanceFinderWidget(funcgen=fg, oscilloscope=osc)
+            
+            # Show and bring to front
+            self._resonance_finder_window.show()
+            self._resonance_finder_window.activateWindow()
+            self._resonance_finder_window.raise_()
+            
+            logger.info("Opened Resonance Finder window")
+            
+        except Exception as e:
+            logger.error(f"Failed to open Resonance Finder: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Error", 
+                f"Failed to open Resonance Finder:\n{e}\n\nCheck the log for details.")
+            logger.error(f"Resonance Finder error details:\n{error_details}")
     
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
@@ -704,29 +704,23 @@ class MainWindow(QMainWindow):
             hardware_status["XY Stage"] = self._init_xy_stage()
             hardware_status["Function Generator"] = self._init_function_generator()
             
-            # DISABLED: Oscilloscope functionality commented out for now
-            # This will be re-enabled when oscilloscope integration is complete
-            self.oscilloscope_controller = None
-            
-            # # FUTURE: Uncomment this when oscilloscope is ready
-            # if hasattr(self, 'device_manager') and getattr(self.device_manager, '_disable_osc', False):
-            #     logger.info("Oscilloscope disabled for fast startup - not included in hardware status")
-            #     self.oscilloscope_controller = None
-            # else:
-            #     # Create a shared oscilloscope controller for other widgets only if enabled
-            #     try:
-            #         from src.controllers.oscilloscope_controller import get_oscilloscope_controller
-            #         self.oscilloscope_controller = get_oscilloscope_controller()
-            #         try:
-            #             # Fast connection attempt - don't block startup
-            #             if self.oscilloscope_controller.connect(fast_fail=True):
-            #                 hardware_status["Oscilloscope"] = {"connected": True, "message": "Oscilloscope connected"}
-            #             else:
-            #                 hardware_status["Oscilloscope"] = {"connected": False, "message": "Not found (will retry in background)"}
-            #         except Exception as e:
-            #             hardware_status["Oscilloscope"] = {"connected": False, "message": f"Fast connect failed: {str(e)}"}
-            #     except Exception as e:
-            #         self.oscilloscope_controller = None
+            # Initialize oscilloscope through DeviceManager
+            # The DeviceManager already handles connection in the background
+            try:
+                if self.device_manager:
+                    osc = self.device_manager.get_oscilloscope()
+                    if osc and osc.is_connected:
+                        hardware_status["Oscilloscope"] = {"connected": True, "message": "Oscilloscope connected"}
+                        self.oscilloscope_controller = osc
+                    else:
+                        hardware_status["Oscilloscope"] = {"connected": False, "message": "Not found (will retry in background)"}
+                        self.oscilloscope_controller = None
+                else:
+                    self.oscilloscope_controller = None
+            except Exception as e:
+                logger.warning(f"Oscilloscope initialization warning: {e}")
+                hardware_status["Oscilloscope"] = {"connected": False, "message": f"Initialization failed: {str(e)}"}
+                self.oscilloscope_controller = None
 
             # Handle camera separately - wait for it to fully initialize
             self._init_camera_with_status_check(hardware_status)

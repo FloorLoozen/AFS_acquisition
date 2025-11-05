@@ -46,60 +46,139 @@ class SweepWorker(QThread):
     def run(self):
         """Execute the frequency sweep in the background thread."""
         try:
+            # Configure oscilloscope for continuous acquisition
+            if self.oscilloscope and self.oscilloscope.is_connected:
+                try:
+                    # Configure oscilloscope to exact user specifications
+                    if hasattr(self.oscilloscope, '_is_siglent') and self.oscilloscope._is_siglent:
+                        # Siglent commands - exact settings
+                        self.oscilloscope._send_command("C1:TRA ON")  # Channel 1 ON
+                        self.oscilloscope._send_command("C2:TRA OFF")  # Channel 2 OFF (only CH1)
+                        self.oscilloscope._send_command("C3:TRA OFF")  # Channel 3 OFF
+                        self.oscilloscope._send_command("C4:TRA OFF")  # Channel 4 OFF
+                        
+                        # Time base: 100ms/div
+                        self.oscilloscope._send_command("TDIV 100MS")
+                        
+                        # Channel 1 settings: 1.00 V/div, offset -32.6V
+                        self.oscilloscope._send_command("C1:VDIV 1.0V")  # 1.00 V/div
+                        self.oscilloscope._send_command("C1:OFST -32.6V")  # Offset -32.6V
+                        
+                        # Trigger: Edge, Channel 1, 30.5V, Rising edge, NORMAL mode
+                        self.oscilloscope._send_command("TRSE EDGE,SR,C1,HT,OFF,POS")  # Edge trigger on CH1, rising edge (POS)
+                        self.oscilloscope._send_command("C1:TRLV 30.5V")  # Trigger level 30.5V
+                        self.oscilloscope._send_command("TRMD NORM")  # NORMAL trigger mode
+                        
+                        # Start acquisition
+                        self.oscilloscope._send_command("ARM")
+                        logger.info("Oscilloscope configured: CH1 only, 100ms/div, 1.00V/div, -32.6V offset, NORMAL trigger 30.5V rising")
+                    else:
+                        # Tektronix commands
+                        self.oscilloscope._send_command("SELECT:CH1 ON")
+                        self.oscilloscope._send_command("HORIZONTAL:SCALE 0.1")  # 100ms/div
+                        self.oscilloscope._send_command("CH1:SCALE 1.0")  # 1.00 V/div
+                        self.oscilloscope._send_command("CH1:OFFSET -32.6")  # -32.6V offset
+                        self.oscilloscope._send_command("TRIGGER:A:EDGE:SOURCE CH1")
+                        self.oscilloscope._send_command("TRIGGER:A:LEVEL 30.5")  # 30.5V trigger
+                        self.oscilloscope._send_command("TRIGGER:A:EDGE:SLOPE RISE")  # Rising edge
+                        self.oscilloscope._send_command("TRIGGER:A:MODE NORMAL")  # NORMAL trigger
+                        self.oscilloscope._send_command("ACQUIRE:STATE RUN")
+                        logger.info("Oscilloscope configured: CH1 only, 100ms/div, 1.00V/div, -32.6V offset, NORMAL trigger 30.5V rising")
+                except Exception as e:
+                    logger.warning(f"Failed to configure oscilloscope: {e}")
+            
             # Check if function generator is connected
-            if self.funcgen.is_connected:
-                # Start frequency sweep on function generator
-                success = self.funcgen.output_sine_wave(
-                    amplitude=self.amplitude,
-                    frequency_mhz=self.freq_start,
-                    channel=1
-                )
-                if not success:
-                    self.sweep_error.emit("Failed to start function generator")
+            if self.funcgen and self.funcgen.is_connected:
+                # Start HARDWARE frequency sweep on function generator (fixed 2 seconds)
+                sweep_duration = 2.0  # Fixed 2 second sweep
+                try:
+                    success = self.funcgen.sine_frequency_sweep(
+                        amplitude=self.amplitude,
+                        freq_start=self.freq_start,
+                        freq_end=self.freq_stop,
+                        sweep_time=sweep_duration,
+                        channel=1
+                    )
+                    if not success:
+                        self.sweep_error.emit("Failed to start hardware sweep")
+                        return
+                    logger.info(f"Hardware sweep started: {self.freq_start}-{self.freq_stop} MHz over {sweep_duration}s")
+                except Exception as e:
+                    logger.error(f"Hardware sweep failed: {e}")
+                    self.sweep_error.emit(f"Hardware sweep error: {e}")
                     return
             else:
                 logger.warning("Function generator not connected - using demo mode")
+                sweep_duration = 2.0
             
-            # Generate frequency sweep data
-            num_points = 100
+            # Generate frequency array for X-axis (maps to sweep settings)
+            num_points = 100  # Sample 100 points during the sweep
             frequencies = np.linspace(self.freq_start, self.freq_stop, num_points)
-            voltages = []
+            peak_voltages = []  # Store peak (upper envelope) values
             
-            step_time = self.sweep_time / num_points
+            step_time = sweep_duration / num_points  # ~20ms per point for 100 points in 2 seconds
             
+            # Small delay for sweep to start
+            time.sleep(0.1)
+            
+            # Collect measurement data during the hardware sweep
+            # Oscilloscope is RUNNING continuously, we just query measurements
             for i, freq in enumerate(frequencies):
-                # Update frequency if function generator is connected
-                if self.funcgen.is_connected:
-                    self.funcgen.update_parameters_only(self.amplitude, freq, 1)
-                
-                time.sleep(step_time)
-                
-                # Get voltage measurement from oscilloscope or simulate
-                if self.oscilloscope.is_connected:
-                    waveform = self.oscilloscope.acquire_single_waveform()
-                    if waveform is not None:
-                        # Calculate RMS voltage
-                        voltage_rms = np.sqrt(np.mean(waveform**2))
-                        voltages.append(voltage_rms)
-                    else:
-                        voltages.append(0.0)
+                # Get current amplitude measurement from oscilloscope (it's running continuously)
+                if self.oscilloscope and self.oscilloscope.is_connected:
+                    try:
+                        # Query the current peak-to-peak or amplitude measurement from CH1
+                        if hasattr(self.oscilloscope, '_is_siglent') and self.oscilloscope._is_siglent:
+                            # Siglent: Use PAVA for parameter measurement (Vpp, Vmax, etc.)
+                            response = self.oscilloscope._send_command("C1:PAVA? PKPK", read_response=True)
+                            if response:
+                                import re
+                                # Extract voltage value from response
+                                match = re.search(r'([-+]?\d+\.?\d*(?:[eE][-+]?\d+)?)', response)
+                                if match:
+                                    peak_value = abs(float(match.group(1)))
+                                    peak_voltages.append(peak_value)
+                                else:
+                                    peak_voltages.append(peak_voltages[-1] if peak_voltages else 0.0)
+                            else:
+                                peak_voltages.append(peak_voltages[-1] if peak_voltages else 0.0)
+                        else:
+                            # Tektronix: Use MEASUREMENT query
+                            waveform = self.oscilloscope.acquire_single_waveform(channel=1)
+                            if waveform is not None and len(waveform) > 0:
+                                peak_value = np.max(np.abs(waveform))
+                                peak_voltages.append(peak_value)
+                            else:
+                                peak_voltages.append(peak_voltages[-1] if peak_voltages else 0.0)
+                    except Exception as e:
+                        logger.debug(f"Measurement error at {freq:.3f} MHz: {e}")
+                        # Use previous value or 0 if error
+                        peak_voltages.append(peak_voltages[-1] if peak_voltages else 0.0)
                 else:
-                    # Generate demo data with resonance-like behavior
-                    # Create a resonance peak around the middle frequency
+                    # Demo mode: Generate resonance-like data
                     center_freq = (self.freq_start + self.freq_stop) / 2
                     peak_width = (self.freq_stop - self.freq_start) * 0.1
                     
-                    # Gaussian-like resonance peak with some noise
                     base_voltage = 0.1 + 0.05 * np.random.random()
                     peak_voltage = 2.0 + 0.3 * np.random.random()
                     
                     resonance = peak_voltage * np.exp(-((freq - center_freq) / peak_width) ** 2)
                     total_voltage = base_voltage + resonance
                     
-                    voltages.append(total_voltage)
+                    peak_voltages.append(total_voltage)
+                
+                # Wait for next sampling point
+                time.sleep(step_time)
             
-            voltages = np.array(voltages)
+            voltages = np.array(peak_voltages)
+            logger.info(f"Sweep completed: {len(frequencies)} points acquired, peak voltage range: {np.min(voltages):.3f} - {np.max(voltages):.3f} V")
+            
+            # X-axis is frequency (from sweep settings), Y-axis is peak voltage measurements (upper envelope)
             self.sweep_completed.emit(frequencies, voltages)
+            
+        except Exception as e:
+            logger.error(f"Sweep failed: {e}")
+            self.sweep_error.emit(str(e))
             
         except Exception as e:
             logger.error(f"Sweep failed: {e}")
@@ -157,23 +236,35 @@ class ResonanceFinderWidget(QWidget):
         self._initialize_instruments()
     
     def _initialize_instruments(self):
-        """Initialize hardware connections."""
+        """Check hardware connection status and inform user."""
         funcgen_connected = False
         osc_connected = False
         
         try:
-            funcgen_connected = self.funcgen.connect()
+            # Check if function generator is already connected (via DeviceManager)
+            funcgen_connected = self.funcgen.is_connected if self.funcgen else False
             if not funcgen_connected:
-                logger.warning("Failed to connect to function generator")
+                logger.info("Function generator not connected - will attempt background connection")
+                # Try to connect if not already connected
+                try:
+                    funcgen_connected = self.funcgen.connect(fast_fail=True)
+                except Exception as conn_e:
+                    logger.debug(f"Function generator connection attempt failed: {conn_e}")
         except Exception as e:
-            logger.error(f"Function generator connection failed: {e}")
+            logger.error(f"Function generator check failed: {e}")
         
         try:
-            osc_connected = self.oscilloscope.connect()
+            # Check if oscilloscope is already connected (via DeviceManager)
+            osc_connected = self.oscilloscope.is_connected if self.oscilloscope else False
             if not osc_connected:
-                logger.warning("Failed to connect to oscilloscope")
+                logger.info("Oscilloscope not connected - will attempt background connection")
+                # Try to connect if not already connected
+                try:
+                    osc_connected = self.oscilloscope.connect(fast_fail=True)
+                except Exception as conn_e:
+                    logger.debug(f"Oscilloscope connection attempt failed: {conn_e}")
         except Exception as e:
-            logger.error(f"Oscilloscope connection failed: {e}")
+            logger.error(f"Oscilloscope check failed: {e}")
         
         # Only show error if both devices fail
         if not funcgen_connected and not osc_connected:
@@ -542,14 +633,24 @@ class ResonanceFinderWidget(QWidget):
                 self.sweep_worker.quit()
                 self.sweep_worker.wait(1000)  # Wait up to 1 second
             
-            # Stop function generator
-            if self.funcgen.is_connected:
-                self.funcgen.stop_all_outputs()
-                self.funcgen.disconnect()
+            # Stop function generator output (but don't disconnect - managed by DeviceManager)
+            if self.funcgen and self.funcgen.is_connected:
+                try:
+                    self.funcgen.stop_all_outputs()
+                    logger.info("Stopped function generator outputs")
+                except Exception as fg_e:
+                    logger.warning(f"Error stopping function generator: {fg_e}")
             
-            # Disconnect oscilloscope
-            if self.oscilloscope.is_connected:
-                self.oscilloscope.disconnect()
+            # Reset oscilloscope to normal viewing mode (turn off persistence)
+            if self.oscilloscope and self.oscilloscope.is_connected:
+                try:
+                    self.oscilloscope.reset_to_normal_mode()
+                    logger.info("Reset oscilloscope to normal viewing mode")
+                except Exception as osc_e:
+                    logger.warning(f"Error resetting oscilloscope: {osc_e}")
+            
+            # Note: Don't disconnect devices as they are managed by DeviceManager
+            # and may be used by other parts of the application
                 
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")

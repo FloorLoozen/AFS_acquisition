@@ -116,12 +116,22 @@ class FunctionGeneratorController:
                 if self.resource_name in resources:
                     target_resource = self.resource_name
             else:
-                # Auto-detect Siglent device
-                for resource in resources:
-                    resource_upper = resource.upper()
-                    if any(keyword in resource_upper for keyword in ['SIGLENT', 'SDG', 'F4EC']):
-                        target_resource = resource
-                        break
+                # Hardcoded function generator address (Siglent SDG1032X)
+                hardcoded_fg = 'USB0::0xF4EC::0xEE38::SDG1XCA4161219::INSTR'
+                if hardcoded_fg in resources:
+                    target_resource = hardcoded_fg
+                else:
+                    # Fallback: Auto-detect Siglent function generator (SDG series)
+                    for resource in resources:
+                        resource_upper = resource.upper()
+                        # Look for SDG (function generator), but exclude SDS (oscilloscope)
+                        if 'SDG' in resource_upper and 'SDS' not in resource_upper:
+                            target_resource = resource
+                            break
+                        # Fallback: check for F4EC:EE38 which is the function generator product ID
+                        if 'F4EC' in resource_upper and 'EE38' in resource_upper:
+                            target_resource = resource
+                            break
             
             if not target_resource:
                 return False
@@ -186,12 +196,22 @@ class FunctionGeneratorController:
                 else:
                     raise FunctionGeneratorError(f"Specified resource '{self.resource_name}' not found")
             else:
-                # Auto-detect Siglent device with multiple patterns
-                for resource in resources:
-                    resource_upper = resource.upper()
-                    if any(keyword in resource_upper for keyword in ['SIGLENT', 'SDG', 'F4EC']):
-                        target_resource = resource
-                        break
+                # Hardcoded function generator address (Siglent SDG1032X)
+                hardcoded_fg = 'USB0::0xF4EC::0xEE38::SDG1XCA4161219::INSTR'
+                if hardcoded_fg in resources:
+                    target_resource = hardcoded_fg
+                else:
+                    # Fallback: Auto-detect Siglent device with multiple patterns
+                    for resource in resources:
+                        resource_upper = resource.upper()
+                        # Look for SDG (function generator), exclude SDS (oscilloscope)
+                        if 'SDG' in resource_upper and 'SDS' not in resource_upper:
+                            target_resource = resource
+                            break
+                        # Check for F4EC:EE38 which is the function generator product ID
+                        if 'F4EC' in resource_upper and 'EE38' in resource_upper:
+                            target_resource = resource
+                            break
                 
                 if not target_resource:
                     # Try first USB or TCP resource as fallback
@@ -411,15 +431,26 @@ class FunctionGeneratorController:
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
-            # Configure waveform parameters
+            # Disable sweep mode (in case it was enabled from previous operation)
+            # Siglent uses SWWV for sweep, turn it off by ensuring basic waveform mode
+            try:
+                self._send_command(f"{channel_str}:SWWV STATE,OFF")
+                logger.debug(f"Sweep mode disabled for {channel_str}")
+            except Exception as e:
+                # If sweep command not supported or fails, log and continue
+                # This is not critical - basic waveform should override sweep anyway
+                logger.debug(f"Could not disable sweep (may not be active): {e}")
+            
+            # Configure waveform parameters - this overrides sweep mode
             self._send_command(f"{channel_str}:BSWV SHAPE,SINE")
             self._send_command(f"{channel_str}:BSWV FRQ,{frequency_hz}")
             self._send_command(f"{channel_str}:BSWV AMP,{amplitude}")
             
-            # Only turn output ON if it's not already on
-            if not self._output_on:
-                self._send_command(f"{channel_str}:OUTP ON")
-                self._output_on = True
+            # Turn output ON (force it on regardless of previous state to ensure it's actually on)
+            self._send_command(f"{channel_str}:OUTP ON")
+            self._output_on = True
+            
+            logger.info(f"Function generator CH{channel}: {frequency_mhz:.3f} MHz, {amplitude:.2f} Vpp, ON")
             
             self._last_sine = current
             return True
@@ -515,6 +546,15 @@ class FunctionGeneratorController:
                 # Turn off both channels
                 self._send_command("C1:OUTP OFF")
                 self._send_command("C2:OUTP OFF")
+                
+                # Disable sweep mode on both channels (in case it was enabled)
+                # Siglent uses SWWV for sweep control
+                try:
+                    self._send_command("C1:SWWV STATE,OFF")
+                    self._send_command("C2:SWWV STATE,OFF")
+                except Exception:
+                    # If sweep command not supported, ignore
+                    pass
                 
                 self._output_on = False
                 return True
