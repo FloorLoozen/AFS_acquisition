@@ -6,11 +6,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 import argparse
+import re
+import struct
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 import pyvisa
+from pyvisa import constants as visa_constants
 
 if __package__ in (None, ""):
     # Allow running this file directly: add project root so `src` imports resolve.
@@ -28,12 +32,24 @@ class SiglentWaveform:
     times: np.ndarray
 
 
+@dataclass(slots=True)
+class _SiglentWaveformMeta:
+    endian: str
+    comm_type: int
+    vertical_gain: float
+    vertical_offset: float
+    horiz_interval: float
+    horiz_offset: float
+    record_length: int
+
+
 class OscilloscopeController:
     """Small controller that only supports Siglent SDS oscilloscopes."""
 
     def __init__(self, resource_name: Optional[str] = None) -> None:
         self.resource_name = resource_name
         self.scope: Optional[pyvisa.Resource] = None
+        self._time_division_seconds: Optional[float] = None
 
     def connect(self) -> bool:
         """Connect to the oscilloscope using PyVISA."""
@@ -66,6 +82,7 @@ class OscilloscopeController:
         scope.read_termination = "\n"
         scope.write_termination = "\n"
         scope.query_delay = max(getattr(scope, "query_delay", 0.0), 0.1)
+        scope.write(":SYSTem:REMote")
         logger.info("Oscilloscope ID: %s", scope.query("*IDN?").strip())
 
         self.scope = scope
@@ -75,7 +92,26 @@ class OscilloscopeController:
         if not self.scope:
             return
         try:
-            self.scope.write("SYSTem:LOCal")
+            release_commands = [
+                ":SYSTem:LOCal",
+                "SYSTem:LOCal",
+                ":SYSTem:REMote OFF",
+                "SYSTem:REMote OFF",
+                ":SYSTem:LOCK OFF",
+                "SYSTem:LOCK OFF",
+                ":SYSTem:KEY:LOCK DISable",
+                "KEY:LOCK DISable",
+            ]
+            for cmd in release_commands:
+                try:
+                    self.scope.write(cmd)
+                except Exception:  # noqa: BLE001 - best effort only
+                    logger.debug("Scope did not accept '%s'", cmd)
+            try:
+                self.scope.control_ren(visa_constants.VI_GPIB_REN_DEASSERT_GTL)
+            except Exception:  # noqa: BLE001 - best effort only
+                logger.debug("Scope does not support REN deassert")
+            time.sleep(0.3)
         except Exception:  # noqa: BLE001 - best effort only
             logger.debug("Failed to return scope to local mode")
         try:
@@ -83,47 +119,121 @@ class OscilloscopeController:
         finally:
             self.scope = None
 
-    def acquire_waveform(self, channel: int = 1) -> Optional[SiglentWaveform]:
+    def acquire_waveform(
+        self,
+        channel: int = 1,
+        require_trigger: bool = True,
+        trigger_timeout: float = 5.0,
+        post_trigger_hold: Optional[float] = None,
+    ) -> Optional[SiglentWaveform]:
         if not self.scope:
             logger.error("acquire_waveform called before connect")
             return None
 
         scope = self.scope
+
+        if require_trigger:
+            try:
+                scope.write(":SINGle")
+            except Exception as exc:  # noqa: BLE001 - best effort only
+                logger.debug("Failed to start single acquisition: %s", exc)
+
+            if not self.wait_for_trigger(timeout=trigger_timeout):
+                logger.warning(
+                    "Timed out waiting %.1f s for trigger; reading current display.",
+                    trigger_timeout,
+                )
+            else:
+                hold_seconds = post_trigger_hold
+                if hold_seconds is None and self._time_division_seconds:
+                    hold_seconds = self._time_division_seconds * 10
+                if hold_seconds:
+                    logger.debug(
+                        "Holding %.3f s after trigger to capture full record.",
+                        hold_seconds,
+                    )
+                    time.sleep(hold_seconds)
+        else:
+            try:
+                scope.write(":RUN")
+            except Exception as exc:  # noqa: BLE001 - best effort only
+                logger.debug("Failed to set RUN mode: %s", exc)
+
         scope.write(f":WAVeform:SOURce C{channel}")
         scope.write(":WAVeform:MODE NORMal")
         scope.write(":WAVeform:FORMat BYTE")
+
+        try:
+            scope.clear()
+        except Exception:  # noqa: BLE001 - best effort only
+            logger.debug("Failed to clear scope IO buffers before waveform read")
+        time.sleep(0.05)
 
         header = scope.query_binary_values(
             ":WAVeform:PREamble?",
             datatype="B",
             container=bytearray,
         )
-        if len(header) < 200:
-            logger.error("WAVeform:PREamble response too short (%d bytes)", len(header))
+        meta = self._decode_preamble(header)
+        if not meta:
             return None
 
-        def _unpack(fmt: str, offset: int) -> float:
-            size = np.dtype(fmt).itemsize
-            return np.frombuffer(header[offset : offset + size], fmt)[0]
+        logger.debug(
+            "Waveform meta: comm_type=%s gain=%.6e offset=%.6e dt=%.6e t0=%.6e record=%d",
+            meta.comm_type,
+            meta.vertical_gain,
+            meta.vertical_offset,
+            meta.horiz_interval,
+            meta.horiz_offset,
+            meta.record_length,
+        )
 
-        comm_order = int.from_bytes(header[34:36], "big")
-        endian = ">" if comm_order == 0 else "<"
-        vertical_gain = float(_unpack(endian + "f", 156))
-        vertical_offset = float(_unpack(endian + "f", 160))
-        horiz_interval = float(_unpack(endian + "f", 176))
-        horiz_offset = float(_unpack(endian + "d", 180))
+        data_kwargs: dict[str, object] = {
+            "datatype": "b" if meta.comm_type == 0 else "h",
+            "container": np.array,
+        }
+        if meta.comm_type == 1:
+            data_kwargs["is_big_endian"] = meta.endian == ">"
 
         samples = scope.query_binary_values(
             ":WAVeform:DATA?",
-            datatype="b",
-            container=np.array,
+            **data_kwargs,
         )
         if samples.size == 0:
             logger.error("Scope returned no samples")
             return None
 
-        voltages = (samples.astype(np.float64) - vertical_offset) * vertical_gain
-        times = horiz_offset + np.arange(samples.size, dtype=np.float64) * horiz_interval
+        if meta.record_length and meta.record_length != samples.size:
+            logger.debug(
+                "Record length mismatch: preamble reports %d points, received %d",
+                meta.record_length,
+                samples.size,
+            )
+
+        dtype = np.int16 if meta.comm_type == 1 else np.int8
+        samples = samples.astype(dtype, copy=False)
+        logger.debug("Sample codes: min=%d max=%d", int(samples.min()), int(samples.max()))
+
+        if np.isclose(meta.horiz_interval, 0.0):
+            fallback_span = None
+            if self._time_division_seconds:
+                fallback_span = self._time_division_seconds * 10.0
+            if fallback_span and samples.size > 1:
+                meta.horiz_interval = fallback_span / (samples.size - 1)
+                meta.horiz_offset = 0.0
+                logger.debug(
+                    "Horizontal interval reported as 0; using fallback %.6e s per sample.",
+                    meta.horiz_interval,
+                )
+            else:
+                logger.warning("Horizontal interval reported as 0; cannot infer time axis.")
+                return None
+
+        voltages = (samples.astype(np.float64) - meta.vertical_offset) * meta.vertical_gain
+        times = meta.horiz_offset + np.arange(samples.size, dtype=np.float64) * meta.horiz_interval
+        if times[0] > times[-1]:
+            times = times[::-1]
+            voltages = voltages[::-1]
         return SiglentWaveform(voltages=voltages, times=times)
 
     def clear_persistence(self) -> None:
@@ -135,17 +245,115 @@ class OscilloscopeController:
         except Exception:  # noqa: BLE001 - best effort only
             logger.debug("Failed to toggle persistence")
 
-    def configure_basic_view(self, channel: int = 1) -> None:
+    def set_time_division(self, time_div: str) -> None:
+        if not self.scope:
+            return
+        seconds = self._parse_time_division_seconds(time_div)
+        try:
+            self.scope.write(f"TDIV {time_div}")
+            if seconds is not None:
+                self._time_division_seconds = seconds
+        except Exception:  # noqa: BLE001 - best effort only
+            logger.debug("Failed to set TDIV to %s", time_div)
+        else:
+            if seconds is None:
+                logger.debug("Could not parse time division value '%s'", time_div)
+
+    def wait_for_trigger(self, timeout: float = 5.0, poll_interval: float = 0.05) -> bool:
+        if not self.scope:
+            return False
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                status = self.scope.query(":TRIGger:STATus?").strip().upper()
+            except Exception as exc:  # noqa: BLE001 - best effort only
+                logger.debug("Trigger status query failed: %s", exc)
+                time.sleep(poll_interval)
+                continue
+
+            if status.startswith("TD") or status.startswith("STOP"):
+                return True
+
+            time.sleep(poll_interval)
+
+        return False
+
+    def configure_basic_view(self, channel: int = 1, time_div: str = "100MS") -> None:
         if not self.scope:
             return
         try:
             self.scope.write(f"C{channel}:TRA ON")
             self.scope.write(f"C{channel}:VDIV 0.5V")
-            self.scope.write("TDIV 100US")
-            self.scope.write("TRMD AUTO")
+            self.set_time_division(time_div)
+            self.scope.write("TRMD NORM")
         except Exception:  # noqa: BLE001 - best effort only
             logger.debug("Basic configuration failed")
 
+    @staticmethod
+    def _parse_time_division_seconds(value: str) -> Optional[float]:
+        cleaned = value.strip().upper()
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Z]+)?", cleaned)
+        if not match:
+            return None
+
+        magnitude = float(match.group(1))
+        suffix = match.group(2) or "S"
+
+        unit_scale = {
+            "S": 1.0,
+            "SEC": 1.0,
+            "MS": 1e-3,
+            "US": 1e-6,
+            "NS": 1e-9,
+            "PS": 1e-12,
+        }.get(suffix)
+
+        if unit_scale is None:
+            return None
+
+        return magnitude * unit_scale
+
+    @staticmethod
+    def _decode_preamble(header: bytearray) -> Optional[_SiglentWaveformMeta]:
+        if len(header) < 200:
+            logger.error("WAVeform:PREamble response too short (%d bytes)", len(header))
+            return None
+
+        comm_order_big = int.from_bytes(header[34:36], "big", signed=False)
+        comm_order_little = int.from_bytes(header[34:36], "little", signed=False)
+
+        if comm_order_big in (0, 1):
+            endian = ">" if comm_order_big == 0 else "<"
+        elif comm_order_little in (0, 1):
+            endian = ">" if comm_order_little == 0 else "<"
+        else:
+            logger.error(
+                "Unable to determine waveform endianness (comm_order bytes=%s)",
+                header[34:36],
+            )
+            return None
+
+        comm_type = struct.unpack_from(endian + "h", header, 32)[0]
+        if comm_type not in (0, 1):
+            logger.error("Unsupported waveform comm_type %s", comm_type)
+            return None
+
+        vertical_gain = struct.unpack_from(endian + "f", header, 156)[0]
+        vertical_offset = struct.unpack_from(endian + "f", header, 160)[0]
+        horiz_interval = struct.unpack_from(endian + "f", header, 176)[0]
+        horiz_offset = struct.unpack_from(endian + "d", header, 180)[0]
+        record_length = struct.unpack_from(endian + "I", header, 116)[0]
+
+        return _SiglentWaveformMeta(
+            endian=endian,
+            comm_type=comm_type,
+            vertical_gain=vertical_gain,
+            vertical_offset=vertical_offset,
+            horiz_interval=horiz_interval,
+            horiz_offset=horiz_offset,
+            record_length=record_length,
+        )
 
 _OSCILLOSCOPE: Optional[OscilloscopeController] = None
 
@@ -172,6 +380,27 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="Oscilloscope channel to capture (default: 1).",
     )
     parser.add_argument(
+        "--time-div",
+        default="100MS",
+        help="Time per division value to set (default: 100MS).",
+    )
+    parser.add_argument(
+        "--trigger-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for a trigger before falling back to the current display.",
+    )
+    parser.add_argument(
+        "--hold-after-trigger",
+        type=float,
+        help="Seconds to wait after a trigger fires before reading the waveform (defaults to TDIV×10).",
+    )
+    parser.add_argument(
+        "--no-trigger",
+        action="store_true",
+        help="Capture immediately without arming the trigger.",
+    )
+    parser.add_argument(
         "--no-config",
         action="store_true",
         help="Skip the basic display/trigger configuration step.",
@@ -194,17 +423,27 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         if not args.no_config:
-            controller.configure_basic_view(channel=args.channel)
+            controller.configure_basic_view(channel=args.channel, time_div=args.time_div)
+        else:
+            controller.set_time_division(args.time_div)
 
-        waveform = controller.acquire_waveform(channel=args.channel)
+        waveform = controller.acquire_waveform(
+            channel=args.channel,
+            require_trigger=not args.no_trigger,
+            trigger_timeout=args.trigger_timeout,
+            post_trigger_hold=args.hold_after_trigger,
+        )
         if waveform is None:
             logger.error("Scope returned no waveform data.")
             return 2
 
         print(f"Captured {waveform.times.size} samples on channel {args.channel}")
+        voltage_min = float(waveform.voltages.min())
+        voltage_max = float(waveform.voltages.max())
+        voltage_ptp = float(voltage_max - voltage_min)
         print(
             f"Time span: {waveform.times[0]:.6e} s → {waveform.times[-1]:.6e} s\n"
-            f"Voltage span: {waveform.voltages.min():.3f} V → {waveform.voltages.max():.3f} V"
+            f"Voltage span: {voltage_min:.3e} V → {voltage_max:.3e} V (Δ={voltage_ptp:.3e} V)"
         )
 
         if not args.no_plot:

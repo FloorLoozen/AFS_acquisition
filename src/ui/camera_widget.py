@@ -228,7 +228,7 @@ class CameraWidget(QGroupBox):
             path: Path to the compressed file
             original_mb: Original file size in MB
             compressed_mb: Compressed file size in MB
-            reduction_pct: Compression percentage (0-100)
+            reduction_pct: Percent change vs. original (negative indicates increase)
         """
         # Close progress dialog if it exists
         if self.compression_progress_dialog:
@@ -254,6 +254,10 @@ class CameraWidget(QGroupBox):
         # Format file sizes for display
         original_str = f"{original_mb:.1f} MB" if original_mb < 1024 else f"{original_mb/1024:.2f} GB"
         compressed_str = f"{compressed_mb:.1f} MB" if compressed_mb < 1024 else f"{compressed_mb/1024:.2f} GB"
+
+        # Pick label based on whether compression actually reduced or increased the size
+        change_label = "Reduction" if reduction_pct >= 0 else "Increase"
+        change_value = abs(reduction_pct)
         
         # Create detailed completion message
         message = (
@@ -261,7 +265,7 @@ class CameraWidget(QGroupBox):
             f"File: {path}\n\n"
             f"Original size: {original_str}\n"
             f"Compressed size: {compressed_str}\n"
-            f"Reduction: {reduction_pct:.1f}%\n\n"
+            f"{change_label}: {change_value:.1f}%\n\n"
             f"✓ Lossless compression - 100% data preserved"
         )
         

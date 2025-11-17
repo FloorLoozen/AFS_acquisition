@@ -1976,7 +1976,7 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
             'path': str,              # Path to compressed file
             'original_mb': float,     # Original file size in MB
             'compressed_mb': float,   # Compressed file size in MB
-            'reduction_pct': float,   # Compression percentage (0-100)
+            'reduction_pct': float,   # Percent change vs. original (negative = increase)
             'duration_sec': float     # Time taken for compression
         }
         or None if error occurred
@@ -2114,7 +2114,12 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
         compression_ratio = ((original_size - compressed_size) / original_size) * 100
         duration = time.time() - start_time
         
-        logger.info(f"IN-PLACE compression complete: {original_size/(1024**2):.1f} MB -> {compressed_size/(1024**2):.1f} MB ({compression_ratio:.1f}% reduction)")
+        change_label = "reduction" if compression_ratio >= 0 else "increase"
+        logger.info(
+            f"IN-PLACE compression complete: "
+            f"{original_size/(1024**2):.1f} MB -> {compressed_size/(1024**2):.1f} MB "
+            f"({abs(compression_ratio):.1f}% {change_label})"
+        )
         logger.info(f"Post-processing completed in {duration:.1f} seconds")
         
         return {
@@ -2325,11 +2330,12 @@ def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: 
             compressed_size = os.path.getsize(temp_file)
             compression_ratio = (1 - compressed_size / original_size) * 100
             
+            change_label = "reduction" if compression_ratio >= 0 else "increase"
             logger.info(
                 f"Post-compression complete: "
                 f"Original {original_size/(1024**2):.1f} MB -> "
                 f"Compressed {compressed_size/(1024**2):.1f} MB "
-                f"({compression_ratio:.1f}% reduction)"
+                f"({abs(compression_ratio):.1f}% {change_label})"
             )
             
             # CRITICAL: Force garbage collection BEFORE attempting file operations
