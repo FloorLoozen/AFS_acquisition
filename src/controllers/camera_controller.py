@@ -132,6 +132,9 @@ class CameraController:
         self.use_test_pattern = False  # Always try hardware first
         self.test_frame_counter = 0
         
+        # FPS control
+        self.target_fps = None  # Target FPS for capture limiting (None = no limit)
+        
         # Error tracking
         self.last_error = None
         self.consecutive_errors = 0
@@ -608,7 +611,8 @@ class CameraController:
             try:
                 current_time = time.time()
                 
-                # Frame rate limiting for test pattern mode (enforce 30 FPS)
+                # Frame rate limiting for test pattern mode only
+                # Hardware mode: camera's is_FreezeVideo already blocks at configured FPS
                 if self.use_test_pattern:
                     time_since_last_capture = current_time - last_capture_time
                     if time_since_last_capture < target_frame_interval:
@@ -656,6 +660,16 @@ class CameraController:
                     with self.stats_lock:
                         self.consecutive_errors += 1
                 
+                # For hardware mode, add small sleep to prevent busy-waiting
+                # Camera buffer updates at configured FPS rate
+                if not self.use_test_pattern:
+                    if self.target_fps and self.target_fps > 0:
+                        # Sleep for slightly less than frame interval to poll efficiently
+                        frame_interval = 1.0 / self.target_fps
+                        time.sleep(frame_interval * 0.8)  # Poll at 1.25x target rate
+                    else:
+                        time.sleep(0.01)  # Default 100 Hz polling
+                
                 last_capture_time = current_time
                 
             except Exception as e:
@@ -672,25 +686,15 @@ class CameraController:
             return self._capture_hardware_frame()
     
     def _capture_hardware_frame(self) -> Optional[np.ndarray]:
-        """Capture frame from camera hardware."""
+        """Capture frame from camera hardware in continuous capture mode."""
         if not PYUEYE_AVAILABLE or not self.h_cam:
             return None
         
         try:
-            # Use blocking capture with very short timeout for better frame rates
-            ret = ueye.is_FreezeVideo(self.h_cam, ueye.IS_WAIT)
-            if ret != ueye.IS_SUCCESS:
-                if ret == ueye.IS_TIMED_OUT:
-                    # Timeout is normal, just return None
-                    return None
-                elif ret in [ueye.IS_INVALID_CAMERA_HANDLE, ueye.IS_NO_SUCCESS]:
-                    # Camera disconnected, switch to test pattern
-                    if not self.use_test_pattern:
-                        logger.warning("Camera disconnected, switching to test pattern")
-                        self.use_test_pattern = True
-                return None
+            # In continuous capture mode, frames are written to buffer automatically
+            # The camera's configured FPS controls how fast new frames arrive
+            # We just read the buffer - no blocking needed
             
-            # Get frame data (grayscale)
             height = int(self.height)
             width = int(self.width)
             
@@ -842,14 +846,26 @@ class CameraController:
         if fps <= 0:
             logger.error(f"Invalid frame rate: {fps} fps (must be > 0)")
             return False
+        
+        if not self.h_cam or not PYUEYE_AVAILABLE:
+            logger.warning(f"Cannot set framerate: camera not connected")
+            return False
+        
+        try:
+            new_fps = ueye.DOUBLE(fps)
+            actual_fps = ueye.DOUBLE()
+            ret = ueye.is_SetFrameRate(self.h_cam, new_fps, actual_fps)
             
-        new_fps = ueye.DOUBLE(fps)
-        return self._set_camera_parameter(
-            "framerate", fps,
-            lambda: ueye.is_SetFrameRate(self.h_cam, new_fps, None),
-            f"Frame rate set to {fps:.1f} fps",
-            "Failed to set frame rate"
-        )
+            if ret == ueye.IS_SUCCESS:
+                self.target_fps = fps  # Store requested target
+                logger.info(f"Frame rate set: requested {fps:.1f} fps, actual {actual_fps.value:.1f} fps")
+                return True
+            else:
+                logger.error(f"Failed to set frame rate: error code {ret}")
+                return False
+        except Exception as e:
+            logger.error(f"Error setting framerate: {e}")
+            return False
     
     def apply_settings(self, settings: dict) -> dict:
         """Apply multiple camera settings at once.

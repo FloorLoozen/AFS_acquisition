@@ -183,7 +183,7 @@ class LoggingConfig:
 @dataclass
 class FilesConfig:
     """File and path configuration."""
-    default_save_path: str = "C:/Users/fAFS/Documents/Floor/tmp"
+    default_save_path: str = r"C:\Users\AFS\Documents\Floor\Software\tmp"
     auto_backup: bool = True
     backup_count: int = 5
     temp_directory: str = "temp"
@@ -196,8 +196,13 @@ class FilesConfig:
         """Validate files configuration."""
         # Check if parent directory of save path exists
         save_path = Path(self.default_save_path)
-        if not save_path.parent.exists():
-            raise ConfigurationError(f"Parent directory of save path does not exist: {save_path.parent}")
+        parent = save_path.parent
+        if not parent.exists():
+            # Try to create the parent directory automatically for convenience
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise ConfigurationError(f"Parent directory of save path does not exist and could not be created: {parent} ({e})")
         if self.backup_count < 0:
             raise ConfigurationError("Backup count must be non-negative")
         if self.max_file_age_days <= 0:

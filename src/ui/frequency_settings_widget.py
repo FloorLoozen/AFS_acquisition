@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.utils.logger import get_logger
+from src.utils.config_manager import get_config
 
 logger = get_logger("frequency_settings")
 
@@ -23,11 +24,9 @@ class FrequencySettingsWidget(QGroupBox):
         
 # Frequency settings initialized
         
-        # Initialize paths - use specified tmp folder
-        import os
-        # Use the specified path: C:/Users/fAFS/Documents/Floor/tmp
-        default_dir = "C:/Users/fAFS/Documents/Floor/tmp"
-        self.save_path = default_dir
+        # Initialize paths - use configured default save path (from ConfigManager)
+        cfg = get_config()
+        self.save_path = cfg.files.default_save_path
         # Use simple date format for filename: YYYYMMDD
         self.default_filename = datetime.now().strftime("%Y%m%d")
         

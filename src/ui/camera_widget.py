@@ -321,10 +321,10 @@ class CameraWidget(QGroupBox):
             self.camera = CameraController(camera_id=camera_id, max_queue_size=10)
             
             if self.camera.initialize():
+                # Apply camera settings BEFORE starting capture to avoid FPS mismatch
+                self._apply_default_camera_settings()
+                
                 if self.camera.start_capture():
-                    # Apply brighter default settings immediately
-                    self._apply_default_camera_settings()
-                    
                     self.is_running = True
                     self.is_live = False
                     
@@ -470,13 +470,19 @@ class CameraWidget(QGroupBox):
                     self._record_frame_async, frame_to_record
                 )
                 
-                # OPTIMIZATION: Reduce display updates during recording to save CPU
-                # Only update display every 5th frame when recording (was every 3rd)
+                # OPTIMIZATION: Reduce display updates during recording but aim for ~20 FPS
                 if not hasattr(self, '_recording_display_skip_counter'):
                     self._recording_display_skip_counter = 0
-                    
+                if not hasattr(self, '_recording_display_skip_target'):
+                    try:
+                        target_rec_fps = getattr(self, 'hdf5_recorder').fps if getattr(self, 'hdf5_recorder', None) else 17.0
+                        # Aim to display at ~17 FPS during recording
+                        self._recording_display_skip_target = max(1, int(round(target_rec_fps / 17.0)))
+                    except Exception:
+                        self._recording_display_skip_target = 1
+
                 self._recording_display_skip_counter += 1
-                if self._recording_display_skip_counter % 5 != 0:
+                if self._recording_display_skip_counter % self._recording_display_skip_target != 0:
                     return  # Skip display update, focus on recording
             else:
                 # Reset skip counter when not recording
@@ -696,6 +702,15 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.warning(f"Failed to save recording metadata: {e}")
             
+            # Try to set camera to recording frame rate (best-effort)
+            try:
+                if self.camera and hasattr(self.camera, 'apply_settings'):
+                    res = self.camera.apply_settings({'fps': TARGET_FPS})
+                    if not res.get('fps', False):
+                        logger.warning(f"Camera refused or failed to set recording fps {TARGET_FPS}")
+            except Exception as e:
+                logger.debug(f"Could not set camera fps for recording: {e}")
+
             # Set recording state
             self.is_recording = True
             self.recording_path = file_path
@@ -896,6 +911,13 @@ class CameraWidget(QGroupBox):
                 duration = datetime.now() - self.recording_start_time
                 # Recording completed
             
+            # Restore live camera FPS target (best-effort)
+            try:
+                if self.camera and hasattr(self.camera, 'apply_settings'):
+                    self.camera.apply_settings({'fps': 17.0})
+            except Exception:
+                pass
+
             # Reset state
             self.recording_path = ""
             self.recording_start_time = None
@@ -1087,24 +1109,26 @@ class CameraWidget(QGroupBox):
                 logger.error(f"Failed to log initial function generator state: {e}")
     
     def _apply_default_camera_settings(self):
-        """Apply brighter default camera settings."""
+        """Apply default camera settings optimized for live view."""
         if not self.camera or not hasattr(self.camera, 'apply_settings'):
+            logger.warning("Cannot apply default settings: camera not available")
             return
         
-        # Default settings optimized for live view (15 FPS for smooth, low-CPU display)
+        # Default settings optimized for live view (15-20 FPS range)
         default_settings = {
             'exposure_ms': 15.0,
-            'gain_master': 2,  # Use integer for gain
-            'frame_rate_fps': 15.0,  # 15 FPS for live view (saves CPU, smooth display)
-            'brightness': 50,   # Standard brightness
-            'contrast': 50,     # No contrast change initially  
-            'saturation': 50    # No saturation change initially
+            'gain_master': 2,
+            'fps': 17.0,  # 17 FPS for live view (middle of 15-20 range)
+            'brightness': 50,
+            'contrast': 50,
+            'saturation': 50
         }
         
         try:
             result = self.camera.apply_settings(default_settings)
+            logger.info(f"Applied default camera settings: {result}")
             
-            # Also update image processing settings for live view
+            # Update image processing settings for live view
             self.update_image_settings(default_settings)
         except Exception as e:
             logger.warning(f"Failed to apply default camera settings: {e}")

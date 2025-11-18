@@ -126,7 +126,7 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
-                 fps: float = 60.0, min_fps: float = 20.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
+                 fps: float = 20.0, min_fps: float = 20.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
         """
         Initialize the HDF5 video recorder with configurable compression.
         
@@ -175,18 +175,24 @@ class HDF5VideoRecorder:
         self.start_time: Optional[float] = None
         
         # Dataset parameters - optimized for performance (use downscaled frame shape for chunks)
+        # Tunable target chunk size in MB (4 MB is a good starting point for NVMe + 32GB RAM)
+        self.target_chunk_mb = 4
         self.chunk_size = self._calculate_optimal_chunk_size(self.frame_shape)
-        self.initial_size = 500  # Smaller initial allocation to reduce file size (was 2000)
+        # Initial allocation: default to ~1 minute of frames when possible to reduce resizes
+        self.initial_size = max(100, int(self.fps * 60))
         self.growth_factor = 2.0  # Exponential growth for better amortized performance
         
         # Performance tracking
         self.write_errors = 0
         self.max_write_errors = 10  # Stop recording after too many errors
         self.last_flush_time = 0
-        self.flush_interval = 5.0  # Flush every 5 seconds for data safety
+        # Flush less frequently for better throughput; final flush occurs on stop
+        self.flush_interval = 10.0  # Flush every 10 seconds for data safety
         
         # Recording state
         self._closed = False
+        # Rate limiting: ensure live rate stays at configured fps (seconds)
+        self._last_accepted_frame_time: Optional[float] = None
         
         # Metadata storage
         self.camera_settings_saved = False
@@ -199,8 +205,8 @@ class HDF5VideoRecorder:
         # Execution data logging (for force path execution, etc.)
         self.execution_data_group = None
         
-        # High-performance asynchronous writing - MAXIMUM BUFFER for constant FPS
-        self._write_queue = queue.Queue(maxsize=1000)  # Very large buffer for constant FPS (was 500)
+        # High-performance asynchronous writing - bounded buffer for constant FPS
+        self._write_queue = queue.Queue(maxsize=500)  # Bounded buffer to control memory use
         self._write_thread = None
         self._stop_writing = threading.Event()
         self._write_lock = threading.RLock()  # Reentrant lock for thread safety
@@ -208,7 +214,8 @@ class HDF5VideoRecorder:
         # Optimized frame batching for constant performance
         self._frame_batch = []
         self._batch_indices = []
-        self._batch_size = 50  # Larger batches for consistent performance (was 25)
+        self._batch_size = 100  # Larger batches for consistent performance (tuned for NVMe)
+        self._max_sub_batch = 20  # Sub-batch size to limit memory spikes during writes
         self._batch_lock = threading.Lock()
         
         # Performance counters
@@ -248,10 +255,11 @@ class HDF5VideoRecorder:
             Optimal chunk size tuple
         """
         frame_bytes = np.prod(frame_shape)
-        target_chunk_bytes = 2 * 1024 * 1024  # 2MB target chunk size
-        
-        # Calculate frames per chunk for target size
-        frames_per_chunk = max(1, min(16, target_chunk_bytes // frame_bytes))
+        # Use configurable target chunk size (in MB) to better match NVMe throughput
+        target_chunk_bytes = int(getattr(self, 'target_chunk_mb', 4) * 1024 * 1024)
+
+        # Calculate frames per chunk for target size (allow up to 32 frames per chunk)
+        frames_per_chunk = max(1, min(32, target_chunk_bytes // frame_bytes))
         
         return (frames_per_chunk, *frame_shape)
     
@@ -341,7 +349,10 @@ class HDF5VideoRecorder:
             self.h5_file = h5py.File(
                 self.file_path, 
                 'w',
-                libver='latest'  # Use latest HDF5 format for best performance
+                libver='latest',  # Use latest HDF5 format for best performance
+                # Tuned chunk cache for better write throughput on NVMe (adjustable)
+                rdcc_nbytes=256 * 1024 * 1024,
+                rdcc_nslots=521,
             )
             return True
         except Exception as e:
@@ -573,6 +584,16 @@ class HDF5VideoRecorder:
         
         # CRITICAL FPS ENFORCEMENT: Track frame timing
         current_time = time.time()
+        # Throttle incoming frames to configured live rate (avoid recording faster than target FPS)
+        try:
+            if self._last_accepted_frame_time is not None:
+                min_interval = 1.0 / float(self.fps) if self.fps > 0 else 0
+                if (current_time - self._last_accepted_frame_time) < (min_interval * 0.95):
+                    # Drop this frame to keep live rate ~target fps (allow a small slack)
+                    return False
+        except Exception:
+            # If anything goes wrong with rate limiter, fall back to normal behavior
+            pass
         self._frame_timestamps.append(current_time)
         
         # Periodic FPS check (every 2 seconds)
@@ -596,10 +617,19 @@ class HDF5VideoRecorder:
         
         # Fast async path for high performance
         if use_async:
-            return self._record_frame_async(frame)
-        
-        # Synchronous fallback for compatibility
-        return self._record_frame_sync(frame)
+            result = self._record_frame_async(frame)
+        else:
+            # Synchronous fallback for compatibility
+            result = self._record_frame_sync(frame)
+
+        # If frame accepted, update rate-limiter timestamp
+        try:
+            if result:
+                self._last_accepted_frame_time = current_time
+        except Exception:
+            pass
+
+        return result
     
     def _downscale_frames_batch(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """
@@ -1385,7 +1415,7 @@ class HDF5VideoRecorder:
         batch_frames = []
         batch_indices = []
         last_batch_time = time.time()
-        batch_timeout = 0.01  # 10ms max batch delay for MAXIMUM FPS (was 50ms!)
+        batch_timeout = 0.02  # 20ms max batch delay to allow larger batches on NVMe
         
         while not self._stop_writing.is_set() or not self._write_queue.empty():
             try:
@@ -1451,7 +1481,7 @@ class HDF5VideoRecorder:
             
         # Memory optimization: process in smaller sub-batches if batch is large
         batch_size = len(frames)
-        max_sub_batch = 10  # Process max 10 frames at once to manage memory
+        max_sub_batch = getattr(self, '_max_sub_batch', 10)  # Configurable sub-batch size
         
         try:
             with self._write_lock:
