@@ -79,6 +79,16 @@ experiment.hdf5
 - **Resonance Finder**: Interactive frequency sweeps with automatic peak detection
 - **Configuration Manager**: Hardware profiles and performance optimization
 
+## Live View / Recording Decoupling
+
+The application separates the live display from recording to ensure a responsive UI even when disk I/O or compression is slow.
+
+- Live view runs at a configurable UI FPS (default 15 FPS) and always displays the most recent frame.
+- Recording is performed asynchronously in the background; frames are enqueued and downscaled inside the recorder to avoid blocking the GUI thread.
+- You can tune `live_display_fps` via the configuration to balance CPU/GPU utilization and responsiveness.
+
+This design prevents multi-second lag in the live view when the recorder is busy.
+
 ## Keyboard Shortcuts
 
 - `Ctrl + Arrow Keys`: Stage movement (fine)

@@ -87,13 +87,13 @@ class CameraController:
     - Test pattern mode when no camera hardware is available
     """
     
-    def __init__(self, camera_id: int = 0, max_queue_size: int = 10):
+    def __init__(self, camera_id: int = 0, max_queue_size: int = 1):
         """
         Initialize the threaded camera controller.
         
         Args:
             camera_id: ID of the camera to connect to
-            max_queue_size: Maximum number of frames to buffer in queue
+            max_queue_size: Maximum number of frames to buffer in queue (default 1 for absolute minimum latency)
         """
         self.camera_id = camera_id
         self.max_queue_size = max_queue_size
@@ -141,9 +141,12 @@ class CameraController:
         
         # Frame pool for memory optimization (initialized later when we know frame size)
         self.frame_pool: Optional[FramePool] = None
+
+        # Optional callback to notify when a new frame is available (called from capture thread)
+        self._frame_callback = None
         
-        # Thread pool for parallel operations
-        self._thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="camera_worker")
+        # Thread pool for parallel operations (4 workers for 20-core CPU)
+        self._thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="camera_worker")
         
     
     @property
@@ -479,7 +482,7 @@ class CameraController:
             # Initialize frame pool with actual camera dimensions (grayscale)
             if self.frame_pool is None:
                 frame_shape = (self.height, self.width, 1)  # Always grayscale
-                self.frame_pool = FramePool(frame_shape, pool_size=3)
+                self.frame_pool = FramePool(frame_shape, pool_size=10)  # Larger pool for 32GB RAM
             
             return True
             
@@ -528,6 +531,14 @@ class CameraController:
             self.capture_thread.start()
             
             return True
+
+    def register_frame_callback(self, callback):
+        """Register a callable to be invoked whenever a new frame is queued.
+
+        The callback is invoked from the capture thread; callers should ensure
+        thread-safety (e.g. schedule UI updates via QTimer.singleShot).
+        """
+        self._frame_callback = callback
     
     def stop_capture(self) -> None:
         """Stop background frame capture thread."""
@@ -649,7 +660,15 @@ class CameraController:
                                 self.current_fps = frames_this_second / elapsed_time
                                 self.last_fps_time = current_time
                                 self.last_fps_count = self.frame_count
-                        
+                        # Notify UI/clients that a new frame is available (non-blocking)
+                        try:
+                            if self._frame_callback:
+                                try:
+                                    self._frame_callback()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                     except queue.Full:
                         # Queue is full, drop this frame (true capture drop)
                         with self.stats_lock:
@@ -660,16 +679,7 @@ class CameraController:
                     with self.stats_lock:
                         self.consecutive_errors += 1
                 
-                # For hardware mode, add small sleep to prevent busy-waiting
-                # Camera buffer updates at configured FPS rate
-                if not self.use_test_pattern:
-                    if self.target_fps and self.target_fps > 0:
-                        # Sleep for slightly less than frame interval to poll efficiently
-                        frame_interval = 1.0 / self.target_fps
-                        time.sleep(frame_interval * 0.8)  # Poll at 1.25x target rate
-                    else:
-                        time.sleep(0.01)  # Default 100 Hz polling
-                
+                # No sleep for hardware mode - poll at maximum speed for minimum latency
                 last_capture_time = current_time
                 
             except Exception as e:

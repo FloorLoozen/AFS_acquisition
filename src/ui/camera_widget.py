@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QFrame, QSizePolicy, QMessageBox, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, qRgb
 
 from src.utils.logger import get_logger
 from src.controllers.camera_controller import CameraController, FrameData
@@ -104,6 +104,7 @@ class CameraWidget(QGroupBox):
         # Performance monitoring (for FPS display updates)
         self.display_fps_start_time = time.time()
         self.last_display_fps = 0
+        self._last_display_time = 0
         
         # Recording objects
         self.hdf5_recorder = None
@@ -114,11 +115,16 @@ class CameraWidget(QGroupBox):
         # Compression progress tracking
         self.compression_progress_dialog = None
         
-        # High-performance parallel processing
-        self.frame_processing_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="CameraFrameProcessor"
+        # Executors: separate executors for display and recording to avoid starvation
+        # Display executor: low-latency single worker for consistent UI updates
+        self.display_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="CameraDisplay"
         )
-        self.recording_queue = queue.Queue(maxsize=50)  # Buffer for recording
+        # Recording executor: separate pool for any heavy tasks (kept small because recorder is async)
+        self.recording_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="CameraRecorder"
+        )
+        self.recording_queue = queue.Queue(maxsize=100)  # Buffer for recording (compatibility)
         self.processing_lock = threading.RLock()
         
         # Image processing settings for live view (start with standard values)
@@ -152,13 +158,32 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Display timer - OPTIMIZED for maximum recording FPS
-        self.update_timer = QTimer(self)
-        self.update_timer.timeout.connect(self.update_frame)
-        self.update_timer.setInterval(10)  # 100 FPS polling (much faster to catch all frames!)
+        # Live display configuration: strict 12 FPS for smooth low-latency UI
+        self.live_display_fps = 12  # 12 FPS = 83.33ms interval, smooth and responsive
+        self._last_display_time = 0  # Track last display update
+        self._min_display_interval = 1.0 / 12.0  # Exact 83.33ms between frames
+        try:
+            cfg = get_config()
+            self.live_display_fps = int(getattr(cfg.ui, 'live_display_fps', 12))
+            self._min_display_interval = 1.0 / self.live_display_fps
+        except Exception:
+            pass
+        
+        # Fallback timer for display (exact 12 FPS)
+        self.fallback_timer = QTimer(self)
+        self.fallback_timer.timeout.connect(self._process_frame_immediate)
+        self.fallback_timer.setInterval(int(1000.0 / 12.0))  # 83.33ms = exact 12 FPS
+        
+        # Pipeline diagnostics
+        self._last_capture_ts = 0
+        self._last_callback_ts = 0
+        self._last_render_ts = 0
         
         self.init_ui()
         self.update_status("Initializing...")
+
+        # Pending update flag to coalesce rapid frame callbacks
+        self._pending_frame_update = False
         
         # Connect signals for compression notifications
         self.compression_complete_signal.connect(self._show_compression_complete)
@@ -318,7 +343,8 @@ class CameraWidget(QGroupBox):
         
         try:
             # Use the advanced camera controller from controllers directory
-            self.camera = CameraController(camera_id=camera_id, max_queue_size=10)
+            # Single frame queue for absolute minimum latency (<50ms buffering)
+            self.camera = CameraController(camera_id=camera_id, max_queue_size=1)
             
             if self.camera.initialize():
                 # Apply camera settings BEFORE starting capture to avoid FPS mismatch
@@ -331,7 +357,10 @@ class CameraWidget(QGroupBox):
                     self._is_reinitializing = False  # Clear reinitializing flag on success
                     self.update_status("Connected")
                     self.update_button_states()
-                    self.update_timer.start()
+                    
+                    # Use ONLY timer for consistent 12 FPS - no callbacks
+                    self.fallback_timer.start()
+
                     self.set_live_mode()  # Auto start live view
                     
                     return
@@ -362,7 +391,7 @@ class CameraWidget(QGroupBox):
     def _start_test_pattern_mode(self, status_text: str):
         """Start test pattern mode."""
         try:
-            self.camera = CameraController(camera_id=0, max_queue_size=5)
+            self.camera = CameraController(camera_id=0, max_queue_size=1)
             if self.camera.initialize() and self.camera.start_capture():
                 self.is_running = True
                 self.is_live = False
@@ -370,7 +399,8 @@ class CameraWidget(QGroupBox):
                 self._is_reinitializing = False  # Clear reinitializing flag
                 self.update_status(status_text)
                 self.update_button_states()
-                self.update_timer.start()
+                # Use ONLY timer for consistent FPS
+                self.fallback_timer.start()
                 self.set_live_mode()
             else:
                 self.camera = None
@@ -396,8 +426,8 @@ class CameraWidget(QGroupBox):
     
     def stop_camera(self):
         """Stop camera operations."""
-        if self.update_timer.isActive():
-            self.update_timer.stop()
+        if hasattr(self, 'fallback_timer') and self.fallback_timer.isActive():
+            self.fallback_timer.stop()
         
         self.is_running = False
         self.is_live = False
@@ -436,6 +466,92 @@ class CameraWidget(QGroupBox):
             self.update_status("Live")
         
         self.update_button_states()
+
+    def _camera_frame_arrived(self):
+        """Called from camera capture thread when a new frame is queued.
+        
+        Schedule immediate GUI update with coalescing to prevent flooding.
+        """
+        if not self._pending_frame_update:
+            self._pending_frame_update = True
+            QTimer.singleShot(0, self._process_frame_immediate)
+    
+    def _process_frame_immediate(self):
+        """Process and display frame immediately (runs in GUI thread)."""
+        self._pending_frame_update = False
+        
+        if not self.is_running or not self.is_live or not self.camera:
+            return
+        
+        current_time = time.time()
+        
+        # Get latest frame
+        frame_data = self.camera.get_latest_frame(timeout=0.001)
+        if frame_data is None:
+            return
+        
+        # Recording: capture ALL frames at full camera speed (25-30 FPS)
+        # This is completely decoupled from display rate
+        if self.is_recording and self.hdf5_recorder:
+            try:
+                frame_to_record = np.array(frame_data.frame, copy=True)
+                if hasattr(self.hdf5_recorder, 'enqueue_frame'):
+                    accepted = self.hdf5_recorder.enqueue_frame(frame_to_record)
+                    if accepted:
+                        if hasattr(self, 'recording_fps_tracker'):
+                            self.recording_fps_tracker.setdefault('frame_times', []).append(current_time)
+                            cutoff = current_time - 5.0
+                            self.recording_fps_tracker['frame_times'] = [t for t in self.recording_fps_tracker['frame_times'] if t > cutoff]
+                        with self.processing_lock:
+                            self.recorded_frames += 1
+            except Exception:
+                pass
+        
+        # Display: rate limiting to ~12 FPS
+        time_since_last = current_time - self._last_display_time
+        if time_since_last < self._min_display_interval and self._last_display_time > 0:
+            return  # Skip display update - too soon
+        
+        # Update display
+        self._last_display_time = current_time
+        self.last_frame_timestamp = frame_data.timestamp
+        self.current_frame_data = frame_data
+        self._fast_update_display(frame_data.frame)
+        
+        # Track display FPS separately
+        if not hasattr(self, '_display_frame_times'):
+            self._display_frame_times = []
+        self._display_frame_times.append(current_time)
+        # Keep last 2 seconds of display times
+        self._display_frame_times = [t for t in self._display_frame_times if current_time - t < 2.0]
+        
+        # Update status every 0.5s
+        time_elapsed = current_time - self.display_fps_start_time
+        if time_elapsed >= 0.5:
+            # Calculate ACTUAL display FPS from display timestamps
+            if len(self._display_frame_times) >= 2:
+                display_timespan = self._display_frame_times[-1] - self._display_frame_times[0]
+                display_fps = (len(self._display_frame_times) - 1) / display_timespan if display_timespan > 0 else 0.0
+            else:
+                display_fps = 0.0
+            
+            # If recording, also show recording FPS
+            if self.is_recording and hasattr(self, 'recording_fps_tracker'):
+                frame_times = self.recording_fps_tracker.get('frame_times', [])
+                if len(frame_times) >= 2:
+                    time_span = frame_times[-1] - frame_times[0]
+                    recording_fps = (len(frame_times) - 1) / time_span if time_span > 0 else 0.0
+                    status_text = f"Rec: {recording_fps:.1f} FPS | Live: {display_fps:.1f} FPS"
+                else:
+                    status_text = f"Live @ {display_fps:.1f} FPS"
+            else:
+                status_text = f"Live @ {display_fps:.1f} FPS"
+            
+            # Add latency
+            total_latency = (current_time - frame_data.timestamp) * 1000
+            self.update_status(f"{status_text} | {total_latency:.0f}ms")
+            
+            self.display_fps_start_time = current_time
     
     def set_pause_mode(self):
         """Pause live view."""
@@ -447,91 +563,8 @@ class CameraWidget(QGroupBox):
         self.update_button_states()
     
     def update_frame(self):
-        """Update display with latest camera frame - OPTIMIZED for recording performance."""
-        if not self.is_running or not self.is_live or not self.camera:
-            return
-        
-        try:
-            frame_data = self.camera.get_latest_frame(timeout=0.001)
-            
-            if frame_data is None:
-                return
-            
-            self.last_frame_timestamp = frame_data.timestamp
-            self.current_frame_data = frame_data
-            
-            # CRITICAL: Recording takes priority over display
-            if self.is_recording:
-                # Ensure frame maintains shape when copying (grayscale needs explicit copy)
-                frame_to_record = np.array(frame_data.frame, copy=True)
-                
-                # Submit recording task to thread pool (non-blocking, HIGH PRIORITY)
-                self.frame_processing_executor.submit(
-                    self._record_frame_async, frame_to_record
-                )
-                
-                # OPTIMIZATION: Reduce display updates during recording but aim for ~20 FPS
-                if not hasattr(self, '_recording_display_skip_counter'):
-                    self._recording_display_skip_counter = 0
-                if not hasattr(self, '_recording_display_skip_target'):
-                    try:
-                        target_rec_fps = getattr(self, 'hdf5_recorder').fps if getattr(self, 'hdf5_recorder', None) else 17.0
-                        # Aim to display at ~17 FPS during recording
-                        self._recording_display_skip_target = max(1, int(round(target_rec_fps / 17.0)))
-                    except Exception:
-                        self._recording_display_skip_target = 1
-
-                self._recording_display_skip_counter += 1
-                if self._recording_display_skip_counter % self._recording_display_skip_target != 0:
-                    return  # Skip display update, focus on recording
-            else:
-                # Reset skip counter when not recording
-                self._recording_display_skip_counter = 0
-            
-            # Submit display processing to thread pool (non-blocking, LOWER PRIORITY)
-            self.frame_processing_executor.submit(
-                self._process_display_frame, frame_data.frame.copy()
-            )
-            
-            # Get REAL camera capture FPS from camera controller (not display FPS)
-            current_time = time.time()
-            time_elapsed = current_time - self.display_fps_start_time
-            
-            # Update FPS display every 0.5 seconds for real-time feedback
-            if time_elapsed >= 0.5:
-                # When recording, show actual recording FPS; otherwise show camera FPS
-                if self.is_recording and hasattr(self, 'recording_fps_tracker'):
-                    # Calculate recording FPS from recorded frame timestamps
-                    frame_times = self.recording_fps_tracker.get('frame_times', [])
-                    if len(frame_times) >= 2:
-                        time_span = frame_times[-1] - frame_times[0]
-                        if time_span > 0:
-                            recording_fps = (len(frame_times) - 1) / time_span
-                        else:
-                            recording_fps = 0.0
-                    else:
-                        recording_fps = 0.0
-                    actual_fps = recording_fps
-                else:
-                    # Get actual camera statistics for real FPS
-                    if self.camera and hasattr(self.camera, 'get_statistics'):
-                        stats = self.camera.get_statistics()
-                        actual_fps = stats.get('fps', 0.0)
-                    else:
-                        actual_fps = 0.0
-                
-                self.last_display_fps = actual_fps
-                self.display_fps_start_time = current_time
-                
-                # Display ACTUAL recording/camera FPS
-                status_prefix = "Recording" if self.is_recording else "Live"
-                self.update_status(f"{status_prefix} @ {actual_fps:.1f} FPS")
-        
-        except Exception as e:
-            if str(e) != self.camera_error:
-                logger.error(f"Update frame error: {e}")
-                self.camera_error = str(e)
-                self.update_status("Error")
+        """Legacy method - now handled by direct callbacks."""
+        pass
     
     def display_frame(self, frame):
         """Legacy display method - now delegates to parallel processing."""
@@ -633,15 +666,24 @@ class CameraWidget(QGroupBox):
                 frame_shape = (480, 640, 1)  # Default to grayscale
             
             # Create recorder with compression and resolution settings
-            # CAMERA CAPABLE: 50+ FPS! Setting target to 30 FPS for stability
-            TARGET_FPS = 30.0
-            MIN_FPS = 20.0  # Realistic minimum (was 25.0, caused false violations with downscaling)
+            # CAMERA CAPABLE: 50+ FPS! Target 40-50 FPS for maximum recording speed
+            TARGET_FPS = 50.0
+            MIN_FPS = 25.0
+            
+            # Increase camera queue size during recording to prevent frame drops at high FPS
+            if self.camera:
+                try:
+                    # Temporarily increase queue to handle high-speed recording
+                    self.camera.max_queue_size = 10
+                    logger.info(f"Increased camera queue to {self.camera.max_queue_size} for high-speed recording")
+                except Exception as e:
+                    logger.warning(f"Could not increase queue size: {e}")
             
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
                 fps=TARGET_FPS,
-                min_fps=MIN_FPS,  # Enforce minimum FPS
+                min_fps=MIN_FPS,
                 compression_level=self.recording_settings['compression_level'],
                 downscale_factor=self.recording_settings['downscale_factor']
             )
@@ -649,7 +691,7 @@ class CameraWidget(QGroupBox):
             # Build info message based on actual settings
             resolution_desc = {1: "full resolution", 2: "half resolution", 4: "quarter resolution"}
             res_text = resolution_desc.get(self.recording_settings['downscale_factor'], f"{self.recording_settings['downscale_factor']}x downscale")
-            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), {res_text} + MONO8 for optimal files")
+            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), {res_text} + MONO8 for high-speed capture")
             
             # Track FPS performance during recording
             self.recording_fps_tracker = {
@@ -706,8 +748,10 @@ class CameraWidget(QGroupBox):
             try:
                 if self.camera and hasattr(self.camera, 'apply_settings'):
                     res = self.camera.apply_settings({'fps': TARGET_FPS})
-                    if not res.get('fps', False):
-                        logger.warning(f"Camera refused or failed to set recording fps {TARGET_FPS}")
+                    if res.get('fps', False):
+                        logger.info(f"Camera set to {TARGET_FPS} FPS for recording")
+                    else:
+                        logger.warning(f"Camera refused to set {TARGET_FPS} FPS")
             except Exception as e:
                 logger.debug(f"Could not set camera fps for recording: {e}")
 
@@ -915,6 +959,9 @@ class CameraWidget(QGroupBox):
             try:
                 if self.camera and hasattr(self.camera, 'apply_settings'):
                     self.camera.apply_settings({'fps': 17.0})
+                    # Restore small queue for live view
+                    self.camera.max_queue_size = 1
+                    logger.info("Restored camera to live view settings (17 FPS, queue=1)")
             except Exception:
                 pass
 
@@ -960,12 +1007,19 @@ class CameraWidget(QGroupBox):
                     t for t in self.recording_fps_tracker['frame_times'] if t > cutoff_time
                 ]
             
-            # Use async recording for maximum performance
-            if self.hdf5_recorder.record_frame(frame, use_async=True):
-                with self.processing_lock:
-                    self.recorded_frames += 1
-            else:
-                # Silent failure to prevent logging errors when disk is full
+            # Use recorder's enqueue API to offload downscaling and writing
+            try:
+                if hasattr(self.hdf5_recorder, 'enqueue_frame'):
+                    if self.hdf5_recorder.enqueue_frame(frame):
+                        with self.processing_lock:
+                            self.recorded_frames += 1
+                else:
+                    # Fallback to older API
+                    if self.hdf5_recorder.record_frame(frame, use_async=True):
+                        with self.processing_lock:
+                            self.recorded_frames += 1
+            except Exception:
+                # Silent failure to prevent excessive logging when disk is full
                 pass
         except Exception as e:
             # Only log errors if we can write to disk safely
@@ -977,12 +1031,22 @@ class CameraWidget(QGroupBox):
     def cleanup(self):
         """Clean up resources including thread pool."""
         try:
-            # Shutdown thread pool gracefully (wait=True ensures tasks complete)
+            # Shutdown executors gracefully
             try:
-                self.frame_processing_executor.shutdown(wait=True)
-            except TypeError:
-                # Some Python versions may not accept extra args; fallback to basic call
-                self.frame_processing_executor.shutdown()
+                self.display_executor.shutdown(wait=True)
+            except Exception:
+                try:
+                    self.display_executor.shutdown(wait=False)
+                except Exception:
+                    pass
+
+            try:
+                self.recording_executor.shutdown(wait=True)
+            except Exception:
+                try:
+                    self.recording_executor.shutdown(wait=False)
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Error shutting down thread pool: {e}")
     
@@ -996,18 +1060,26 @@ class CameraWidget(QGroupBox):
             # Always grayscale: Convert to RGB for Qt display
             if len(frame.shape) == 3 and frame.shape[2] == 1:
                 frame = frame.squeeze()  # Remove single channel dimension
+            elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                # Frame is already RGB (shouldn't happen, but handle it)
+                rgb_frame = frame
+            elif len(frame.shape) != 2:
+                logger.error(f"Unexpected frame shape: {frame.shape}")
+                return
             
-            # Use GPU acceleration for color conversion if available
-            if _GPU_AVAILABLE:
-                try:
-                    gpu_frame = cv2.UMat(frame)
-                    gpu_rgb = cv2.cvtColor(gpu_frame, cv2.COLOR_GRAY2RGB)
-                    rgb_frame = gpu_rgb.get()
-                except Exception:
-                    # Fallback to CPU if GPU fails
+            # Only convert if frame is grayscale (2D)
+            if len(frame.shape) == 2:
+                # Use GPU acceleration for color conversion if available
+                if _GPU_AVAILABLE:
+                    try:
+                        gpu_frame = cv2.UMat(frame)
+                        gpu_rgb = cv2.cvtColor(gpu_frame, cv2.COLOR_GRAY2RGB)
+                        rgb_frame = gpu_rgb.get()
+                    except Exception:
+                        # Fallback to CPU if GPU fails
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                else:
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-            else:
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
             # Apply image processing settings (brightness/contrast only, no saturation)
             processed_frame = self._apply_image_processing(rgb_frame)
@@ -1017,6 +1089,40 @@ class CameraWidget(QGroupBox):
             
         except Exception as e:
             logger.error(f"Error processing display frame: {e}")
+
+    def _fast_update_display(self, frame: np.ndarray):
+        """Minimal display update - no overlay, just fast rendering."""
+        try:
+            if frame is None:
+                return
+            
+            # Convert grayscale to RGB for display (in-place when possible)
+            if len(frame.shape) == 2:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            elif len(frame.shape) == 3 and frame.shape[2] == 1:
+                frame_rgb = cv2.cvtColor(frame.squeeze(), cv2.COLOR_GRAY2RGB)
+            elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                frame_rgb = frame  # Already RGB, no copy
+            else:
+                return
+            
+            # Create QImage without copy - use frame buffer directly
+            h, w = frame_rgb.shape[:2]
+            bytes_per_line = 3 * w
+            q_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            
+            # Fast scaling
+            display_size = self.display_label.size()
+            if display_size.width() > 0 and display_size.height() > 0:
+                scaled_pixmap = QPixmap.fromImage(q_image).scaled(
+                    display_size, Qt.KeepAspectRatio, Qt.FastTransformation
+                )
+            else:
+                scaled_pixmap = QPixmap.fromImage(q_image)
+            
+            self.display_label.setPixmap(scaled_pixmap)
+        except Exception as e:
+            logger.debug(f"Display error: {e}")
     
     def _update_display_thread_safe(self, processed_frame):
         """Update display from any thread safely."""

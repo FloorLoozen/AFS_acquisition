@@ -51,6 +51,11 @@ class OscilloscopeController:
         self.scope: Optional[pyvisa.Resource] = None
         self._time_division_seconds: Optional[float] = None
 
+    @property
+    def is_connected(self) -> bool:
+        """Check if oscilloscope is connected."""
+        return self.scope is not None
+
     def connect(self) -> bool:
         """Connect to the oscilloscope using PyVISA."""
         if self.scope:

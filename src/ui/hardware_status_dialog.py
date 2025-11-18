@@ -147,6 +147,25 @@ def show_hardware_status_warning(hardware_status, parent=None):
     
     # Show warning dialog
     dialog = HardwareStatusDialog(hardware_status, parent)
+
+    # Auto-accept the dialog after a short timeout to avoid blocking startup
+    # This allows the UI to continue if the user misses the dialog; they can still
+    # press Retry to attempt reconnection.
+    try:
+        from PyQt5.QtCore import QTimer
+
+        def _auto_accept():
+            try:
+                logger.info("Auto-accepting hardware status dialog to continue startup")
+                dialog.accept()
+            except Exception:
+                pass
+
+        # Start single-shot timer (1.5s)
+        QTimer.singleShot(1500, _auto_accept)
+    except Exception:
+        pass
+
     return dialog.exec_()
 
 
