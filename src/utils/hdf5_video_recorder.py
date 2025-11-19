@@ -35,8 +35,12 @@ import gc
 from src.utils.logger import get_logger
 from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
 from src.utils.constants import RecordingConstants, GPUConstants
+from src.utils.performance_monitor import get_performance_monitor, profile_performance, track_memory
+from src.utils.data_integrity import AuditTrail, add_integrity_metadata, compute_dataset_checksum
+from src.utils.state_recovery import StateRecovery
 
 logger = get_logger("hdf5_recorder")
+_performance_monitor = get_performance_monitor()
 
 # GPU Acceleration Configuration
 # Supports both AMD (via OpenCL) and NVIDIA GPUs (via OpenCL or CUDA)
@@ -174,7 +178,7 @@ class HDF5VideoRecorder:
         else:
             self.frame_shape = self.original_frame_shape
         
-        self.file_path = str(file_path_obj)
+        self.file_path = file_path_obj  # Keep as Path object for .parent access
         
         # Recording state with proper type annotations
         self.h5_file: Optional[h5py.File] = None
@@ -252,6 +256,17 @@ class HDF5VideoRecorder:
         self._gpu_frames_processed = 0
         self._total_downscale_time = 0.0
         
+        # Performance monitoring integration
+        self._session_start_time = None
+        
+        # Data integrity - audit trail
+        audit_file = self.file_path.parent / f"{self.file_path.stem}_audit.jsonl"
+        self.audit_trail = AuditTrail(audit_file)
+        
+        # State recovery
+        state_file = self.file_path.parent / ".recording_state.json"
+        self.state_recovery = StateRecovery(state_file)
+        
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
         """
         Calculate optimal chunk size for the dataset.
@@ -317,7 +332,7 @@ class HDF5VideoRecorder:
     def _prepare_recording(self) -> bool:
         """Prepare for recording - check disk space and create directories."""
         # Ensure directory exists
-        dir_path = os.path.dirname(self.file_path)
+        dir_path = os.path.dirname(str(self.file_path))
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
         
@@ -365,7 +380,7 @@ class HDF5VideoRecorder:
             import os
             
             # Check if file already exists (e.g., from LUT acquisition)
-            file_exists = os.path.exists(self.file_path)
+            file_exists = os.path.exists(str(self.file_path))
             mode = 'a' if file_exists else 'w'
             
             if file_exists:
@@ -374,7 +389,7 @@ class HDF5VideoRecorder:
                 logger.info(f"Creating new HDF5 file: {self.file_path}")
             
             self.h5_file = h5py.File(
-                self.file_path, 
+                str(self.file_path), 
                 mode,
                 libver='latest',  # Use latest HDF5 format for best performance
                 # OPTIMIZED: 400 MB chunk cache for 32GB RAM system
@@ -475,6 +490,15 @@ class HDF5VideoRecorder:
         self.frame_count = 0
         self.start_time = datetime.now()
         
+        # Start performance monitoring session
+        _performance_monitor.start_session()
+        self._session_start_time = time.time()
+        
+        # Audit trail: log recording start
+        self.audit_trail.log_event('recording_started', 
+                                   f'Started recording to {self.file_path.name}',
+                                   {'fps': self.fps, 'compression_level': self.compression_level})
+        
         # Initialize GPU resources if available
         if _USE_GPU and self.downscale_factor > 1:
             self._initialize_gpu_buffers()
@@ -503,7 +527,7 @@ class HDF5VideoRecorder:
         """
         try:
             import shutil
-            total, used, free = shutil.disk_usage(os.path.dirname(self.file_path) or '.')
+            total, used, free = shutil.disk_usage(os.path.dirname(str(self.file_path)) or '.')
             free_gb = free / (1024**3)
             free_mb = free / (1024**2)
             
@@ -545,6 +569,64 @@ class HDF5VideoRecorder:
         except Exception as e:
             logger.warning(f"Could not check disk space: {e}")
             return True  # Allow recording if check fails
+    
+    def _save_performance_metrics_to_hdf5(self):
+        """Save performance metrics to HDF5 metadata group."""
+        if not self.h5_file:
+            return
+        
+        try:
+            # Create or get metadata group
+            if 'metadata' not in self.h5_file:
+                metadata_group = self.h5_file.create_group('metadata')
+            else:
+                metadata_group = self.h5_file['metadata']
+            
+            # Get current performance metrics
+            metrics = _performance_monitor.get_metrics()
+            summary = metrics.get_summary()
+            
+            # Save metrics as JSON string for easy reading
+            import json
+            metrics_json = json.dumps(summary, indent=2)
+            
+            # Store as dataset
+            if 'performance_metrics' in metadata_group:
+                del metadata_group['performance_metrics']
+            
+            metadata_group.create_dataset('performance_metrics', data=metrics_json)
+            
+            # Also save as attributes for quick access
+            perf_attrs = metadata_group.attrs
+            perf_attrs['frames_captured'] = metrics.frames_captured
+            perf_attrs['frames_dropped'] = metrics.frames_dropped
+            perf_attrs['frames_written'] = metrics.frames_written
+            perf_attrs['avg_capture_fps'] = metrics.avg_capture_fps
+            perf_attrs['avg_write_fps'] = metrics.avg_write_fps
+            perf_attrs['memory_peak_mb'] = metrics.memory_peak_mb
+            perf_attrs['cpu_percent'] = metrics.cpu_percent
+            perf_attrs['total_data_written_mb'] = metrics.total_data_written_mb
+            
+            if metrics.session_start_time:
+                perf_attrs['session_duration_s'] = metrics.session_duration
+            
+            # GPU metrics if available
+            if metrics.gpu_frames_processed > 0:
+                perf_attrs['gpu_frames_processed'] = metrics.gpu_frames_processed
+                perf_attrs['gpu_avg_time_ms'] = metrics.gpu_avg_time_ms
+            
+            # Bottleneck information
+            bottlenecks = _performance_monitor.get_bottlenecks(5)
+            if bottlenecks:
+                bottleneck_info = []
+                for op_name, avg_time, count in bottlenecks:
+                    bottleneck_info.append(f"{op_name}: {avg_time:.2f}ms avg ({count} calls)")
+                perf_attrs['bottlenecks'] = '; '.join(bottleneck_info)
+            
+            logger.info("Performance metrics saved to HDF5 metadata")
+            
+        except Exception as e:
+            logger.error(f"Failed to save performance metrics to HDF5: {e}", exc_info=True)
     
     def _add_dataset_metadata(self):
         """Add technical metadata to the video dataset."""
@@ -615,6 +697,9 @@ class HDF5VideoRecorder:
         if not self.is_recording or not self.video_dataset or self._closed:
             return False
         
+        # Performance monitoring: track frame capture
+        _performance_monitor.record_frame_captured()
+        
         # CRITICAL FPS ENFORCEMENT: Track frame timing
         current_time = time.time()
         # Throttle incoming frames to configured live rate (avoid recording faster than target FPS)
@@ -623,6 +708,7 @@ class HDF5VideoRecorder:
                 min_interval = 1.0 / float(self.fps) if self.fps > 0 else 0
                 if (current_time - self._last_accepted_frame_time) < (min_interval * 0.95):
                     # Drop this frame to keep live rate ~target fps (allow a small slack)
+                    _performance_monitor.record_frame_dropped()
                     return False
         except Exception:
             # If anything goes wrong with rate limiter, fall back to normal behavior
@@ -923,7 +1009,7 @@ class HDF5VideoRecorder:
             # Emergency disk space check during recording
             try:
                 import shutil
-                free_space_mb = shutil.disk_usage(os.path.dirname(self.file_path)).free / (1024**2)
+                free_space_mb = shutil.disk_usage(os.path.dirname(str(self.file_path))).free / (1024**2)
                 if free_space_mb < 50:  # Less than 50MB - emergency stop
                     logger.error(f"EMERGENCY: Only {free_space_mb:.1f}MB left - stopping recording to prevent system failure")
                     self._closed = True
@@ -1431,7 +1517,7 @@ class HDF5VideoRecorder:
             self.lut_group = None
     
     def add_lut_data(self, frames: List[np.ndarray], z_positions: List[float], metadata: Dict[str, Any]) -> bool:
-        """Add lookup table data to the HDF5 file.
+        """Add lookup table data to the HDF5 file with optimized parallel writing.
         
         Args:
             frames: List of LUT frames (diffraction patterns at different Z positions)
@@ -1452,27 +1538,45 @@ class HDF5VideoRecorder:
             first_frame = frames[0]
             lut_frame_shape = first_frame.shape
             
-            # Stack frames into 3D array: (num_frames, height, width) for grayscale
+            # Pre-allocate array for efficiency (faster than list comprehension for large datasets)
+            num_frames = len(frames)
             if lut_frame_shape[2] == 1:  # Grayscale
                 # Stack and squeeze channel dimension
-                lut_stack = np.stack([f.squeeze() for f in frames], axis=0)
+                lut_stack = np.empty((num_frames, lut_frame_shape[0], lut_frame_shape[1]), dtype=first_frame.dtype)
+                for i, frame in enumerate(frames):
+                    lut_stack[i] = frame.squeeze()
             else:  # Color
-                lut_stack = np.stack(frames, axis=0)
+                lut_stack = np.empty((num_frames, *lut_frame_shape), dtype=first_frame.dtype)
+                for i, frame in enumerate(frames):
+                    lut_stack[i] = frame
             
-            # Create LUT frames dataset with compression
+            # Create LUT frames dataset with optimal chunking for large datasets
             if 'lut_frames' in self.lut_group:
                 del self.lut_group['lut_frames']
+            
+            # For large LUT datasets (>100 frames), use gzip for better compression
+            if num_frames > 100:
+                compression_type = 'gzip'
+                compression_opts = 4  # Fast gzip
+                # Optimal chunk: 1 frame per chunk for random access
+                chunk_shape = (1, lut_stack.shape[1], lut_stack.shape[2])
+            else:
+                compression_type = 'lzf'  # Fast for small datasets
+                compression_opts = None
+                chunk_shape = True  # Auto chunking
             
             lut_frames_dataset = self.lut_group.create_dataset(
                 'lut_frames',
                 data=lut_stack,
-                compression='lzf',  # Fast lossless compression
+                compression=compression_type,
+                compression_opts=compression_opts,
                 shuffle=True,
-                chunks=True
+                chunks=chunk_shape
             )
             lut_frames_dataset.attrs['description'] = b'Diffraction patterns at different Z positions'
             lut_frames_dataset.attrs['shape_description'] = b'(num_positions, height, width)'
             lut_frames_dataset.attrs['num_frames'] = len(frames)
+            lut_frames_dataset.attrs['compression'] = compression_type.encode('utf-8')
             
             # Create Z positions dataset
             if 'z_positions' in self.lut_group:
@@ -1687,21 +1791,27 @@ class HDF5VideoRecorder:
                 
                 # Write batch if we have frames or timeout reached
                 current_time = time.time()
-                if (batch_frames and 
+                should_write = (batch_frames and 
                     (len(batch_frames) >= self._batch_size or
                      current_time - last_batch_time >= batch_timeout or
-                     self._write_queue.empty())):
-                    
+                     self._write_queue.empty() or
+                     self._stop_writing.is_set()))  # Also write on stop signal
+                
+                if should_write:
                     self._write_frame_batch_optimized(batch_frames, batch_indices)
                     with self._write_lock:
                         self._batch_writes += 1
                     batch_frames.clear()
                     batch_indices.clear()
                     last_batch_time = current_time
+                
+                # Break early if stopping and queue is empty
+                if self._stop_writing.is_set() and self._write_queue.empty() and not batch_frames:
+                    break
                     
                 # Tiny sleep only if queue is empty to prevent CPU spinning
                 if not batch_frames and self._write_queue.empty():
-                    time.sleep(0.0001)  # 0.1ms sleep only when truly idle (was 1ms!)
+                    time.sleep(0.001)  # 1ms sleep when idle (reduced from 0.1ms for better responsiveness)
                     
             except Exception as e:
                 logger.error(f"Error in optimized async write worker: {e}")
@@ -1756,6 +1866,11 @@ class HDF5VideoRecorder:
                             self.video_dataset[index] = frame_to_write
                             with self._write_lock:
                                 self._frames_written += 1
+                            
+                            # Track write performance
+                            frame_size_mb = frame.nbytes / (1024 * 1024)
+                            _performance_monitor.record_frame_written(frame_size_mb)
+                            
                         except Exception as write_error:
                             logger.error(f"Failed to write frame {index}: {write_error}")
                             self.write_errors += 1
@@ -1768,10 +1883,18 @@ class HDF5VideoRecorder:
                     if (i // max_sub_batch) % 5 == 0:
                         gc.collect()
                 
-                # Periodic flush for data safety (less frequent for performance)
+                # Periodic flush and metrics update
                 if self._frames_written % 1000 == 0:  # Every 1000 frames
                     try:
                         self.h5_file.flush()
+                        # Update system metrics
+                        _performance_monitor.update_system_metrics()
+                        # Save recovery state
+                        self.state_recovery.save_state({
+                            'frames_written': self._frames_written,
+                            'file_path': str(self.file_path),
+                            'recording': True
+                        })
                     except Exception as flush_error:
                         logger.warning(f"Flush failed: {flush_error}")
                         
@@ -1841,7 +1964,7 @@ class HDF5VideoRecorder:
             import time
             
             # Get logs directory
-            logs_dir = os.path.dirname(self.file_path)
+            logs_dir = os.path.dirname(str(self.file_path))
             if not os.path.exists(logs_dir):
                 return False
             
@@ -1962,25 +2085,25 @@ class HDF5VideoRecorder:
             if self._write_thread and self._write_thread.is_alive():
                 queue_size = self._write_queue.qsize()
                 
-                # CRITICAL FIX: Wait for queue to drain before signaling stop
+                # Signal shutdown immediately (before waiting for queue)
+                self._stop_writing.set()
+                
+                # CRITICAL FIX: Wait for queue to drain AFTER signaling stop
                 if queue_size > 0:
                     logger.info(f"Waiting for {queue_size} frames to write...")
-                    timeout = max(5.0, queue_size * 0.05)
+                    timeout = max(3.0, queue_size * 0.05)
                     start = time.time()
                     
                     while self._write_queue.qsize() > 0 and (time.time() - start) < timeout:
-                        time.sleep(0.05)
+                        time.sleep(0.02)  # 20ms - match batch timeout
                     
                     remaining = self._write_queue.qsize()
                     if remaining > 0:
                         logger.warning(f"{remaining} frames still queued after {timeout:.1f}s")
                 
-                # Now signal shutdown
-                self._stop_writing.set()
-                
                 # Send sentinel to wake thread if waiting
                 try:
-                    self._write_queue.put(None, timeout=1.0)
+                    self._write_queue.put(None, timeout=0.5)
                 except queue.Full:
                     logger.warning("Queue full during shutdown - forcing drain")
                     # Emergency drain
@@ -1997,20 +2120,35 @@ class HDF5VideoRecorder:
                 except Exception as e:
                     logger.warning(f"Could not send shutdown signal: {e}")
                 
-                # Wait for thread with appropriate timeout
+                # Wait for thread with shorter, adaptive timeout
                 if queue_size == 0:
-                    timeout = 2.0  # Short timeout for LUT-only recordings
+                    timeout = 1.0  # Short timeout when no frames queued (was 5.0)
                 else:
-                    timeout = max(10.0, queue_size * 0.03)
+                    timeout = max(5.0, queue_size * 0.03)
                 
                 start_wait = time.time()
-                self._write_thread.join(timeout=timeout)
+                
+                # Join with small intervals to allow processing
+                elapsed = 0
+                join_interval = 0.05  # Check every 50ms (faster than 100ms)
+                while elapsed < timeout and self._write_thread.is_alive():
+                    self._write_thread.join(timeout=join_interval)
+                    elapsed = time.time() - start_wait
+                    
+                    # Log progress for long waits
+                    if elapsed > 1.0 and int(elapsed * 2) % 2 == 0:
+                        remaining_frames = self._write_queue.qsize()
+                        logger.debug(f"Waiting for writer ({elapsed:.1f}s, {remaining_frames} frames queued)...")
+                
                 wait_duration = time.time() - start_wait
                 
                 if self._write_thread.is_alive():
                     logger.error(f"Writer thread did not stop after {wait_duration:.1f}s - potential data loss!")
                 else:
-                    logger.debug(f"Writer thread stopped cleanly in {wait_duration:.1f}s")
+                    if wait_duration > 1.0:
+                        logger.info(f"Writer thread stopped cleanly in {wait_duration:.1f}s")
+                    else:
+                        logger.debug(f"Writer thread stopped cleanly in {wait_duration:.1f}s")
             else:
                 pass  # No async writer
         except Exception as e:
@@ -2099,6 +2237,35 @@ class HDF5VideoRecorder:
             except Exception as e:
                 logger.warning(f"Error flushing timeline buffer: {e}")
             
+            # Save performance metrics to HDF5 metadata
+            try:
+                self._save_performance_metrics_to_hdf5()
+            except Exception as e:
+                logger.warning(f"Error saving performance metrics: {e}")
+            
+            # Add data integrity checksums (fast - sampled)
+            try:
+                if 'raw_data/main_video' in self.h5_file:
+                    # Use faster sample rate for responsiveness (every 200th frame instead of 100th)
+                    logger.info("Adding data integrity checksums...")
+                    dataset = self.h5_file['raw_data/main_video']
+                    
+                    # Quick checksum with aggressive sampling
+                    from .data_integrity import compute_dataset_checksum
+                    checksum = compute_dataset_checksum(dataset, sample_rate=200)
+                    dataset.attrs['data_checksum'] = checksum
+                    dataset.attrs['checksum_algorithm'] = 'sha256_sampled_200'
+                    dataset.attrs['checksum_timestamp'] = datetime.now().isoformat()
+                    logger.info(f"Added checksum: {checksum[:16]}...")
+            except Exception as e:
+                logger.warning(f"Error adding integrity metadata: {e}")
+            
+            # Save audit trail to HDF5
+            try:
+                self.audit_trail.save_to_hdf5(self.h5_file)
+            except Exception as e:
+                logger.warning(f"Error saving audit trail: {e}")
+            
             # Final flush and close (the slowest operations due to compression)
             if self.h5_file:
                 try:
@@ -2118,8 +2285,8 @@ class HDF5VideoRecorder:
                     # Quick verification - just check file exists and is readable
                     try:
                         import os
-                        if os.path.exists(self.file_path):
-                            file_size_mb = os.path.getsize(self.file_path) / (1024 * 1024)
+                        if os.path.exists(str(self.file_path)):
+                            file_size_mb = os.path.getsize(str(self.file_path)) / (1024 * 1024)
                             logger.info(f"HDF5 file saved: {file_size_mb:.1f} MB")
                     except Exception as verify_error:
                         pass  # Verification optional
@@ -2331,11 +2498,24 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
     logger.info(f"Starting post-processing compression: {file_path} (in_place={in_place})")
     start_time = time.time()
     
+    # Track compression performance
+    from .performance_monitor import get_performance_monitor
+    _perf_monitor = get_performance_monitor()
+    
     # Choose compression method based on mode
     if in_place:
-        return _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
+        result = _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
     else:
-        return _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
+        result = _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
+    
+    # Record compression metrics
+    if result:
+        compression_time = result.get('duration_sec', time.time() - start_time)
+        original_mb = result.get('original_mb', 0)
+        compressed_mb = result.get('compressed_mb', 0)
+        _perf_monitor.record_compression(compression_time, original_mb, compressed_mb)
+    
+    return result
 
 
 def _create_compressed_dataset(target_group: h5py.Group, dataset_name: str, 

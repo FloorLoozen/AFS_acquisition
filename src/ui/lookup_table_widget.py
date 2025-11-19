@@ -82,20 +82,27 @@ class LUTAcquisitionThread(QThread):
             stage_manager.move_z_to(self.start_um)
             time.sleep(self.settle_time_s)
             
-            # Acquire frames at each Z position
+            # Acquire frames at each Z position with optimized pipelining
             lut_frames = []
             lut_z_positions = []
+            
+            # Parallel strategy: overlap stage movement with frame capture
+            # While capturing frame N, start moving to position N+1
+            next_z_target = None
             
             for i, z_pos_target in enumerate(z_positions):
                 if self._stop_requested:
                     self.progress.emit(i, num_positions, "Stopping...")
                     break
                 
-                # Move to Z position
-                stage_manager.move_z_to(z_pos_target)
-                
-                # Wait for stage to settle
-                time.sleep(self.settle_time_s)
+                # If we pre-started movement to this position, just wait for settle
+                if next_z_target == z_pos_target and i > 0:
+                    # Movement already started, just wait for final settle
+                    time.sleep(max(0, self.settle_time_s - 0.1))  # Reduced wait since movement started earlier
+                else:
+                    # Move to Z position (first iteration or catch-up)
+                    stage_manager.move_z_to(z_pos_target)
+                    time.sleep(self.settle_time_s)
                 
                 # Read back actual Z position from stage after settling
                 actual_z_pos = stage_manager.get_z_position()
@@ -103,7 +110,14 @@ class LUTAcquisitionThread(QThread):
                     logger.warning(f"Failed to read Z position at target {z_pos_target:.3f} µm, using target value")
                     actual_z_pos = z_pos_target
                 
-                # Capture frame
+                # Start moving to NEXT position while capturing current frame (parallel!)
+                if i + 1 < num_positions:
+                    next_z_target = z_positions[i + 1]
+                    stage_manager.move_z_to(next_z_target)  # Non-blocking command
+                else:
+                    next_z_target = None
+                
+                # Capture frame (while stage moves to next position in parallel)
                 frame = self.camera.get_frame(timeout=1.0)
                 if frame is None:
                     logger.warning(f"Failed to capture frame at Z={actual_z_pos:.3f} µm")
