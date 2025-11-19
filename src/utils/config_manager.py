@@ -489,11 +489,26 @@ class ConfigManager:
         }
     
     def update_window_geometry(self, geometry: Dict[str, int]) -> None:
-        """Update window geometry configuration."""
+        """Update window geometry configuration with non-blocking save."""
         with self._lock:
             self.ui.window_geometry = geometry
+            
             if self.ui.auto_save_settings:
-                self.save_config()
+                # Save asynchronously to avoid blocking UI thread during window resize
+                import threading
+                save_thread = threading.Thread(
+                    target=self._async_save_config,
+                    name="ConfigSaveThread",
+                    daemon=True
+                )
+                save_thread.start()
+    
+    def _async_save_config(self) -> None:
+        """Background config save (called from thread)."""
+        try:
+            self.save_config()
+        except Exception as e:
+            logger.error(f"Async config save failed: {e}")
     
     def get_system_info(self) -> Dict[str, Any]:
         """Get system information for optimization."""

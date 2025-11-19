@@ -1716,7 +1716,7 @@ class HDF5VideoRecorder:
         with self._write_lock:
             written = self._frames_written
             batches = self._batch_writes
-        logger.info(f"Async writer stopped: {written} frames written in {batches} batches")
+        logger.debug(f"Async writer stopped: {written} frames written in {batches} batches")
     
     def _write_frame_batch_optimized(self, frames: List[np.ndarray], indices: List[int]):
         """Memory-optimized batch writing with robust error handling."""
@@ -1829,7 +1829,8 @@ class HDF5VideoRecorder:
     
     def _emergency_cleanup(self) -> bool:
         """
-        Emergency cleanup to free disk space by removing old files.
+        Safe emergency cleanup to free disk space by removing old files.
+        Only removes files that are definitely not in use.
         
         Returns:
             True if space was freed
@@ -1837,6 +1838,7 @@ class HDF5VideoRecorder:
         try:
             import glob
             import os
+            import time
             
             # Get logs directory
             logs_dir = os.path.dirname(self.file_path)
@@ -1849,10 +1851,28 @@ class HDF5VideoRecorder:
             
             space_freed = 0
             files_removed = 0
+            current_time = time.time()
             
             # Remove older files (keep newest 3)
             for old_file in old_files[:-3]:  # Keep newest 3 files
                 try:
+                    # SAFETY CHECK 1: Skip files modified in last 60 seconds (likely active)
+                    mtime = os.path.getmtime(old_file)
+                    if current_time - mtime < 60:
+                        logger.debug(f"Skipping recent file: {os.path.basename(old_file)}")
+                        continue
+                    
+                    # SAFETY CHECK 2: Try exclusive open to verify not in use
+                    try:
+                        # Try to open with exclusive access
+                        with open(old_file, 'r+b') as f:
+                            pass  # If successful, file is not locked
+                    except (IOError, PermissionError):
+                        # File is locked by another process - skip it
+                        logger.debug(f"Skipping locked file: {os.path.basename(old_file)}")
+                        continue
+                    
+                    # Safe to delete
                     file_size = os.path.getsize(old_file)
                     os.remove(old_file)
                     space_freed += file_size
@@ -1862,7 +1882,8 @@ class HDF5VideoRecorder:
                     if space_freed > 100 * 1024 * 1024:
                         break
                         
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Could not remove {old_file}: {e}")
                     continue
             
             if files_removed > 0:
@@ -1874,7 +1895,8 @@ class HDF5VideoRecorder:
                 
             return False
             
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Emergency cleanup failed: {e}")
             return False
     
     def stop_recording(self) -> bool:
@@ -1893,7 +1915,7 @@ class HDF5VideoRecorder:
             # Set closed flag to prevent further writes
             self._closed = True
             
-            logger.info(f"Stopping HDF5 recording after {self.frame_count} frames...")
+            logger.debug(f"Stopping HDF5 recording after {self.frame_count} frames...")
             
             # Stop accepting new frames immediately
             self.is_recording = False
@@ -2059,7 +2081,7 @@ class HDF5VideoRecorder:
                             attrs['gpu_acceleration'] = 'OpenCL'
                             attrs['gpu_frames_processed'] = self._gpu_frames_processed
                             attrs['avg_downscale_time_ms'] = avg_downscale_time_ms
-                            logger.info(f"GPU Performance: {self._gpu_frames_processed} frames downscaled, avg {avg_downscale_time_ms:.2f}ms/frame")
+                            logger.debug(f"GPU Performance: {self._gpu_frames_processed} frames downscaled, avg {avg_downscale_time_ms:.2f}ms/frame")
                         
                         # Write all attributes at once
                         for key, value in attrs.items():

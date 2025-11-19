@@ -797,14 +797,14 @@ class CameraWidget(QGroupBox):
             if len(frame_times) > 1:
                 avg_fps = len(frame_times) / (frame_times[-1] - frame_times[0])
                 min_fps_achieved = 1.0 / max([frame_times[i+1] - frame_times[i] for i in range(len(frame_times)-1)])
-                logger.info(f"Recording FPS Performance: Avg={avg_fps:.1f}, Min={min_fps_achieved:.1f}")
+                logger.debug(f"Recording FPS Performance: Avg={avg_fps:.1f}, Min={min_fps_achieved:.1f}")
                 
                 if avg_fps < 25.0:
                     logger.warning(f"WARNING: Recording below target 25 FPS (achieved {avg_fps:.1f})")
                 elif min_fps_achieved < 20.0:
                     logger.warning(f"WARNING: Some frames below 20 FPS (lowest {min_fps_achieved:.1f})")
                 else:
-                    logger.info(f"Recording excellent at {avg_fps:.1f} FPS!")
+                    logger.debug(f"Recording excellent at {avg_fps:.1f} FPS!")
         
         
         try:
