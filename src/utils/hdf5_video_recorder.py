@@ -1280,6 +1280,12 @@ class HDF5VideoRecorder:
             else:
                 data_group = self.h5_file['raw_data']
             
+            # Check if FG timeline dataset already exists (e.g., from LUT acquisition)
+            if 'function_generator_timeline' in data_group:
+                logger.info("FG timeline dataset already exists, using existing dataset")
+                self.fg_timeline_dataset = data_group['function_generator_timeline']
+                return
+            
             # Define compound datatype for timeline entries
             timeline_dtype = np.dtype([
                 ('timestamp', 'f8'),        # Relative time from recording start (seconds)
@@ -1305,7 +1311,7 @@ class HDF5VideoRecorder:
             self.fg_timeline_dataset.attrs['timestamp_reference'] = b'Relative to recording start'
             self.fg_timeline_dataset.attrs['frequency_units'] = b'MHz'
             self.fg_timeline_dataset.attrs['amplitude_units'] = b'Volts peak-to-peak'
-            
+            logger.info("FG timeline dataset created successfully")
             
         except Exception as e:
             logger.error(f"Error creating FG timeline dataset: {e}")
