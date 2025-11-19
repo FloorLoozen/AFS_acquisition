@@ -57,6 +57,208 @@ class FunctionGeneratorWorker(QThread):
     def stop(self):
         """Request worker to stop."""
         self.should_stop = True
+    
+    def _initialize_execution(self, processed_points):
+        """Initialize function generator output with first point values.
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
+        if not processed_points:
+            return False
+            
+        first_point = processed_points[0]
+        success = self.fg_controller.output_sine_wave(
+            amplitude=first_point.amplitude,
+            frequency_mhz=first_point.frequency,
+            channel=1
+        )
+        
+        if not success:
+            logger.error("Failed to start function generator output")
+            return False
+            
+        # Initialize tracking variables
+        self._last_freq = first_point.frequency
+        self._last_amp = first_point.amplitude
+        self._consecutive_errors = 0
+        self._last_status_time = 0.0
+        
+        return True
+    
+    def _calculate_interpolated_values(self, elapsed_time, processed_points):
+        """Calculate interpolated frequency and amplitude at given time.
+        
+        Args:
+            elapsed_time: Current elapsed time in seconds
+            processed_points: List of processed path points
+            
+        Returns:
+            tuple: (frequency_mhz, amplitude_vpp, current_idx, progress) or None if complete
+        """
+        # Find current interpolation segment
+        current_idx = 0
+        for i, point in enumerate(processed_points):
+            if point.time <= elapsed_time:
+                current_idx = i
+            else:
+                break
+        
+        # Check if we're at the last point
+        if current_idx >= len(processed_points) - 1:
+            return None
+        
+        point1 = processed_points[current_idx]
+        point2 = processed_points[current_idx + 1]
+        
+        # Calculate interpolation progress
+        if point1.time == point2.time:
+            progress = 0.0
+        else:
+            progress = (elapsed_time - point1.time) / (point2.time - point1.time)
+            progress = max(0.0, min(1.0, progress))
+        
+        # Apply transition type
+        if point2.transition == TransitionType.HOLD:
+            frequency = point1.frequency
+            amplitude = point1.amplitude
+        else:  # LINEAR
+            frequency = point1.frequency + progress * (point2.frequency - point1.frequency)
+            amplitude = point1.amplitude + progress * (point2.amplitude - point1.amplitude)
+        
+        return frequency, amplitude, current_idx, progress
+    
+    def _update_function_generator(self, frequency, amplitude, elapsed_time, current_idx, progress, point1, point2):
+        """Update function generator parameters if needed.
+        
+        Args:
+            frequency: Target frequency in MHz
+            amplitude: Target amplitude in Vpp
+            elapsed_time: Current elapsed time
+            current_idx: Current segment index
+            progress: Interpolation progress (0-1)
+            point1: Start point of current segment
+            point2: End point of current segment
+            
+        Returns:
+            bool: True if successful or no update needed, False if critical error
+        """
+        # Check if update is needed (delta-based to reduce commands)
+        needs_update = (
+            abs(self._last_freq - frequency) > 0.005 or
+            abs(self._last_amp - amplitude) > 0.005
+        )
+        
+        if not needs_update:
+            return True
+        
+        # Try batch update (fastest method)
+        success = self.fg_controller.update_parameters_batch(
+            amplitude=amplitude,
+            frequency_mhz=frequency,
+            channel=1
+        )
+        
+        if success:
+            self._last_freq = frequency
+            self._last_amp = amplitude
+            self._consecutive_errors = 0
+            
+            # Log execution data
+            self._log_execution_event(elapsed_time, frequency, amplitude, progress, 
+                                     current_idx, point1, point2)
+            
+            # Emit status update (throttled to reduce UI overhead)
+            if (elapsed_time - self._last_status_time) > 0.2:
+                self.status_update.emit(f"Executing", frequency, amplitude)
+                self._last_status_time = elapsed_time
+            
+            return True
+        else:
+            # Handle communication errors with retry logic
+            self._consecutive_errors += 1
+            
+            if self._consecutive_errors > 3:
+                logger.error("Function generator communication failed during execution")
+                return False
+            else:
+                logger.warning(f"Function generator retry {self._consecutive_errors}/3")
+                return True
+    
+    def _log_execution_event(self, elapsed_time, frequency, amplitude, progress, 
+                            current_idx, point1, point2):
+        """Log execution event to internal log and HDF5 timeline."""
+        import datetime
+        current_timestamp = time.time()
+        
+        # Add to internal execution log
+        log_entry = {
+            'execution_time_s': elapsed_time,
+            'absolute_timestamp': current_timestamp,
+            'iso_timestamp': datetime.datetime.fromtimestamp(current_timestamp).isoformat(),
+            'set_frequency_mhz': frequency,
+            'set_amplitude_vpp': amplitude,
+            'interpolation_progress': progress,
+            'current_segment': f"{current_idx}->{current_idx+1}",
+            'segment_start_time': point1.time,
+            'segment_end_time': point2.time,
+            'transition_type': point2.transition.value,
+            'delta_freq_mhz': abs(self._last_freq - frequency),
+            'delta_amp_vpp': abs(self._last_amp - amplitude)
+        }
+        self.execution_log.append(log_entry)
+        
+        # Console logging
+        logger.info(f"FG Output: {elapsed_time:.2f}s -> {frequency:.3f}MHz, {amplitude:.2f}Vpp")
+        
+        # Log to main HDF5 timeline if available
+        if hasattr(self, 'main_window') and self.main_window:
+            try:
+                camera_widget = self.main_window.camera_widget
+                if hasattr(camera_widget, 'log_function_generator_event'):
+                    camera_widget.log_function_generator_event(
+                        frequency_mhz=frequency,
+                        amplitude_vpp=amplitude,
+                        output_enabled=True,
+                        event_type='force_path_execution'
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to log FG event to main HDF5: {e}")
+    
+    def _finalize_execution(self, processed_points, total_duration):
+        """Set final point values before completing execution.
+        
+        Args:
+            processed_points: List of processed path points
+            total_duration: Total execution duration in seconds
+            
+        Returns:
+            bool: True if finalization successful
+        """
+        if not processed_points:
+            return True
+        
+        final_point = processed_points[-1]
+        logger.info(f"Setting final FG output: freq={final_point.frequency:.3f}MHz, "
+                   f"amp={final_point.amplitude:.2f}Vpp")
+        
+        success = self.fg_controller.update_parameters_batch(
+            amplitude=final_point.amplitude,
+            frequency_mhz=final_point.frequency,
+            channel=1
+        )
+        
+        if success:
+            self._last_freq = final_point.frequency
+            self._last_amp = final_point.amplitude
+            logger.info("Final FG output set successfully.")
+        else:
+            logger.warning("Failed to set final FG output.")
+        
+        logger.info(f"FG Output (final): {total_duration:.2f}s -> "
+                   f"{final_point.frequency:.3f}MHz, {final_point.amplitude:.2f}Vpp")
+        
+        return success
         
     def run(self):
         """Execute the path in a separate thread."""
@@ -85,18 +287,10 @@ class FunctionGeneratorWorker(QThread):
             
             logger.info(f"Total execution duration: {total_duration:.1f}s")
             
-            # Start output with first point values (turn ON once)
-            if processed_points:
-                first_point = processed_points[0]
-                success = self.fg_controller.output_sine_wave(
-                    amplitude=first_point.amplitude,
-                    frequency_mhz=first_point.frequency,
-                    channel=1
-                )
-                if not success:
-                    logger.error("Failed to start function generator output")
-                    self.execution_finished.emit(False)
-                    return
+            # Initialize function generator output
+            if not self._initialize_execution(processed_points):
+                self.execution_finished.emit(False)
+                return
             
             # Main execution loop - only update parameters, keep output ON
             while not self.should_stop:
@@ -106,135 +300,28 @@ class FunctionGeneratorWorker(QThread):
                 if elapsed_time >= (total_duration - 0.001):  # 1ms tolerance
                     logger.info(f"Execution complete: {elapsed_time:.3f}s (target: {total_duration:.1f}s)")
                     break
-                    
-                # Find current interpolation segment
-                current_idx = 0
-                for i, point in enumerate(processed_points):
-                    if point.time <= elapsed_time:
-                        current_idx = i
-                    else:
-                        break
                 
-                # Calculate interpolated values
-                if current_idx < len(processed_points) - 1:
-                    point1 = processed_points[current_idx]
-                    point2 = processed_points[current_idx + 1]
-                    
-                    if point1.time == point2.time:
-                        progress = 0.0
-                    else:
-                        progress = (elapsed_time - point1.time) / (point2.time - point1.time)
-                        progress = max(0.0, min(1.0, progress))
-                    
-                    if point2.transition == TransitionType.HOLD:
-                        frequency = point1.frequency
-                        amplitude = point1.amplitude
-                    else:  # LINEAR
-                        frequency = point1.frequency + progress * (point2.frequency - point1.frequency)
-                        amplitude = point1.amplitude + progress * (point2.amplitude - point1.amplitude)
-                    
-                    # Update function generator parameters only (keep output ON)
-                    # Use delta-based updates to reduce unnecessary commands
-                    needs_update = False
-                    if not hasattr(self, '_last_freq') or abs(self._last_freq - frequency) > 0.005:
-                        needs_update = True
-                    if not hasattr(self, '_last_amp') or abs(self._last_amp - amplitude) > 0.005:
-                        needs_update = True
-                    
-                    if needs_update:
-                        # Try batch update first (fastest), fallback to regular if needed
-                        success = self.fg_controller.update_parameters_batch(
-                            amplitude=amplitude,
-                            frequency_mhz=frequency,
-                            channel=1
-                        )
-                        
-                        if success:
-                            self._last_freq = frequency
-                            self._last_amp = amplitude
-                            
-                            # Reset consecutive error counter
-                            if hasattr(self, '_consecutive_errors'):
-                                self._consecutive_errors = 0
-                            
-                            # ENHANCED LOGGING - Detailed function generator output tracking
-                            import datetime
-                            current_timestamp = time.time()
-                            log_entry = {
-                                'execution_time_s': elapsed_time,
-                                'absolute_timestamp': current_timestamp,
-                                'iso_timestamp': datetime.datetime.fromtimestamp(current_timestamp).isoformat(),
-                                'set_frequency_mhz': frequency,
-                                'set_amplitude_vpp': amplitude,
-                                'interpolation_progress': progress,
-                                'current_segment': f"{current_idx}->{current_idx+1}",
-                                'segment_start_time': point1.time,
-                                'segment_end_time': point2.time,
-                                'transition_type': point2.transition.value,
-                                'delta_freq_mhz': abs(self._last_freq - frequency) if hasattr(self, '_last_freq') else 0.0,
-                                'delta_amp_vpp': abs(self._last_amp - amplitude) if hasattr(self, '_last_amp') else 0.0
-                            }
-                            self.execution_log.append(log_entry)
-                            
-                            # Real-time console logging for immediate feedback
-                            logger.info(f"FG Output: {elapsed_time:.2f}s -> {frequency:.3f}MHz, {amplitude:.2f}Vpp")
-                            
-                            # MAIN WINDOW HDF5 TIMELINE LOGGING - Log to main recording system
-                            if hasattr(self, 'main_window') and self.main_window and hasattr(self.main_window, 'camera_widget'):
-                                try:
-                                    camera_widget = self.main_window.camera_widget
-                                    if hasattr(camera_widget, 'log_function_generator_event'):
-                                        # Log function generator output to main HDF5 timeline
-                                        camera_widget.log_function_generator_event(
-                                            frequency_mhz=frequency,
-                                            amplitude_vpp=amplitude,
-                                            output_enabled=True,  # Always true during force path execution
-                                            event_type='force_path_execution'
-                                        )
-                                except Exception as e:
-                                    # Don't let logging errors interrupt execution
-                                    logger.debug(f"Failed to log FG event to main HDF5: {e}")
-                            
-                            # Emit status update (reduced frequency to minimize UI overhead)
-                            if not hasattr(self, '_last_status_time') or (elapsed_time - self._last_status_time) > 0.2:
-                                # Simplified status message - detailed info in logs
-                                self.status_update.emit(f"Executing", frequency, amplitude)
-                                self._last_status_time = elapsed_time
-                        else:
-                            # Handle communication errors with retry logic
-                            if not hasattr(self, '_consecutive_errors'):
-                                self._consecutive_errors = 0
-                            self._consecutive_errors += 1
-                            
-                            if self._consecutive_errors > 3:  # Allow a few retries
-                                logger.error("Function generator communication failed during execution")
-                                self.execution_finished.emit(False)
-                                return
-                            else:
-                                logger.warning(f"Function generator retry {self._consecutive_errors}/3")
-                                # Brief pause before retry
+                # Calculate interpolated values for current time
+                result = self._calculate_interpolated_values(elapsed_time, processed_points)
+                if result is None:
+                    break  # Reached end of path
+                
+                frequency, amplitude, current_idx, progress = result
+                point1 = processed_points[current_idx]
+                point2 = processed_points[current_idx + 1]
+                
+                # Update function generator if needed
+                if not self._update_function_generator(frequency, amplitude, elapsed_time,
+                                                       current_idx, progress, point1, point2):
+                    self.execution_finished.emit(False)
+                    return
                                
                 
                 # Optimized sleep - balanced speed vs USB communication limits
                 self.msleep(20)  # 20ms = 50 Hz update rate (optimal for USB VISA)
 
-            # --- CRITICAL: Set final point values before turning off output ---
-            if processed_points:
-                final_point = processed_points[-1]
-                logger.info(f"Setting final FG output: freq={final_point.frequency:.3f}MHz, amp={final_point.amplitude:.2f}Vpp")
-                success = self.fg_controller.update_parameters_batch(
-                    amplitude=final_point.amplitude,
-                    frequency_mhz=final_point.frequency,
-                    channel=1
-                )
-                if success:
-                    self._last_freq = final_point.frequency
-                    self._last_amp = final_point.amplitude
-                    logger.info("Final FG output set successfully.")
-                else:
-                    logger.warning("Failed to set final FG output.")
-                # Log the final output
-                logger.info(f"FG Output (final): {total_duration:.2f}s -> {final_point.frequency:.3f}MHz, {final_point.amplitude:.2f}Vpp")
+            # Set final point values before completing
+            self._finalize_execution(processed_points, total_duration)
 
             # Execution completed successfully
             actual_duration = time.perf_counter() - execution_start_time
