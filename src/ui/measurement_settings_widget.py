@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QLineEdit, QFileDialog, QFrame, QWidget
+    QLineEdit, QFileDialog, QFrame, QWidget, QComboBox
 )
 
 from src.utils.logger import get_logger
@@ -82,6 +82,8 @@ class MeasurementSettingsWidget(QGroupBox):
         layout.addSpacing(12)  # Separator
         
         self._add_text_row(layout, "Sample:", "sample", "")
+        self._add_dropdown_row(layout, "Magnification:", "magnification", ["10x", "40x"])
+        self._add_text_row(layout, "Flowcell ID:", "flowcell_id", "")
         self._add_text_row(layout, "Notes:", "notes", "")
         
         return section
@@ -132,6 +134,26 @@ class MeasurementSettingsWidget(QGroupBox):
         row_layout.addWidget(label)
         row_layout.addWidget(self.filename_edit, 1)
         row_layout.addWidget(hdf5_label)
+        
+        layout.addLayout(row_layout)
+    
+    def _add_dropdown_row(self, layout, label_text, attr_name, options):
+        """Add a dropdown selection row with label and spacer."""
+        row_layout = QHBoxLayout()
+        
+        label = QLabel(label_text)
+        label.setMinimumWidth(150)
+        
+        combo_box = QComboBox()
+        combo_box.addItems(options)
+        setattr(self, f"{attr_name}_combo", combo_box)
+        
+        spacer = QLabel("")
+        spacer.setFixedWidth(60)
+        
+        row_layout.addWidget(label)
+        row_layout.addWidget(combo_box, 1)
+        row_layout.addWidget(spacer)
         
         layout.addLayout(row_layout)
     
@@ -197,6 +219,14 @@ class MeasurementSettingsWidget(QGroupBox):
     def get_sample_information(self):
         """Get the sample information."""
         return self.sample_edit.text().strip()
+    
+    def get_magnification(self):
+        """Get the selected magnification."""
+        return self.magnification_combo.currentText()
+    
+    def get_flowcell_id(self):
+        """Get the flowcell ID."""
+        return self.flowcell_id_edit.text().strip()
 
     def get_notes(self):
         """Get the measurement notes."""
@@ -258,6 +288,20 @@ class MeasurementSettingsWidget(QGroupBox):
         if sample_info:
             self.sample_edit.setText(sample_info)
             logger.info(f"Sample information set: {sample_info}")
+    
+    def set_magnification(self, magnification):
+        """Set the magnification."""
+        if magnification in ["10x", "40x"]:
+            index = self.magnification_combo.findText(magnification)
+            if index >= 0:
+                self.magnification_combo.setCurrentIndex(index)
+                logger.info(f"Magnification set to: {magnification}")
+    
+    def set_flowcell_id(self, flowcell_id):
+        """Set the flowcell ID."""
+        if flowcell_id:
+            self.flowcell_id_edit.setText(flowcell_id)
+            logger.info(f"Flowcell ID set: {flowcell_id}")
 
     def set_notes(self, notes):
         """Set the measurement notes."""

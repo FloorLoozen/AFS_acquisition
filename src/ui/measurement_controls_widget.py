@@ -14,11 +14,11 @@ from src.controllers.function_generator_controller import FunctionGeneratorContr
 from src.controllers.device_manager import DeviceManager
 from src.utils.status_display import StatusDisplay
 
-logger = get_logger("measurement_controls")
+logger = get_logger("frequency_controls")
 
 
-class MeasurementControlsWidget(QGroupBox):
-    """Widget for controlling measurement hardware including function generator."""
+class FrequencyControlsWidget(QGroupBox):
+    """Widget for controlling frequency hardware including function generator."""
     
     # Signals for function generator control
     function_generator_toggled = pyqtSignal(bool)  # on/off state

@@ -52,9 +52,9 @@ class MainWindow(QMainWindow):
         
         # Initialize widget references with proper type hints (using TYPE_CHECKING imports)
         self.camera_widget: Optional['CameraWidget'] = None
-        self.frequency_settings_widget: Optional['FrequencySettingsWidget'] = None
+        self.frequency_settings_widget: Optional['MeasurementSettingsWidget'] = None
         self.acquisition_controls_widget: Optional['AcquisitionControlsWidget'] = None
-        self.measurement_controls_widget: Optional['MeasurementControlsWidget'] = None
+        self.measurement_controls_widget: Optional['FrequencyControlsWidget'] = None
         self.keyboard_shortcuts: Optional['KeyboardShortcutManager'] = None
         self.force_path_designer: Optional['ForcePathDesignerWindow'] = None
         
@@ -205,10 +205,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         
     def _create_frequency_settings_widget(self, layout, row, col):
-        """Create and setup the frequency settings widget."""
+        """Create and setup the measurement settings widget."""
         try:
-            from src.ui.frequency_settings_widget import FrequencySettingsWidget
-            self.frequency_settings_widget = FrequencySettingsWidget()
+            from src.ui.frequency_settings_widget import MeasurementSettingsWidget
+            self.frequency_settings_widget = MeasurementSettingsWidget()
             layout.addWidget(self.frequency_settings_widget, row, col)
         except Exception as e:
             logger.error(f"Error creating measurement settings widget: {e}")
@@ -236,10 +236,10 @@ class MainWindow(QMainWindow):
             raise
     
     def _create_measurement_controls_widget(self, layout, row, col):
-        """Create and add measurement controls widget."""
+        """Create and add frequency controls widget."""
         try:
-            from src.ui.measurement_controls_widget import MeasurementControlsWidget
-            self.measurement_controls_widget = MeasurementControlsWidget()
+            from src.ui.measurement_controls_widget import FrequencyControlsWidget
+            self.measurement_controls_widget = FrequencyControlsWidget()
             
             # Connect function generator signals to HDF5 timeline logging
             self.measurement_controls_widget.function_generator_toggled.connect(self._on_function_generator_toggled)
@@ -534,8 +534,8 @@ class MainWindow(QMainWindow):
         
         event.accept()
     
-    def get_frequency_settings(self) -> Optional['FrequencySettingsWidget']:
-        """Get the frequency settings widget."""
+    def get_frequency_settings(self) -> Optional['MeasurementSettingsWidget']:
+        """Get the measurement settings widget."""
         return self.frequency_settings_widget
     
     def get_save_path(self) -> str:
