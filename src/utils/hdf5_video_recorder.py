@@ -259,9 +259,8 @@ class HDF5VideoRecorder:
         # Performance monitoring integration
         self._session_start_time = None
         
-        # Data integrity - audit trail
-        audit_file = self.file_path.parent / f"{self.file_path.stem}_audit.jsonl"
-        self.audit_trail = AuditTrail(audit_file)
+        # Data integrity - audit trail (memory only, saved to HDF5)
+        self.audit_trail = AuditTrail()
         
         # State recovery
         state_file = self.file_path.parent / ".recording_state.json"
@@ -576,54 +575,83 @@ class HDF5VideoRecorder:
             return
         
         try:
-            # Create or get metadata group
-            if 'metadata' not in self.h5_file:
-                metadata_group = self.h5_file.create_group('metadata')
+            # Update system metrics before saving (ensures CPU/memory data is current)
+            _performance_monitor.update_system_metrics()
+            
+            # Create or get meta_data group
+            if 'meta_data' not in self.h5_file:
+                metadata_group = self.h5_file.create_group('meta_data')
             else:
-                metadata_group = self.h5_file['metadata']
+                metadata_group = self.h5_file['meta_data']
             
             # Get current performance metrics
             metrics = _performance_monitor.get_metrics()
-            summary = metrics.get_summary()
             
-            # Save metrics as JSON string for easy reading
-            import json
-            metrics_json = json.dumps(summary, indent=2)
-            
-            # Store as dataset
+            # Remove old performance_metrics if it exists
             if 'performance_metrics' in metadata_group:
                 del metadata_group['performance_metrics']
             
-            metadata_group.create_dataset('performance_metrics', data=metrics_json)
+            # Create performance_metrics group
+            perf_group = metadata_group.create_group('performance_metrics')
+            perf_group.attrs['description'] = b'Performance monitoring data for the recording session'
             
-            # Also save as attributes for quick access
-            perf_attrs = metadata_group.attrs
-            perf_attrs['frames_captured'] = metrics.frames_captured
-            perf_attrs['frames_dropped'] = metrics.frames_dropped
-            perf_attrs['frames_written'] = metrics.frames_written
-            perf_attrs['avg_capture_fps'] = metrics.avg_capture_fps
-            perf_attrs['avg_write_fps'] = metrics.avg_write_fps
-            perf_attrs['memory_peak_mb'] = metrics.memory_peak_mb
-            perf_attrs['cpu_percent'] = metrics.cpu_percent
-            perf_attrs['total_data_written_mb'] = metrics.total_data_written_mb
+            # Frame metrics subgroup
+            frames_group = perf_group.create_group('frames')
+            frames_group.attrs['captured'] = metrics.frames_captured
+            frames_group.attrs['dropped'] = metrics.frames_dropped
+            frames_group.attrs['written'] = metrics.frames_written
+            frames_group.attrs['drop_rate_percent'] = (metrics.frames_dropped / max(1, metrics.frames_captured) * 100)
+            frames_group.attrs['avg_capture_fps'] = metrics.avg_capture_fps
+            frames_group.attrs['avg_write_fps'] = metrics.avg_write_fps
             
+            # Compression metrics subgroup
+            comp_group = perf_group.create_group('compression')
+            comp_group.attrs['count'] = metrics.compression_count
+            comp_group.attrs['total_time_s'] = metrics.total_compression_time
+            comp_group.attrs['avg_time_s'] = metrics.avg_compression_time
+            comp_group.attrs['ratio_percent'] = metrics.compression_ratio
+            
+            # Memory metrics subgroup
+            mem_group = perf_group.create_group('memory')
+            mem_group.attrs['current_mb'] = metrics.memory_used_mb
+            mem_group.attrs['peak_mb'] = metrics.memory_peak_mb
+            mem_group.attrs['percent'] = metrics.memory_percent
+            
+            # CPU metrics subgroup
+            cpu_group = perf_group.create_group('cpu')
+            cpu_group.attrs['percent'] = metrics.cpu_percent
+            cpu_group.attrs['thread_count'] = metrics.thread_count
+            
+            # Session metrics subgroup
+            session_group = perf_group.create_group('session')
             if metrics.session_start_time:
-                perf_attrs['session_duration_s'] = metrics.session_duration
+                session_group.attrs['duration_s'] = metrics.session_duration
+            session_group.attrs['data_written_mb'] = metrics.total_data_written_mb
             
-            # GPU metrics if available
+            # GPU metrics (if available)
             if metrics.gpu_frames_processed > 0:
-                perf_attrs['gpu_frames_processed'] = metrics.gpu_frames_processed
-                perf_attrs['gpu_avg_time_ms'] = metrics.gpu_avg_time_ms
+                gpu_group = perf_group.create_group('gpu')
+                gpu_group.attrs['frames_processed'] = metrics.gpu_frames_processed
+                gpu_group.attrs['avg_time_ms'] = metrics.gpu_avg_time_ms
             
-            # Bottleneck information
-            bottlenecks = _performance_monitor.get_bottlenecks(5)
+            # Bottleneck information as dataset
+            bottlenecks = _performance_monitor.get_bottlenecks(10)
             if bottlenecks:
-                bottleneck_info = []
-                for op_name, avg_time, count in bottlenecks:
-                    bottleneck_info.append(f"{op_name}: {avg_time:.2f}ms avg ({count} calls)")
-                perf_attrs['bottlenecks'] = '; '.join(bottleneck_info)
+                import numpy as np
+                bottleneck_dtype = np.dtype([
+                    ('operation', 'S100'),
+                    ('avg_time_ms', 'f4'),
+                    ('call_count', 'i4')
+                ])
+                bottleneck_data = np.zeros(len(bottlenecks), dtype=bottleneck_dtype)
+                for i, (op_name, avg_time, count) in enumerate(bottlenecks):
+                    bottleneck_data[i]['operation'] = op_name.encode('utf-8')
+                    bottleneck_data[i]['avg_time_ms'] = avg_time
+                    bottleneck_data[i]['call_count'] = count
+                
+                perf_group.create_dataset('bottlenecks', data=bottleneck_data, compression='gzip', compression_opts=4)
             
-            logger.info("Performance metrics saved to HDF5 metadata")
+            logger.info("Performance metrics saved to HDF5 meta_data/performance_metrics")
             
         except Exception as e:
             logger.error(f"Failed to save performance metrics to HDF5: {e}", exc_info=True)

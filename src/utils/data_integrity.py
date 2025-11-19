@@ -244,16 +244,54 @@ class AuditTrail:
             return self.events.copy()
     
     def save_to_hdf5(self, hdf5_file: h5py.File):
-        """Save audit trail to HDF5 file as JSON string."""
+        """Save audit trail to HDF5 file as structured table under meta_data/audit_trail."""
         try:
             with self._lock:
-                audit_json = json.dumps(self.events, indent=2)
+                if not self.events:
+                    logger.debug("No audit events to save")
+                    return
                 
-                if 'audit_trail' in hdf5_file:
-                    del hdf5_file['audit_trail']
+                # Create or get meta_data group
+                if 'meta_data' not in hdf5_file:
+                    meta_group = hdf5_file.create_group('meta_data')
+                else:
+                    meta_group = hdf5_file['meta_data']
                 
-                hdf5_file.create_dataset('audit_trail', data=audit_json)
-                logger.info(f"Saved {len(self.events)} audit events to HDF5")
+                # Remove old audit_trail if it exists
+                if 'audit_trail' in meta_group:
+                    del meta_group['audit_trail']
+                
+                # Create audit trail group
+                audit_group = meta_group.create_group('audit_trail')
+                audit_group.attrs['description'] = b'Audit trail of all operations'
+                audit_group.attrs['event_count'] = len(self.events)
+                
+                # Define compound datatype for audit events
+                import numpy as np
+                event_dtype = np.dtype([
+                    ('timestamp', 'S32'),      # ISO format timestamp
+                    ('event_type', 'S50'),     # Event type
+                    ('description', 'S200'),   # Event description
+                ])
+                
+                # Convert events to structured array
+                event_data = np.zeros(len(self.events), dtype=event_dtype)
+                for i, event in enumerate(self.events):
+                    event_data[i]['timestamp'] = event['timestamp'].encode('utf-8')
+                    event_data[i]['event_type'] = event['event_type'].encode('utf-8')
+                    event_data[i]['description'] = event['description'][:200].encode('utf-8')
+                
+                # Create dataset
+                audit_group.create_dataset('events', data=event_data, compression='gzip', compression_opts=4)
+                
+                # Save metadata for each event as separate datasets (if they exist)
+                for i, event in enumerate(self.events):
+                    if event.get('metadata'):
+                        meta_str = json.dumps(event['metadata'])
+                        if len(meta_str) < 1000:  # Only save small metadata
+                            audit_group.attrs[f'event_{i}_metadata'] = meta_str.encode('utf-8')
+                
+                logger.info(f"Saved {len(self.events)} audit events to HDF5 meta_data/audit_trail")
         
         except Exception as e:
             logger.error(f"Failed to save audit trail to HDF5: {e}", exc_info=True)
@@ -261,14 +299,55 @@ class AuditTrail:
     def load_from_hdf5(self, hdf5_file: h5py.File):
         """Load audit trail from HDF5 file."""
         try:
-            if 'audit_trail' in hdf5_file:
+            import numpy as np
+            
+            # Check new structured format (meta_data/audit_trail group)
+            if 'meta_data' in hdf5_file and 'audit_trail' in hdf5_file['meta_data']:
+                audit_obj = hdf5_file['meta_data/audit_trail']
+                
+                # New structured format (group with events dataset)
+                if isinstance(audit_obj, h5py.Group) and 'events' in audit_obj:
+                    event_data = audit_obj['events'][()]
+                    events = []
+                    for i, row in enumerate(event_data):
+                        event = {
+                            'timestamp': row['timestamp'].decode('utf-8'),
+                            'event_type': row['event_type'].decode('utf-8'),
+                            'description': row['description'].decode('utf-8'),
+                            'metadata': {}
+                        }
+                        # Load metadata if exists
+                        meta_key = f'event_{i}_metadata'
+                        if meta_key in audit_obj.attrs:
+                            try:
+                                event['metadata'] = json.loads(audit_obj.attrs[meta_key].decode('utf-8'))
+                            except:
+                                pass
+                        events.append(event)
+                    
+                    with self._lock:
+                        self.events = events
+                        logger.info(f"Loaded {len(self.events)} audit events from HDF5 (structured format)")
+                
+                # Old JSON format (dataset)
+                else:
+                    audit_json = audit_obj[()]
+                    if isinstance(audit_json, bytes):
+                        audit_json = audit_json.decode('utf-8')
+                    
+                    with self._lock:
+                        self.events = json.loads(audit_json)
+                        logger.info(f"Loaded {len(self.events)} audit events from HDF5 (JSON format)")
+            
+            # Fallback to old location (root) for backwards compatibility
+            elif 'audit_trail' in hdf5_file:
                 audit_json = hdf5_file['audit_trail'][()]
                 if isinstance(audit_json, bytes):
                     audit_json = audit_json.decode('utf-8')
                 
                 with self._lock:
                     self.events = json.loads(audit_json)
-                    logger.info(f"Loaded {len(self.events)} audit events from HDF5")
+                    logger.info(f"Loaded {len(self.events)} audit events from HDF5 (old location)")
         
         except Exception as e:
             logger.error(f"Failed to load audit trail from HDF5: {e}", exc_info=True)
