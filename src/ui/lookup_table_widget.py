@@ -107,7 +107,7 @@ class LUTAcquisitionThread(QThread):
                 # Read back actual Z position from stage after settling
                 actual_z_pos = stage_manager.get_z_position()
                 if actual_z_pos is None:
-                    logger.warning(f"Failed to read Z position at target {z_pos_target:.3f} µm, using target value")
+                    logger.warning(f"Failed to read Z position at target {z_pos_target:.0f} µm, using target value")
                     actual_z_pos = z_pos_target
                 
                 # Start moving to NEXT position while capturing current frame (parallel!)
@@ -120,7 +120,7 @@ class LUTAcquisitionThread(QThread):
                 # Capture frame (while stage moves to next position in parallel)
                 frame = self.camera.get_frame(timeout=1.0)
                 if frame is None:
-                    logger.warning(f"Failed to capture frame at Z={actual_z_pos:.3f} µm")
+                    logger.warning(f"Failed to capture frame at Z={actual_z_pos:.0f} µm")
                     continue
                 
                 # Collect frame for LUT with actual Z position
@@ -130,7 +130,7 @@ class LUTAcquisitionThread(QThread):
                 # Emit progress with actual position
                 self.frame_captured.emit(i, actual_z_pos)
                 self.progress.emit(i + 1, num_positions, 
-                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
+                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.0f} µm")
             
             # Save LUT data to HDF5 file if we have a recorder
             if self.hdf5_recorder and lut_frames:
@@ -230,7 +230,7 @@ class LUTAcquisitionThreadStandalone(QThread):
             z_positions = [self.start_um + i * step_um for i in range(num_positions)]
             
             self.progress.emit(0, num_positions, 
-                             f"Acquiring {num_positions} frames from {self.start_um:.1f} to {self.end_um:.1f} µm...")
+                             f"Acquiring {num_positions} frames from {self.start_um:.0f} to {self.end_um:.0f} µm...")
             
             # Prepare metadata before creating recorder
             metadata = {
@@ -280,7 +280,7 @@ class LUTAcquisitionThreadStandalone(QThread):
                 # Capture frame
                 frame = camera.get_frame(timeout=1.0)
                 if frame is None:
-                    logger.warning(f"Failed to capture frame at Z={z_pos:.3f} µm")
+                    logger.warning(f"Failed to capture frame at Z={z_pos:.0f} µm")
                     continue
                 
                 # Record frame (metadata not supported directly, will be in global metadata)
@@ -289,7 +289,7 @@ class LUTAcquisitionThreadStandalone(QThread):
                 # Emit progress
                 self.frame_captured.emit(i, z_pos)
                 self.progress.emit(i + 1, num_positions, 
-                                 f"Captured frame {i+1}/{num_positions} at Z={z_pos:.3f} µm")
+                                 f"Captured frame {i+1}/{num_positions} at Z={z_pos:.0f} µm")
             
             # Return Z-stage to 0 position after LUT acquisition
             try:
@@ -369,7 +369,7 @@ class LookupTableWidget(QDialog):
         self.start_z_spin.setRange(0, 100)
         self.start_z_spin.setValue(0)
         self.start_z_spin.setSuffix(" µm")
-        self.start_z_spin.setDecimals(3)
+        self.start_z_spin.setDecimals(0)
         z_range_layout.addWidget(QLabel("Start:"))
         z_range_layout.addWidget(self.start_z_spin)
         
@@ -377,7 +377,7 @@ class LookupTableWidget(QDialog):
         self.end_z_spin.setRange(0, 100)
         self.end_z_spin.setValue(100)
         self.end_z_spin.setSuffix(" µm")
-        self.end_z_spin.setDecimals(3)
+        self.end_z_spin.setDecimals(0)
         z_range_layout.addWidget(QLabel("End:"))
         z_range_layout.addWidget(self.end_z_spin)
         z_range_layout.addStretch()
@@ -552,7 +552,7 @@ class LookupTableWidget(QDialog):
         
     def _on_frame_captured(self, frame_num: int, z_pos: float):
         """Handle frame captured event."""
-        self._log(f"✓ Frame {frame_num} captured at Z={z_pos:.3f} µm")
+        self._log(f"✓ Frame {frame_num} captured at Z={z_pos:.0f} µm")
         
     def _on_finished(self, success: bool, message: str):
         """Handle acquisition finished."""
