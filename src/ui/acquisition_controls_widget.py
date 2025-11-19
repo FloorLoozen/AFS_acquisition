@@ -32,7 +32,8 @@ class AcquisitionControlsWidget(QGroupBox):
         
         # Recording state
         self.is_recording = False
-        self.current_recording_path = ""
+        self.current_recording_path = None
+        self._block_recording = False  # Flag to block recording (e.g., during LUT acquisition)
         self.original_recording_path = ""  # Store original path for renaming
         self.frequency_settings_widget = None  # Will be set from main window
         
@@ -127,6 +128,11 @@ class AcquisitionControlsWidget(QGroupBox):
     def start_recording(self):
         """Start recording measurement data and video."""
         
+        # CRITICAL: Block recording if flag is set (e.g., during LUT acquisition)
+        if self._block_recording:
+            logger.warning("Recording blocked - operation in progress (e.g., LUT acquisition)")
+            return
+        
         # Check if frequency settings are configured
         if not self.frequency_settings_widget or not self.frequency_settings_widget.is_configured():
             QMessageBox.warning(self, "Configuration Required", 
@@ -145,22 +151,11 @@ class AcquisitionControlsWidget(QGroupBox):
         full_path = os.path.join(save_path, filename)
         
         try:
-            # Emit signal to start recording
+            # Emit signal to start recording - main_window will handle LUT check
+            # DO NOT set is_recording or update buttons yet - let main_window decide
             self.start_recording_requested.emit(full_path)
             
-            # Update internal state
-            self.is_recording = True
-            self.current_recording_path = full_path
-            
-            # Update button states
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
-            self.update_save_button_state()  # This will disable save during recording
-            
-            # Update status
-            self.status_display.set_status("Recording")
-            
-# Target path logged in main window
+# State will be updated by recording_started_successfully() or recording_failed()
             
         except Exception as e:
             logger.error(f"Error starting recording: {e}")
@@ -233,8 +228,18 @@ class AcquisitionControlsWidget(QGroupBox):
 
     def recording_started_successfully(self):
         """Called when recording actually starts successfully in the camera."""
-# Success already logged
-        # Status is already set in start_recording, but we could update here if needed
+        # Update internal state
+        self.is_recording = True
+        
+        # Update button states
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.update_save_button_state()  # This will disable save during recording
+        
+        # Update status
+        self.status_display.set_status("Recording")
+        
+        logger.info("Recording started successfully")
 
     def recording_stopped_successfully(self, saved_path=None):
         """Called when recording stops successfully in the camera."""

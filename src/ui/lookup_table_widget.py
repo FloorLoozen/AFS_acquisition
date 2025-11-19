@@ -1,0 +1,568 @@
+"""
+Lookup Table Generator Widget for Z-calibration.
+
+Creates a lookup table by capturing diffraction patterns at different Z-positions.
+This is used for 3D particle tracking by correlating diffraction patterns with
+Z-position of the objective.
+
+Reference: https://pubmed.ncbi.nlm.nih.gov/25419961/
+"""
+
+import numpy as np
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QPushButton, QLineEdit, QProgressBar, QTextEdit, QFileDialog,
+    QSpinBox, QDoubleSpinBox
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont
+
+from src.controllers.stage_manager import StageManager
+from src.controllers.camera_controller import CameraController
+from src.utils.logger import get_logger
+from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+
+logger = get_logger("lut_generator")
+
+
+class LUTAcquisitionThread(QThread):
+    """Background thread for LUT acquisition to keep UI responsive."""
+    
+    progress = pyqtSignal(int, int, str)  # current, total, status message
+    finished = pyqtSignal(bool, str)  # success, message
+    frame_captured = pyqtSignal(int, float)  # frame_number, z_position
+    
+    def __init__(self, start_um: float, end_um: float, step_nm: float, 
+                 camera, hdf5_recorder, settle_time_ms: int):
+        super().__init__()
+        self.start_um = start_um
+        self.end_um = end_um
+        self.step_nm = step_nm
+        self.camera = camera
+        self.hdf5_recorder = hdf5_recorder
+        self.settle_time_s = settle_time_ms / 1000.0
+        self._stop_requested = False
+        
+    def request_stop(self):
+        """Request the acquisition to stop."""
+        self._stop_requested = True
+        
+    def run(self):
+        """Execute the LUT acquisition."""
+        stage_manager = StageManager.get_instance()
+        
+        try:
+            # Connect to Z-stage if needed
+            if not stage_manager.z_is_connected:
+                self.progress.emit(0, 100, "Connecting to Z-stage...")
+                if not stage_manager.connect_z():
+                    self.finished.emit(False, "Failed to connect to Z-stage")
+                    return
+            
+            # Camera is already initialized and running
+            if not self.camera:
+                self.finished.emit(False, "No camera available")
+                return
+            
+            # Calculate Z positions
+            step_um = self.step_nm / 1000.0  # Convert nm to µm
+            num_positions = int((self.end_um - self.start_um) / step_um) + 1
+            z_positions = [self.start_um + i * step_um for i in range(num_positions)]
+            
+            self.progress.emit(0, num_positions, 
+                             f"Acquiring {num_positions} frames from {self.start_um:.1f} to {self.end_um:.1f} µm...")
+            
+            # Move to start position
+            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.1f} µm...")
+            stage_manager.move_z_to(self.start_um)
+            time.sleep(self.settle_time_s)
+            
+            # Acquire frames at each Z position
+            lut_frames = []
+            lut_z_positions = []
+            
+            for i, z_pos_target in enumerate(z_positions):
+                if self._stop_requested:
+                    self.progress.emit(i, num_positions, "Stopping...")
+                    break
+                
+                # Move to Z position
+                stage_manager.move_z_to(z_pos_target)
+                
+                # Wait for stage to settle
+                time.sleep(self.settle_time_s)
+                
+                # Read back actual Z position from stage after settling
+                actual_z_pos = stage_manager.get_z_position()
+                if actual_z_pos is None:
+                    logger.warning(f"Failed to read Z position at target {z_pos_target:.3f} µm, using target value")
+                    actual_z_pos = z_pos_target
+                
+                # Capture frame
+                frame = self.camera.get_frame(timeout=1.0)
+                if frame is None:
+                    logger.warning(f"Failed to capture frame at Z={actual_z_pos:.3f} µm")
+                    continue
+                
+                # Collect frame for LUT with actual Z position
+                lut_frames.append(frame)
+                lut_z_positions.append(actual_z_pos)
+                
+                # Emit progress with actual position
+                self.frame_captured.emit(i, actual_z_pos)
+                self.progress.emit(i + 1, num_positions, 
+                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
+            
+            # Save LUT data to HDF5 file if we have a recorder
+            if self.hdf5_recorder and lut_frames:
+                metadata = {
+                    'start_position_um': self.start_um,
+                    'end_position_um': self.end_um,
+                    'step_size_nm': self.step_nm,
+                    'settle_time_ms': self.settle_time_s * 1000,
+                    'num_positions': len(lut_frames)
+                }
+                self.hdf5_recorder.add_lut_data(lut_frames, lut_z_positions, metadata)
+                logger.info(f"LUT data saved: {len(lut_frames)} frames")
+            
+            # Return Z-stage to 0 position after LUT acquisition
+            try:
+                self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
+                stage_manager.move_z_to(0.0)
+                # Wait a bit for stage to settle
+                time.sleep(0.2)
+                # Verify position
+                actual_pos = stage_manager.get_z_position()
+                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.3f} µm)")
+                if abs(actual_pos) > 0.5:
+                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.3f} µm)")
+            except Exception as e:
+                logger.warning(f"Failed to return Z-stage to 0: {e}")
+            
+            if self._stop_requested:
+                self.finished.emit(False, "Acquisition stopped by user")
+            else:
+                self.finished.emit(True, f"Successfully acquired {len(lut_frames)} frames")
+                
+        except Exception as e:
+            logger.error(f"Error during LUT acquisition: {e}", exc_info=True)
+            self.finished.emit(False, f"Error: {str(e)}")
+
+
+class LUTAcquisitionThreadStandalone(QThread):
+    """Background thread for LUT acquisition to keep UI responsive."""
+    
+    progress = pyqtSignal(int, int, str)  # current, total, status message
+    finished = pyqtSignal(bool, str)  # success, message
+    frame_captured = pyqtSignal(int, float)  # frame_number, z_position
+    
+    def __init__(self, start_um: float, end_um: float, step_nm: float, 
+                 output_path: str, settle_time_ms: int):
+        super().__init__()
+        self.start_um = start_um
+        self.end_um = end_um
+        self.step_nm = step_nm
+        self.output_path = output_path
+        self.settle_time_s = settle_time_ms / 1000.0
+        self._stop_requested = False
+        
+    def request_stop(self):
+        """Request the acquisition to stop."""
+        self._stop_requested = True
+        
+    def run(self):
+        """Execute the LUT acquisition."""
+        stage_manager = StageManager.get_instance()
+        camera = None
+        recorder = None
+        
+        try:
+            # Connect to Z-stage if not already connected
+            if not stage_manager.z_is_connected:
+                self.progress.emit(0, 100, "Connecting to Z-stage...")
+                if not stage_manager.connect_z():
+                    self.finished.emit(False, "Failed to connect to Z-stage")
+                    return
+            
+            # Initialize camera
+            self.progress.emit(0, 100, "Initializing camera...")
+            camera = CameraController()
+            if not camera.initialize():
+                self.finished.emit(False, "Failed to initialize camera")
+                return
+            
+            # Start camera capture
+            if not camera.start_capture():
+                self.finished.emit(False, "Failed to start camera capture")
+                return
+            
+            # Wait for camera to stabilize
+            time.sleep(0.5)
+            
+            # Get a test frame to determine dimensions
+            test_frame = camera.get_frame(timeout=1.0)
+            if test_frame is None:
+                self.finished.emit(False, "Failed to capture test frame")
+                return
+            
+            # Calculate Z positions
+            step_um = self.step_nm / 1000.0  # Convert nm to µm
+            num_positions = int((self.end_um - self.start_um) / step_um) + 1
+            z_positions = [self.start_um + i * step_um for i in range(num_positions)]
+            
+            self.progress.emit(0, num_positions, 
+                             f"Acquiring {num_positions} frames from {self.start_um:.1f} to {self.end_um:.1f} µm...")
+            
+            # Prepare metadata before creating recorder
+            metadata = {
+                'acquisition_type': 'lookup_table',
+                'start_position_um': self.start_um,
+                'end_position_um': self.end_um,
+                'step_size_nm': self.step_nm,
+                'step_size_um': step_um,
+                'num_positions': num_positions,
+                'settle_time_ms': self.settle_time_s * 1000,
+                'timestamp': datetime.now().isoformat(),
+                'camera_id': camera.camera_id,
+                'frame_width': test_frame.shape[1],
+                'frame_height': test_frame.shape[0]
+            }
+            
+            # Create HDF5 recorder with compression enabled
+            # Using compression_level=9 for maximum file size reduction
+            # LZF compression is lossless and provides ~2x compression ratio
+            recorder = HDF5VideoRecorder(
+                self.output_path,
+                frame_shape=test_frame.shape,
+                compression_level=9
+            )
+            
+            # Start recording BEFORE moving stages
+            recorder.start_recording(metadata=metadata)
+            logger.info(f"Started HDF5 recording to {self.output_path}")
+            
+            # Move to start position
+            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.1f} µm...")
+            stage_manager.move_z_to(self.start_um)
+            time.sleep(self.settle_time_s)
+            
+            # Acquire frames at each Z position
+            for i, z_pos in enumerate(z_positions):
+                if self._stop_requested:
+                    self.progress.emit(i, num_positions, "Stopping...")
+                    break
+                
+                # Move to Z position
+                stage_manager.move_z_to(z_pos)
+                
+                # Wait for stage to settle
+                time.sleep(self.settle_time_s)
+                
+                # Capture frame
+                frame = camera.get_frame(timeout=1.0)
+                if frame is None:
+                    logger.warning(f"Failed to capture frame at Z={z_pos:.3f} µm")
+                    continue
+                
+                # Record frame (metadata not supported directly, will be in global metadata)
+                recorder.record_frame(frame)
+                
+                # Emit progress
+                self.frame_captured.emit(i, z_pos)
+                self.progress.emit(i + 1, num_positions, 
+                                 f"Captured frame {i+1}/{num_positions} at Z={z_pos:.3f} µm")
+            
+            # Return Z-stage to 0 position after LUT acquisition
+            try:
+                self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
+                stage_manager.move_z_to(0.0)
+                # Wait a bit for stage to settle
+                time.sleep(0.3)
+                # Verify position
+                actual_pos = stage_manager.get_z_position()
+                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.3f} µm)")
+                if abs(actual_pos) > 0.5:
+                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.3f} µm)")
+            except Exception as e:
+                logger.warning(f"Failed to return Z-stage to 0: {e}")
+            
+            if self._stop_requested:
+                self.finished.emit(False, "Acquisition stopped by user")
+            else:
+                self.finished.emit(True, f"Successfully acquired {num_positions} frames")
+                
+        except Exception as e:
+            logger.error(f"Error during LUT acquisition: {e}", exc_info=True)
+            self.finished.emit(False, f"Error: {str(e)}")
+            
+        finally:
+            # Cleanup
+            if recorder:
+                try:
+                    recorder.stop_recording()
+                except Exception as e:
+                    logger.error(f"Error stopping recorder: {e}")
+                    
+            if camera:
+                try:
+                    camera.stop_capture()
+                    camera.close()
+                except Exception as e:
+                    logger.error(f"Error closing camera: {e}")
+
+
+class LookupTableWidget(QDialog):
+    """
+    Widget for generating lookup tables for Z-position calibration.
+    
+    Captures a series of diffraction patterns at different Z positions
+    to create a reference library for 3D particle tracking.
+    """
+    
+    def __init__(self, camera=None, hdf5_recorder=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Lookup Table Generator")
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
+        
+        self.camera = camera  # Optional: use provided camera instead of creating new one
+        self.hdf5_recorder = hdf5_recorder  # Optional: save into existing recording
+        self.acquisition_thread: Optional[LUTAcquisitionThread] = None
+        self.is_acquiring = False
+        
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        """Setup the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        
+        # Parameters group
+        params_group = QGroupBox("Acquisition Parameters")
+        params_layout = QVBoxLayout()
+        params_layout.setSpacing(8)
+        
+        # Z range
+        z_range_layout = QHBoxLayout()
+        z_range_layout.addWidget(QLabel("Z Range:"))
+        
+        self.start_z_spin = QDoubleSpinBox()
+        self.start_z_spin.setRange(0, 100)
+        self.start_z_spin.setValue(0)
+        self.start_z_spin.setSuffix(" µm")
+        self.start_z_spin.setDecimals(3)
+        z_range_layout.addWidget(QLabel("Start:"))
+        z_range_layout.addWidget(self.start_z_spin)
+        
+        self.end_z_spin = QDoubleSpinBox()
+        self.end_z_spin.setRange(0, 100)
+        self.end_z_spin.setValue(100)
+        self.end_z_spin.setSuffix(" µm")
+        self.end_z_spin.setDecimals(3)
+        z_range_layout.addWidget(QLabel("End:"))
+        z_range_layout.addWidget(self.end_z_spin)
+        z_range_layout.addStretch()
+        
+        params_layout.addLayout(z_range_layout)
+        
+        # Step size
+        step_layout = QHBoxLayout()
+        step_layout.addWidget(QLabel("Step Size:"))
+        self.step_spin = QSpinBox()
+        self.step_spin.setRange(10, 10000)
+        self.step_spin.setValue(100)
+        self.step_spin.setSuffix(" nm")
+        self.step_spin.setSingleStep(10)
+        step_layout.addWidget(self.step_spin)
+        step_layout.addStretch()
+        params_layout.addLayout(step_layout)
+        
+        # Settle time
+        settle_layout = QHBoxLayout()
+        settle_layout.addWidget(QLabel("Settle Time:"))
+        self.settle_spin = QSpinBox()
+        self.settle_spin.setRange(0, 5000)
+        self.settle_spin.setValue(200)
+        self.settle_spin.setSuffix(" ms")
+        self.settle_spin.setSingleStep(50)
+        self.settle_spin.setToolTip("Time to wait after moving Z-stage before capturing frame")
+        settle_layout.addWidget(self.settle_spin)
+        settle_layout.addStretch()
+        params_layout.addLayout(settle_layout)
+        
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+        
+        # Progress
+        progress_group = QGroupBox("Progress")
+        progress_layout = QVBoxLayout()
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        progress_layout.addWidget(self.progress_bar)
+        
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #666;")
+        progress_layout.addWidget(self.status_label)
+        
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(100)
+        progress_layout.addWidget(self.log_text)
+        
+        progress_group.setLayout(progress_layout)
+        layout.addWidget(progress_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        self.start_btn = QPushButton("Start Acquisition")
+        self.start_btn.clicked.connect(self._start_acquisition)
+        button_layout.addWidget(self.start_btn)
+        
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self._stop_acquisition)
+        self.stop_btn.setEnabled(False)
+        button_layout.addWidget(self.stop_btn)
+        
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        button_layout.addWidget(self.close_btn)
+        
+        layout.addLayout(button_layout)
+        
+    def _update_info_label(self):
+        """Update the information label with calculated values."""
+        start = self.start_z_spin.value()
+        end = self.end_z_spin.value()
+        step_nm = self.step_spin.value()
+        settle_ms = self.settle_spin.value()
+        
+        if end <= start:
+            self.info_label.setText("⚠ End position must be greater than start position")
+            return
+        
+        step_um = step_nm / 1000.0
+        num_frames = int((end - start) / step_um) + 1
+        total_time_s = num_frames * (settle_ms / 1000.0)
+        
+        self.info_label.setText(
+            f"Will capture {num_frames} frames | "
+            f"Estimated time: {total_time_s:.1f}s ({total_time_s/60:.1f} min)"
+        )
+        
+    def _log(self, message: str):
+        """Add message to log."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{timestamp}] {message}")
+        
+    def _start_acquisition(self):
+        """Start the LUT acquisition."""
+        # Validate parameters
+        start = self.start_z_spin.value()
+        end = self.end_z_spin.value()
+        
+        if end <= start:
+            self._log("❌ End position must be greater than start position")
+            return
+        
+        # Check if we're using external camera/recorder or standalone mode
+        if self.camera and self.hdf5_recorder:
+            # Recording mode - use provided camera and recorder
+            self._log("📹 Recording mode: using active camera and HDF5 file")
+            
+            # Create thread with camera and recorder
+            self.acquisition_thread = LUTAcquisitionThread(
+                start_um=start,
+                end_um=end,
+                step_nm=self.step_spin.value(),
+                camera=self.camera,
+                hdf5_recorder=self.hdf5_recorder,
+                settle_time_ms=self.settle_spin.value()
+            )
+        else:
+            # Standalone mode - create own camera and file
+            # Generate output path automatically
+            default_dir = Path.cwd() / "raw_data" / "LUT"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            output_path = default_dir / f"lut_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
+            
+            self._log(f"📁 Standalone mode: saving to {output_path}")
+            
+            # Create standalone thread
+            self.acquisition_thread = LUTAcquisitionThreadStandalone(
+                start_um=start,
+                end_um=end,
+                step_nm=self.step_spin.value(),
+                output_path=str(output_path),
+                settle_time_ms=self.settle_spin.value()
+            )
+        
+        # Connect signals
+        self.acquisition_thread.progress.connect(self._on_progress)
+        self.acquisition_thread.finished.connect(self._on_finished)
+        self.acquisition_thread.frame_captured.connect(self._on_frame_captured)
+        
+        # Update UI
+        self.is_acquiring = True
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.start_z_spin.setEnabled(False)
+        self.end_z_spin.setEnabled(False)
+        self.step_spin.setEnabled(False)
+        self.settle_spin.setEnabled(False)
+        
+        # Start acquisition
+        self._log("🚀 Starting acquisition...")
+        self.acquisition_thread.start()
+        
+    def _stop_acquisition(self):
+        """Stop the acquisition."""
+        if self.acquisition_thread:
+            self._log("⏹ Stopping acquisition...")
+            self.acquisition_thread.request_stop()
+            
+    def _on_progress(self, current: int, total: int, message: str):
+        """Handle progress update."""
+        if total > 0:
+            progress = int((current / total) * 100)
+            self.progress_bar.setValue(progress)
+        self.status_label.setText(message)
+        
+    def _on_frame_captured(self, frame_num: int, z_pos: float):
+        """Handle frame captured event."""
+        self._log(f"✓ Frame {frame_num} captured at Z={z_pos:.3f} µm")
+        
+    def _on_finished(self, success: bool, message: str):
+        """Handle acquisition finished."""
+        self.is_acquiring = False
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.start_z_spin.setEnabled(True)
+        self.end_z_spin.setEnabled(True)
+        self.step_spin.setEnabled(True)
+        self.settle_spin.setEnabled(True)
+        
+        if success:
+            self._log(f"✅ {message}")
+            self.progress_bar.setValue(100)
+            # Auto-close dialog after successful acquisition
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(500, self.accept)  # Close after 500ms to show success message
+        else:
+            self._log(f"❌ {message}")
+            
+    def closeEvent(self, event):
+        """Handle dialog close."""
+        if self.is_acquiring:
+            self._log("⚠ Cannot close during acquisition. Please stop first.")
+            event.ignore()
+        else:
+            event.accept()

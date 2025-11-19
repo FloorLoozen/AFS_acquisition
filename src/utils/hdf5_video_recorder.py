@@ -355,11 +355,26 @@ class HDF5VideoRecorder:
             return False
     
     def _create_hdf5_file(self) -> bool:
-        """Create and open HDF5 file with optimized settings."""
+        """Create and open HDF5 file with optimized settings.
+        
+        Opens in append mode if file already exists (e.g., with LUT data),
+        otherwise creates a new file.
+        """
         try:
+            import os
+            
+            # Check if file already exists (e.g., from LUT acquisition)
+            file_exists = os.path.exists(self.file_path)
+            mode = 'a' if file_exists else 'w'
+            
+            if file_exists:
+                logger.info(f"Opening existing HDF5 file in append mode: {self.file_path}")
+            else:
+                logger.info(f"Creating new HDF5 file: {self.file_path}")
+            
             self.h5_file = h5py.File(
                 self.file_path, 
-                'w',
+                mode,
                 libver='latest',  # Use latest HDF5 format for best performance
                 # OPTIMIZED: 400 MB chunk cache for 32GB RAM system
                 rdcc_nbytes=400 * 1024 * 1024,  # 400 MB (utilize available RAM)
@@ -367,7 +382,7 @@ class HDF5VideoRecorder:
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to create HDF5 file: {e}")
+            logger.error(f"Failed to create/open HDF5 file: {e}")
             return False
     
     def _setup_datasets_and_metadata(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
@@ -406,6 +421,12 @@ class HDF5VideoRecorder:
             data_group.attrs['description'] = b'All raw measurement data including video and timelines'
         else:
             data_group = self.h5_file['raw_data']
+        
+        # Check if main_video dataset already exists (e.g., from previous recording attempt)
+        if 'main_video' in data_group:
+            logger.info("Video dataset already exists, using existing dataset")
+            self.video_dataset = data_group['main_video']
+            return
         
         # USER SPEC: Dataset shape (time, height, width) - NO channel dimension for grayscale
         # Frame shape is (height, width, channels) but dataset should be (time, height, width)
@@ -1319,18 +1340,28 @@ class HDF5VideoRecorder:
             return
             
         try:
-            # Create main metadata group
-            self.metadata_group = self.h5_file.create_group('meta_data')
-            self.metadata_group.attrs['description'] = b'Hardware settings, recording info, and configuration'
-            self.metadata_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            # Create or get main metadata group
+            if 'meta_data' not in self.h5_file:
+                self.metadata_group = self.h5_file.create_group('meta_data')
+                self.metadata_group.attrs['description'] = b'Hardware settings, recording info, and configuration'
+                self.metadata_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
+            else:
+                self.metadata_group = self.h5_file['meta_data']
+                logger.info("Metadata group already exists, reusing it")
             
-            # Create hardware_settings subgroup
-            hardware_group = self.metadata_group.create_group('hardware_settings')
-            hardware_group.attrs['description'] = b'Camera and stage hardware configuration'
+            # Create or get hardware_settings subgroup
+            if 'hardware_settings' not in self.metadata_group:
+                hardware_group = self.metadata_group.create_group('hardware_settings')
+                hardware_group.attrs['description'] = b'Camera and stage hardware configuration'
             
-            # Create recording_info subgroup (always create it)
-            recording_group = self.metadata_group.create_group('recording_info')
-            recording_group.attrs['description'] = b'Recording session metadata and timestamps'
+            # Create or get recording_info subgroup
+            if 'recording_info' not in self.metadata_group:
+                recording_group = self.metadata_group.create_group('recording_info')
+                recording_group.attrs['description'] = b'Recording session metadata and timestamps'
+            else:
+                recording_group = self.metadata_group['recording_info']
+            
+            # Update recording info with current session data
             recording_group.attrs['recording_started'] = datetime.now().isoformat().encode('utf-8')
             recording_group.attrs['compression_type'] = (self.compression_type or 'none').encode('utf-8')
             if self.compression_level is not None:  # Only save if not None (LZF has no level)
@@ -1350,7 +1381,7 @@ class HDF5VideoRecorder:
             self.metadata_group = None
 
     def _create_execution_data_group(self):
-        """Create /raw_data/LUT group structure (to be implemented - placeholder for now)."""
+        """Create /raw_data/LUT group structure for lookup table data."""
         if not self.h5_file:
             return
             
@@ -1361,25 +1392,110 @@ class HDF5VideoRecorder:
             else:
                 data_group = self.h5_file['raw_data']
             
-            # Create LUT subgroup (placeholder for future implementation)
-            lut_group = data_group.create_group('LUT')
-            lut_group.attrs['description'] = b'Look-up tables and z-stage data (to be implemented)'
-            lut_group.attrs['status'] = b'placeholder'
+            # Create or get LUT subgroup
+            if 'LUT' in data_group:
+                lut_group = data_group['LUT']
+                logger.info("Using existing LUT group")
+            else:
+                lut_group = data_group.create_group('LUT')
+                lut_group.attrs['description'] = b'Lookup table data for 3D particle tracking'
+                lut_group.attrs['status'] = b'ready'
+                logger.info("Created new LUT group")
             
-            # Placeholder subgroups
-            # lut_table_group = lut_group.create_group('LUT_table')
-            # lut_table_group.attrs['description'] = b'LUT table data (to be implemented)'
-            
-            # z_stage_group = lut_group.create_group('z_stage_heights')
-            # z_stage_group.attrs['description'] = b'Z-stage height data (to be implemented)'
-            
-            
-            # Keep reference for compatibility
+            # Keep reference for later LUT data addition
             self.execution_data_group = lut_group
+            self.lut_group = lut_group
             
         except Exception as e:
-            logger.error(f"Error creating LUT group: {e}")
+            logger.error(f"Error creating/accessing LUT group: {e}")
             self.execution_data_group = None
+            self.lut_group = None
+    
+    def add_lut_data(self, frames: List[np.ndarray], z_positions: List[float], metadata: Dict[str, Any]) -> bool:
+        """Add lookup table data to the HDF5 file.
+        
+        Args:
+            frames: List of LUT frames (diffraction patterns at different Z positions)
+            z_positions: List of corresponding Z positions in micrometers
+            metadata: LUT acquisition metadata
+            
+        Returns:
+            True if LUT data saved successfully
+        """
+        if not self.is_recording or not hasattr(self, 'lut_group') or not self.lut_group or not frames:
+            logger.warning("Cannot add LUT data: not recording or no LUT group")
+            return False
+            
+        try:
+            logger.info(f"Saving LUT data: {len(frames)} frames...")
+            
+            # Get frame shape from first frame
+            first_frame = frames[0]
+            lut_frame_shape = first_frame.shape
+            
+            # Stack frames into 3D array: (num_frames, height, width) for grayscale
+            if lut_frame_shape[2] == 1:  # Grayscale
+                # Stack and squeeze channel dimension
+                lut_stack = np.stack([f.squeeze() for f in frames], axis=0)
+            else:  # Color
+                lut_stack = np.stack(frames, axis=0)
+            
+            # Create LUT frames dataset with compression
+            if 'lut_frames' in self.lut_group:
+                del self.lut_group['lut_frames']
+            
+            lut_frames_dataset = self.lut_group.create_dataset(
+                'lut_frames',
+                data=lut_stack,
+                compression='lzf',  # Fast lossless compression
+                shuffle=True,
+                chunks=True
+            )
+            lut_frames_dataset.attrs['description'] = b'Diffraction patterns at different Z positions'
+            lut_frames_dataset.attrs['shape_description'] = b'(num_positions, height, width)'
+            lut_frames_dataset.attrs['num_frames'] = len(frames)
+            
+            # Create Z positions dataset
+            if 'z_positions' in self.lut_group:
+                del self.lut_group['z_positions']
+            
+            z_positions_dataset = self.lut_group.create_dataset(
+                'z_positions',
+                data=np.array(z_positions, dtype=np.float32),
+                compression='gzip',
+                compression_opts=9
+            )
+            z_positions_dataset.attrs['description'] = b'Z-stage positions for each LUT frame'
+            z_positions_dataset.attrs['unit'] = b'micrometers'
+            z_positions_dataset.attrs['correlation'] = b'z_positions[i] corresponds to lut_frames[i] - same array index for frame-to-height mapping'
+            
+            # Add metadata as attributes
+            self.lut_group.attrs['acquisition_timestamp'] = datetime.now().isoformat().encode('utf-8')
+            self.lut_group.attrs['data_structure'] = b'Frame-to-Z correlation: lut_frames[i] was captured at z_positions[i] micrometers'
+            self.lut_group.attrs['usage_note'] = b'Use same array index to correlate frames with Z-stage heights. Z-positions are actual measured values from hardware, not commanded positions.'
+            for key, value in metadata.items():
+                try:
+                    if isinstance(value, str):
+                        self.lut_group.attrs[key] = value.encode('utf-8')
+                    elif isinstance(value, (int, float, bool)):
+                        self.lut_group.attrs[key] = value
+                    else:
+                        self.lut_group.attrs[key] = str(value).encode('utf-8')
+                except Exception as e:
+                    logger.warning(f"Could not save LUT metadata '{key}': {e}")
+            
+            # Flush to ensure data is written
+            try:
+                self.h5_file.flush()
+            except Exception as flush_error:
+                logger.warning(f"LUT flush failed: {flush_error}")
+            
+            logger.info(f"LUT data saved successfully: {len(frames)} frames at {len(z_positions)} Z positions")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save LUT data: {e}", exc_info=True)
+            return False
     
     def log_execution_data(self, execution_type: str, data: dict) -> bool:
         """
@@ -1817,8 +1933,11 @@ class HDF5VideoRecorder:
                     logger.warning(f"Could not send shutdown signal to queue: {e}")
                 
                 # Wait for thread to complete with progress logging
-                # Timeout: minimum 10s or 30ms per queued frame (reduced from 50ms for speed)
-                timeout = max(10.0, queue_size * 0.03)
+                # Timeout: 2s if queue is empty (LUT-only), otherwise minimum 10s or 30ms per queued frame
+                if queue_size == 0:
+                    timeout = 2.0  # Short timeout for LUT-only recordings (no video frames)
+                else:
+                    timeout = max(10.0, queue_size * 0.03)
                 
                 start_wait = time.time()
                 self._write_thread.join(timeout=timeout)

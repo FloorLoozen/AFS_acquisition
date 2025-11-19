@@ -3,6 +3,7 @@
 import time
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QAction, 
@@ -61,6 +62,10 @@ class MainWindow(QMainWindow):
         self.session_hdf5_file: Optional[str] = None
         self.measurement_active: bool = False
         self.measurement_start_time: Optional[float] = None
+        
+        # LUT acquisition state management
+        self._acquiring_lut: bool = False  # Flag to prevent recording during LUT acquisition
+        self._lut_file_path: Optional[str] = None  # File path where LUT was saved (to reuse for video)
         
         try:
             self._init_ui()
@@ -143,7 +148,7 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
         self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
         self._add_action(tools_menu, "Resonance Finder", None, self._open_resonance_finder)
-        self._add_action(tools_menu, "Lookup Table Generator", None, self._show_not_implemented)
+        self._add_action(tools_menu, "Lookup Table Generator", None, self._open_lookup_table_generator)
         self._add_action(tools_menu, "Force Path Designer", None, self._open_force_path_designer)
 
         # Help menu
@@ -351,6 +356,21 @@ class MainWindow(QMainWindow):
                 f"Failed to open Resonance Finder:\n{e}\n\nCheck the log for details.")
             logger.error(f"Resonance Finder error details:\n{error_details}")
     
+    def _open_lookup_table_generator(self):
+        """Open the lookup table generator dialog."""
+        try:
+            from src.ui.lookup_table_widget import LookupTableWidget
+            dialog = LookupTableWidget(self)
+            dialog.exec_()
+            logger.info("Opened Lookup Table Generator")
+        except Exception as e:
+            logger.error(f"Failed to open Lookup Table Generator: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Error", 
+                f"Failed to open Lookup Table Generator:\n{e}\n\nCheck the log for details.")
+            logger.error(f"Lookup Table Generator error details:\n{error_details}")
+    
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
         try:
@@ -530,14 +550,427 @@ class MainWindow(QMainWindow):
             return self.measurement_controls_widget.get_function_generator_controller()
         return None
     
+    def _open_lut_widget_for_recording(self, file_path):
+        """Open LUT widget for manual acquisition before starting recording.
+        
+        Args:
+            file_path: Path where the recording will be saved
+        """
+        # Set flag to prevent any recording attempts during LUT
+        self._acquiring_lut = True
+        logger.info(f"Opening LUT widget for file: {file_path}")
+        
+        # CRITICAL: Block recording to prevent any attempts during LUT
+        if hasattr(self.acquisition_controls_widget, '_block_recording'):
+            self.acquisition_controls_widget._block_recording = True
+            logger.info("Blocked recording during LUT acquisition")
+        
+        try:
+            from src.ui.lookup_table_widget import LookupTableWidget
+            from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+            
+            # Get camera
+            camera = getattr(self.camera_widget, 'camera', None)
+            if not camera:
+                QMessageBox.critical(self, "Error", "Camera not available.")
+                return
+            
+            # Get a test frame to determine dimensions
+            test_frame = camera.get_frame(timeout=1.0)
+            if test_frame is None:
+                QMessageBox.critical(self, "Error", "Failed to capture test frame.")
+                return
+            
+            # Create HDF5 recorder
+            hdf5_recorder = HDF5VideoRecorder(
+                file_path,
+                frame_shape=test_frame.shape,
+                fps=20.0,
+                compression_level=9,
+                downscale_factor=2
+            )
+            
+            # Gather metadata from measurement settings
+            metadata = {}
+            if self.frequency_settings_widget:
+                metadata['sample_name'] = self.frequency_settings_widget.get_sample_information()
+                metadata['measurement_notes'] = self.frequency_settings_widget.get_notes()
+                metadata['save_path'] = self.frequency_settings_widget.get_save_path()
+            
+            # Start recording (opens HDF5 file)
+            if not hdf5_recorder.start_recording(metadata=metadata):
+                QMessageBox.critical(self, "Error", "Failed to create HDF5 file.")
+                return
+            
+            logger.info(f"HDF5 file created for LUT: {file_path}")
+            
+            # Make sure camera widget doesn't think it's recording during LUT
+            # Store any existing recorder temporarily
+            old_recorder = getattr(self.camera_widget, 'hdf5_recorder', None)
+            old_recording_state = getattr(self.camera_widget, 'is_recording', False)
+            
+            # Clear recording state during LUT acquisition
+            self.camera_widget.hdf5_recorder = None
+            self.camera_widget.is_recording = False
+            
+            # Pause camera display updates during LUT acquisition
+            was_updating = False
+            if hasattr(self.camera_widget, 'is_updating'):
+                was_updating = self.camera_widget.is_updating
+                self.camera_widget.is_updating = False
+            
+            # Open LUT widget with camera and recorder
+            dialog = LookupTableWidget(camera=camera, hdf5_recorder=hdf5_recorder, parent=self)
+            dialog.exec_()
+            
+            logger.info("LUT dialog closed")
+            
+            # Resume camera display updates
+            if was_updating and hasattr(self.camera_widget, 'is_updating'):
+                self.camera_widget.is_updating = True
+            
+            # CRITICAL: Ensure camera widget is NOT in recording state
+            # This prevents any automatic recording from starting
+            self.camera_widget.hdf5_recorder = None
+            self.camera_widget.is_recording = False
+            if hasattr(self.camera_widget, 'recording_path'):
+                self.camera_widget.recording_path = None
+            if hasattr(self.camera_widget, 'recorded_frames'):
+                self.camera_widget.recorded_frames = 0
+            logger.info("Camera widget recording state cleared - NOT recording")
+            
+            # CRITICAL: Also clear any reference that main_window might have
+            # Remove the old_recorder reference to prevent any confusion
+            old_recorder = None
+            
+            # After LUT widget closes, stop recording to save the file
+            logger.info("Closing HDF5 file after LUT acquisition...")
+            try:
+                hdf5_recorder.stop_recording()
+                logger.info(f"LUT data saved to file: {file_path}")
+                
+                # CRITICAL: Delete the recorder reference to free resources
+                del hdf5_recorder
+                hdf5_recorder = None
+                
+                logger.info("HDF5 recorder cleaned up after LUT")
+                
+                # Store the file path so we can reuse it for video recording
+                # (filename counter will increment otherwise)
+                self._lut_file_path = file_path
+                logger.info(f"Stored LUT file path for reuse: {file_path}")
+                
+                # CRITICAL: Reset acquisition controls to idle state - NOT recording
+                if hasattr(self.acquisition_controls_widget, 'is_recording'):
+                    self.acquisition_controls_widget.is_recording = False
+                if hasattr(self.acquisition_controls_widget, 'start_btn'):
+                    self.acquisition_controls_widget.start_btn.setEnabled(True)
+                if hasattr(self.acquisition_controls_widget, 'stop_btn'):
+                    self.acquisition_controls_widget.stop_btn.setEnabled(False)
+                if hasattr(self.acquisition_controls_widget, 'status_display'):
+                    self.acquisition_controls_widget.status_display.set_status("Ready")
+                logger.info("Acquisition controls reset to idle state")
+                
+                # Inform user they need to press Record again
+                self.statusBar().showMessage("LUT saved. Press Record again to start video recording.")
+                logger.info("LUT acquisition complete - user must manually press Record to start video")
+            except Exception as e:
+                logger.error(f"Error stopping HDF5 recorder: {e}")
+                QMessageBox.warning(self, "Warning", f"Error saving LUT data: {str(e)}")
+            
+        except Exception as e:
+            logger.error(f"Error opening LUT widget for recording: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            QMessageBox.critical(self, "Error", f"Failed to open LUT widget: {str(e)}")
+            
+            # Reset acquisition controls on error
+            if hasattr(self, 'acquisition_controls_widget'):
+                if hasattr(self.acquisition_controls_widget, 'is_recording'):
+                    self.acquisition_controls_widget.is_recording = False
+                if hasattr(self.acquisition_controls_widget, 'start_btn'):
+                    self.acquisition_controls_widget.start_btn.setEnabled(True)
+                if hasattr(self.acquisition_controls_widget, 'stop_btn'):
+                    self.acquisition_controls_widget.stop_btn.setEnabled(False)
+        finally:
+            # Always clear flags
+            self._acquiring_lut = False
+            logger.info("LUT acquisition flag cleared")
+            
+            # Unblock recording - user can now manually start recording
+            if hasattr(self.acquisition_controls_widget, '_block_recording'):
+                self.acquisition_controls_widget._block_recording = False
+                logger.info("Unblocked recording - ready for manual recording start")
+    
+    def _acquire_lut_into_recording(self, hdf5_recorder) -> bool:
+        """Acquire LUT data and save it directly into the current recording HDF5 file.
+        
+        Args:
+            hdf5_recorder: The HDF5VideoRecorder instance that's currently recording
+            
+        Returns:
+            True if LUT acquisition was successful, False otherwise
+        """
+        try:
+            from src.controllers.stage_manager import StageManager
+            from src.controllers.camera_controller import CameraController
+            import numpy as np
+            
+            logger.info("Starting LUT acquisition into recording file...")
+            self.statusBar().showMessage("Acquiring Lookup Table...")
+            
+            stage_manager = StageManager.get_instance()
+            
+            # Connect to Z-stage if needed
+            if not stage_manager.z_is_connected:
+                if not stage_manager.connect_z():
+                    logger.error("Failed to connect to Z-stage for LUT acquisition")
+                    return False
+            
+            # LUT parameters (defaults: 0-100 µm, 100 nm steps)
+            start_um = 0.0
+            end_um = 100.0
+            step_nm = 100.0
+            settle_time_s = 0.2  # 200ms
+            
+            step_um = step_nm / 1000.0
+            num_positions = int((end_um - start_um) / step_um) + 1
+            z_positions = [start_um + i * step_um for i in range(num_positions)]
+            
+            logger.info(f"Acquiring LUT: {num_positions} positions from {start_um} to {end_um} µm")
+            
+            # Use the same camera that's recording
+            camera = self.camera_widget.camera if hasattr(self.camera_widget, 'camera') else None
+            if not camera:
+                logger.error("No camera available for LUT acquisition")
+                return False
+            
+            # Acquire LUT frames and save into HDF5
+            lut_frames = []
+            lut_z_positions = []
+            
+            for i, z_pos in enumerate(z_positions):
+                # Move to Z position
+                stage_manager.move_z_to(z_pos)
+                time.sleep(settle_time_s)
+                
+                # Capture frame
+                frame = camera.get_frame(timeout=1.0)
+                if frame is None:
+                    logger.warning(f"Failed to capture LUT frame at Z={z_pos:.3f} µm")
+                    continue
+                
+                lut_frames.append(frame)
+                lut_z_positions.append(z_pos)
+                
+                if (i + 1) % 100 == 0:
+                    logger.info(f"LUT progress: {i+1}/{num_positions} frames")
+            
+            # Save LUT data to HDF5 file
+            if hdf5_recorder and hdf5_recorder.h5_file and lut_frames:
+                hdf5_recorder.add_lut_data(lut_frames, lut_z_positions, {
+                    'start_position_um': start_um,
+                    'end_position_um': end_um,
+                    'step_size_nm': step_nm,
+                    'settle_time_ms': settle_time_s * 1000,
+                    'num_positions': len(lut_frames)
+                })
+                logger.info(f"LUT data saved to recording: {len(lut_frames)} frames")
+                self.statusBar().showMessage(f"LUT acquired: {len(lut_frames)} frames")
+                return True
+            else:
+                logger.error("Failed to save LUT data to HDF5")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error during LUT acquisition: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+    
     def _handle_start_recording(self, file_path):
         """Handle start recording request."""
+        # CRITICAL: Block any recording attempts during LUT acquisition
+        if hasattr(self, '_acquiring_lut') and self._acquiring_lut:
+            logger.warning("Blocking recording attempt - LUT acquisition in progress")
+            self.statusBar().showMessage("Please wait for LUT acquisition to complete")
+            return
+        
         if not self.camera_widget or not self.camera_widget.is_running:
             self.acquisition_controls_widget.recording_failed(
                 "Camera is not running. Please ensure camera is connected and running.")
             return
         
+        # Check if we just acquired LUT - reuse that file path
+        import os
+        import h5py
+        import time
+        
+        if hasattr(self, '_lut_file_path') and self._lut_file_path and os.path.exists(self._lut_file_path):
+            logger.info(f"Reusing file with LUT: {self._lut_file_path}")
+            file_path = self._lut_file_path
+            self._lut_file_path = None  # Clear after use
+        
+        file_has_lut = False
+        
+        logger.info(f"Checking for LUT data in: {file_path}")
+        
+        # Always check the actual file - don't rely on flags
+        if os.path.exists(file_path):
+            logger.info(f"File exists, checking HDF5 structure...")
+            
+            # Try multiple times in case file is still being closed
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    # Try to open file and check for LUT
+                    with h5py.File(file_path, 'r') as f:
+                        logger.info(f"Opened file (attempt {attempt + 1}), checking for /raw_data/LUT...")
+                        if 'raw_data' in f:
+                            logger.info(f"Found /raw_data group")
+                            if 'LUT' in f['raw_data']:
+                                logger.info(f"Found /raw_data/LUT group")
+                                lut_group = f['raw_data']['LUT']
+                                # Verify LUT actually has data
+                                if 'lut_frames' in lut_group and 'z_positions' in lut_group:
+                                    num_frames = lut_group['lut_frames'].shape[0]
+                                    if num_frames > 0:
+                                        file_has_lut = True
+                                        logger.info(f"[OK] File has valid LUT data: {num_frames} frames")
+                                        break  # Success, exit retry loop
+                                    else:
+                                        logger.warning(f"[FAIL] LUT group exists but is empty")
+                                else:
+                                    logger.warning(f"[FAIL] LUT group exists but missing datasets (has: {list(lut_group.keys())})")
+                            else:
+                                logger.info(f"[FAIL] No LUT group in /raw_data (has: {list(f['raw_data'].keys())})")
+                        else:
+                            logger.info(f"[FAIL] No /raw_data group in file (has: {list(f.keys())})")
+                    break  # Successfully read file, exit retry loop
+                    
+                except Exception as e:
+                    if attempt < max_attempts - 1:
+                        logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
+                        time.sleep(0.3)  # Wait before retry
+                    else:
+                        logger.warning(f"[FAIL] Could not check for existing LUT data after {max_attempts} attempts: {e}")
+                        import traceback
+                        logger.warning(traceback.format_exc())
+                        # If we can't read the file, assume no LUT to be safe
+                        file_has_lut = False
+        else:
+            logger.info(f"File does not exist yet: {file_path}")
+        
+        # Only ask about LUT if file doesn't already have it
+        if not file_has_lut:
+            reply = QMessageBox.question(
+                self,
+                "Acquire Lookup Table?",
+                "Do you want to acquire a lookup table (LUT) for 3D particle tracking?\n\n"
+                "• Yes - Open LUT widget to manually acquire LUT first\n"
+                "• No - Start recording immediately without LUT",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+        else:
+            # File already has LUT, skip popup and proceed to recording
+            reply = QMessageBox.No
+        
+        # If user wants LUT, open the widget and don't start recording yet
+        if reply == QMessageBox.Yes:
+            logger.info("User chose to acquire LUT first - will NOT start recording")
+            
+            # Open LUT widget for manual acquisition
+            # DO NOT change any button states or call recording_started_successfully()
+            self._open_lut_widget_for_recording(file_path)
+            
+            # After LUT completes, user must manually click Record again
+            return
+        
+        # User chose No - proceed with normal recording
         try:
+            # Check if the target file already has LUT data
+            if file_has_lut and os.path.exists(file_path):
+                # Reopen the existing HDF5 file with LUT data for video recording
+                from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+                
+                logger.info(f"Reopening HDF5 file with LUT data: {file_path}")
+                
+                # Get test frame for shape
+                test_frame = self.camera_widget.camera.get_frame(timeout=1.0)
+                if test_frame is None:
+                    self.acquisition_controls_widget.recording_failed("Failed to capture test frame")
+                    return
+                
+                # Create new recorder
+                hdf5_recorder = HDF5VideoRecorder(
+                    file_path,
+                    frame_shape=test_frame.shape,
+                    fps=20.0,
+                    compression_level=9,
+                    downscale_factor=2
+                )
+                
+                # Gather metadata
+                metadata = {}
+                if self.frequency_settings_widget:
+                    metadata['sample_name'] = self.frequency_settings_widget.get_sample_information()
+                    metadata['measurement_notes'] = self.frequency_settings_widget.get_notes()
+                    metadata['save_path'] = self.frequency_settings_widget.get_save_path()
+                
+                # Start recording (will open in append mode)
+                if not hdf5_recorder.start_recording(metadata=metadata):
+                    self.acquisition_controls_widget.recording_failed("Failed to reopen HDF5 file")
+                    return
+                
+                # Store recorder
+                self.camera_widget.hdf5_recorder = hdf5_recorder
+                
+                # Save camera and stage settings
+                if self.camera_widget.camera and hasattr(self.camera_widget.camera, 'get_camera_settings'):
+                    try:
+                        camera_settings = self.camera_widget.camera.get_camera_settings()
+                        camera_settings.update({
+                            'image_brightness': self.camera_widget.image_settings['brightness'],
+                            'image_contrast': self.camera_widget.image_settings['contrast'],
+                            'image_saturation': self.camera_widget.image_settings['saturation']
+                        })
+                        hdf5_recorder.add_camera_settings(camera_settings)
+                    except Exception as e:
+                        logger.warning(f"Failed to save camera settings: {e}")
+                
+                # Add stage settings
+                try:
+                    from src.controllers.stage_manager import StageManager
+                    stage_manager = StageManager.get_instance()
+                    if stage_manager:
+                        stage_settings = stage_manager.get_stage_settings()
+                        hdf5_recorder.add_stage_settings(stage_settings)
+                except Exception as e:
+                    logger.warning(f"Failed to save stage settings: {e}")
+                
+                # Update camera widget state
+                if hasattr(self.camera_widget, 'is_recording'):
+                    self.camera_widget.is_recording = True
+                    self.camera_widget.recording_path = file_path
+                if hasattr(self.camera_widget, 'recorded_frames'):
+                    self.camera_widget.recorded_frames = 0
+                
+                # Log initial function generator state
+                if self.measurement_controls_widget and hasattr(self.camera_widget, 'log_initial_function_generator_state'):
+                    try:
+                        frequency = float(self.measurement_controls_widget.frequency_edit.text())
+                        amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
+                        enabled = self.measurement_controls_widget.fg_toggle_button.isChecked()
+                        self.camera_widget.log_initial_function_generator_state(frequency, amplitude, enabled)
+                    except Exception as e:
+                        logger.warning(f"Failed to log initial function generator state: {e}")
+                
+                self.acquisition_controls_widget.recording_started_successfully()
+                self.statusBar().showMessage(f"Video recording started (with LUT): {file_path}")
+                return
+            
+            # Normal recording without LUT
             # Compression and resolution are now fixed defaults in camera_widget
             # Maximum compression (9) and half resolution (2) for offline analysis
             
