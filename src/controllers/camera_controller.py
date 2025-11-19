@@ -557,7 +557,7 @@ class CameraController:
     
     def get_latest_frame(self, timeout: float = 0.1) -> Optional[FrameData]:
         """
-        Get the most recent frame from the queue with frame pooling optimization.
+        Get the most recent frame from the queue with optimized O(1) draining.
         
         Args:
             timeout: Maximum time to wait for a frame (seconds)
@@ -566,30 +566,24 @@ class CameraController:
             FrameData object or None if no frame available
         """
         try:
-            # Get the most recent frame (may discard older frames)
-            latest_frame = None
+            # Get first frame (with timeout)
+            latest_frame = self.frame_queue.get(timeout=timeout)
             frames_discarded = 0
-            discarded_frames_list = []
             
-            # Keep getting frames until queue is empty, keeping only the latest
+            # Fast drain: get all remaining frames without timeout
             while True:
                 try:
-                    frame_data = self.frame_queue.get(timeout=timeout if latest_frame is None else 0.0)
-                    if latest_frame is not None:
-                        frames_discarded += 1
-                        # Keep track of discarded frames for pool return
-                        discarded_frames_list.append(latest_frame)
-                    latest_frame = frame_data
+                    old_frame = latest_frame
+                    latest_frame = self.frame_queue.get_nowait()
+                    frames_discarded += 1
+                    
+                    # Return old frame to pool immediately
+                    if self.frame_pool and hasattr(old_frame, 'frame'):
+                        self.frame_pool.return_frame(old_frame.frame)
                 except queue.Empty:
                     break
             
-            # Return discarded frames to pool to reduce memory allocation
-            if self.frame_pool and discarded_frames_list:
-                for discarded_frame in discarded_frames_list:
-                    if hasattr(discarded_frame, 'frame'):
-                        self.frame_pool.return_frame(discarded_frame.frame)
-            
-            # Update statistics for discarded frames (this is normal for real-time display)
+            # Batch update statistics (more efficient than per-frame update)
             if frames_discarded > 0:
                 with self.stats_lock:
                     self.discarded_frames += frames_discarded

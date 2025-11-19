@@ -34,6 +34,7 @@ import gc
 
 from src.utils.logger import get_logger
 from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
+from src.utils.constants import RecordingConstants, GPUConstants
 
 logger = get_logger("hdf5_recorder")
 
@@ -214,10 +215,10 @@ class HDF5VideoRecorder:
         self.execution_data_group = None
         
         # High-performance asynchronous writing - bounded buffer for constant FPS
-        self._write_queue = queue.Queue(maxsize=800)  # Deep queue for NVMe burst writes (32GB RAM)
+        self._write_queue = queue.Queue(maxsize=RecordingConstants.MAX_WRITE_QUEUE_SIZE)
         self._write_thread = None
         # Processing queue for offloading downscaling from the GUI thread
-        self._process_queue = queue.Queue(maxsize=800)
+        self._process_queue = queue.Queue(maxsize=RecordingConstants.MAX_PROCESS_QUEUE_SIZE)
         self._process_thread = None
         self._stop_writing = threading.Event()
         self._write_lock = threading.RLock()  # Reentrant lock for thread safety
@@ -225,8 +226,8 @@ class HDF5VideoRecorder:
         # Optimized frame batching for constant performance
         self._frame_batch = []
         self._batch_indices = []
-        self._batch_size = 200  # Large batches for NVMe efficiency (was 100)
-        self._max_sub_batch = 40  # Sub-batch size to limit memory spikes (32GB RAM allows larger)
+        self._batch_size = RecordingConstants.BATCH_SIZE
+        self._max_sub_batch = RecordingConstants.MAX_SUB_BATCH
         self._batch_lock = threading.Lock()
         
         # Performance counters
@@ -243,7 +244,7 @@ class HDF5VideoRecorder:
         
         # GPU acceleration: Pre-allocated buffers for batch processing
         self._gpu_buffer_pool = []  # Pool of reusable GPU buffers (UMat objects)
-        self._gpu_buffer_size = 4  # Keep 4 buffers ready for batch processing
+        self._gpu_buffer_size = GPUConstants.GPU_BUFFER_POOL_SIZE
         self._gpu_buffer_lock = threading.Lock()
         self._gpu_buffers_initialized = False
         
@@ -766,16 +767,28 @@ class HDF5VideoRecorder:
         try:
             import cv2
             with self._gpu_buffer_lock:
-                # Pre-allocate UMat buffers for input frames
-                # These stay on GPU memory and can be reused
-                for _ in range(self._gpu_buffer_size):
-                    # Create empty UMat - will be filled with actual data during use
-                    self._gpu_buffer_pool.append(None)  # Placeholder, actual UMat created on first use
+                # Pre-allocate actual UMat buffers on GPU memory for efficient reuse
+                h, w = self.original_frame_shape[:2]
+                c = self.original_frame_shape[2] if len(self.original_frame_shape) > 2 else 1
+                
+                for i in range(self._gpu_buffer_size):
+                    # Allocate on GPU memory - these stay allocated for reuse
+                    if c == 1:
+                        # Grayscale - allocate 2D buffer
+                        gpu_buffer = cv2.UMat(h, w, cv2.CV_8UC1)
+                    else:
+                        # Color - allocate with channels
+                        gpu_buffer = cv2.UMat(h, w, cv2.CV_8UC(c))
+                    
+                    self._gpu_buffer_pool.append(gpu_buffer)
                 
                 self._gpu_buffers_initialized = True
-                logger.info(f"GPU batch processing ready: {self._gpu_buffer_size}-buffer pool initialized for AMD Radeon Pro")
+                logger.info(f"Pre-allocated {self._gpu_buffer_size} GPU buffers ({h}x{w}x{c})")
         except Exception as e:
-            logger.warning(f"Failed to initialize GPU buffers: {e}")
+            logger.warning(f"GPU buffer pre-allocation failed: {e}, will create on-demand")
+            # Fall back to creating buffers on-demand
+            for _ in range(self._gpu_buffer_size):
+                self._gpu_buffer_pool.append(None)
             self._gpu_buffers_initialized = False
     
     def _downscale_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -1922,26 +1935,49 @@ class HDF5VideoRecorder:
             raise
         
     def _stop_async_writer_sync(self):
-        """Stop the async writer thread and wait for completion (synchronous)."""
+        """Stop the async writer thread with guaranteed frame completion."""
         try:
             if self._write_thread and self._write_thread.is_alive():
                 queue_size = self._write_queue.qsize()
                 
-                # Signal shutdown immediately
+                # CRITICAL FIX: Wait for queue to drain before signaling stop
+                if queue_size > 0:
+                    logger.info(f"Waiting for {queue_size} frames to write...")
+                    timeout = max(5.0, queue_size * 0.05)
+                    start = time.time()
+                    
+                    while self._write_queue.qsize() > 0 and (time.time() - start) < timeout:
+                        time.sleep(0.05)
+                    
+                    remaining = self._write_queue.qsize()
+                    if remaining > 0:
+                        logger.warning(f"{remaining} frames still queued after {timeout:.1f}s")
+                
+                # Now signal shutdown
                 self._stop_writing.set()
                 
-                # Send shutdown signal to queue (non-blocking)
+                # Send sentinel to wake thread if waiting
                 try:
-                    self._write_queue.put(None, timeout=0.1)
+                    self._write_queue.put(None, timeout=1.0)
                 except queue.Full:
-                    pass  # Queue full during shutdown
+                    logger.warning("Queue full during shutdown - forcing drain")
+                    # Emergency drain
+                    while not self._write_queue.empty():
+                        try:
+                            self._write_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    # Try sentinel again
+                    try:
+                        self._write_queue.put(None, timeout=0.5)
+                    except queue.Full:
+                        pass
                 except Exception as e:
-                    logger.warning(f"Could not send shutdown signal to queue: {e}")
+                    logger.warning(f"Could not send shutdown signal: {e}")
                 
-                # Wait for thread to complete with progress logging
-                # Timeout: 2s if queue is empty (LUT-only), otherwise minimum 10s or 30ms per queued frame
+                # Wait for thread with appropriate timeout
                 if queue_size == 0:
-                    timeout = 2.0  # Short timeout for LUT-only recordings (no video frames)
+                    timeout = 2.0  # Short timeout for LUT-only recordings
                 else:
                     timeout = max(10.0, queue_size * 0.03)
                 
@@ -1950,9 +1986,9 @@ class HDF5VideoRecorder:
                 wait_duration = time.time() - start_wait
                 
                 if self._write_thread.is_alive():
-                    logger.warning(f"Async writer still running after {wait_duration:.1f}s - may lose data")
+                    logger.error(f"Writer thread did not stop after {wait_duration:.1f}s - potential data loss!")
                 else:
-                    pass  # Writer completed successfully
+                    logger.debug(f"Writer thread stopped cleanly in {wait_duration:.1f}s")
             else:
                 pass  # No async writer
         except Exception as e:

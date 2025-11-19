@@ -494,7 +494,14 @@ class CameraWidget(QGroupBox):
         # This is completely decoupled from display rate
         if self.is_recording and self.hdf5_recorder:
             try:
-                frame_to_record = np.array(frame_data.frame, copy=True)
+                # Zero-copy optimization: only copy if frame doesn't own its data
+                if frame_data.frame.flags.owndata:
+                    # Frame owns data - safe to pass directly (zero-copy)
+                    frame_to_record = frame_data.frame
+                else:
+                    # Frame is a view - need copy for safety
+                    frame_to_record = np.array(frame_data.frame, copy=True)
+                
                 if hasattr(self.hdf5_recorder, 'enqueue_frame'):
                     accepted = self.hdf5_recorder.enqueue_frame(frame_to_record)
                     if accepted:
