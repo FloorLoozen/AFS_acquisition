@@ -75,10 +75,10 @@ class LUTAcquisitionThread(QThread):
             z_positions = [self.start_um + i * step_um for i in range(num_positions)]
             
             self.progress.emit(0, num_positions, 
-                             f"Acquiring {num_positions} frames from {self.start_um:.1f} to {self.end_um:.1f} µm...")
+                             f"Acquiring {num_positions} frames from {self.start_um:.0f} to {self.end_um:.0f} µm...")
             
             # Move to start position
-            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.1f} µm...")
+            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.0f} µm...")
             stage_manager.move_z_to(self.start_um)
             time.sleep(self.settle_time_s)
             
@@ -89,6 +89,7 @@ class LUTAcquisitionThread(QThread):
             # Parallel strategy: overlap stage movement with frame capture
             # While capturing frame N, start moving to position N+1
             next_z_target = None
+            move_start_time = None
             
             for i, z_pos_target in enumerate(z_positions):
                 if self._stop_requested:
@@ -97,8 +98,11 @@ class LUTAcquisitionThread(QThread):
                 
                 # If we pre-started movement to this position, just wait for settle
                 if next_z_target == z_pos_target and i > 0:
-                    # Movement already started, just wait for final settle
-                    time.sleep(max(0, self.settle_time_s - 0.1))  # Reduced wait since movement started earlier
+                    # Movement already started, calculate remaining settle time
+                    elapsed = time.time() - move_start_time
+                    remaining_settle = max(0, self.settle_time_s - elapsed)
+                    if remaining_settle > 0:
+                        time.sleep(remaining_settle)
                 else:
                     # Move to Z position (first iteration or catch-up)
                     stage_manager.move_z_to(z_pos_target)
@@ -110,14 +114,7 @@ class LUTAcquisitionThread(QThread):
                     logger.warning(f"Failed to read Z position at target {z_pos_target:.0f} µm, using target value")
                     actual_z_pos = z_pos_target
                 
-                # Start moving to NEXT position while capturing current frame (parallel!)
-                if i + 1 < num_positions:
-                    next_z_target = z_positions[i + 1]
-                    stage_manager.move_z_to(next_z_target)  # Non-blocking command
-                else:
-                    next_z_target = None
-                
-                # Capture frame (while stage moves to next position in parallel)
+                # Capture frame BEFORE starting movement (stage must be stationary!)
                 frame = self.camera.get_frame(timeout=1.0)
                 if frame is None:
                     logger.warning(f"Failed to capture frame at Z={actual_z_pos:.0f} µm")
@@ -127,10 +124,18 @@ class LUTAcquisitionThread(QThread):
                 lut_frames.append(frame)
                 lut_z_positions.append(actual_z_pos)
                 
+                # NOW start moving to NEXT position (after capture is complete)
+                if i + 1 < num_positions:
+                    next_z_target = z_positions[i + 1]
+                    stage_manager.move_z_to(next_z_target)  # Non-blocking command
+                    move_start_time = time.time()  # Track when movement started
+                else:
+                    next_z_target = None
+                
                 # Emit progress with actual position
                 self.frame_captured.emit(i, actual_z_pos)
                 self.progress.emit(i + 1, num_positions, 
-                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.0f} µm")
+                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
             
             # Save LUT data to HDF5 file if we have a recorder
             if self.hdf5_recorder and lut_frames:
@@ -152,9 +157,9 @@ class LUTAcquisitionThread(QThread):
                 time.sleep(0.2)
                 # Verify position
                 actual_pos = stage_manager.get_z_position()
-                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.3f} µm)")
+                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.0f} µm)")
                 if abs(actual_pos) > 0.5:
-                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.3f} µm)")
+                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.0f} µm)")
             except Exception as e:
                 logger.warning(f"Failed to return Z-stage to 0: {e}")
             
@@ -261,35 +266,59 @@ class LUTAcquisitionThreadStandalone(QThread):
             logger.info(f"Started HDF5 recording to {self.output_path}")
             
             # Move to start position
-            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.1f} µm...")
+            self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.0f} µm...")
             stage_manager.move_z_to(self.start_um)
             time.sleep(self.settle_time_s)
             
-            # Acquire frames at each Z position
-            for i, z_pos in enumerate(z_positions):
+            # Acquire frames at each Z position with optimized pipelining
+            # Parallel strategy: overlap stage movement with frame capture and HDF5 writing
+            next_z_target = None
+            move_start_time = None
+            
+            for i, z_pos_target in enumerate(z_positions):
                 if self._stop_requested:
                     self.progress.emit(i, num_positions, "Stopping...")
                     break
                 
-                # Move to Z position
-                stage_manager.move_z_to(z_pos)
+                # If we pre-started movement to this position, just wait for remaining settle time
+                if next_z_target == z_pos_target and i > 0:
+                    # Movement already started, calculate remaining settle time
+                    elapsed = time.time() - move_start_time
+                    remaining_settle = max(0, self.settle_time_s - elapsed)
+                    if remaining_settle > 0:
+                        time.sleep(remaining_settle)
+                else:
+                    # Move to Z position (first iteration)
+                    stage_manager.move_z_to(z_pos_target)
+                    time.sleep(self.settle_time_s)
                 
-                # Wait for stage to settle
-                time.sleep(self.settle_time_s)
+                # Read back actual Z position from stage after settling
+                actual_z_pos = stage_manager.get_z_position()
+                if actual_z_pos is None:
+                    logger.warning(f"Failed to read Z position at target {z_pos_target:.0f} µm, using target value")
+                    actual_z_pos = z_pos_target
                 
-                # Capture frame
+                # Capture frame BEFORE starting movement (stage must be stationary!)
                 frame = camera.get_frame(timeout=1.0)
                 if frame is None:
-                    logger.warning(f"Failed to capture frame at Z={z_pos:.0f} µm")
+                    logger.warning(f"Failed to capture frame at Z={actual_z_pos:.0f} µm")
                     continue
                 
-                # Record frame (metadata not supported directly, will be in global metadata)
+                # Record frame to HDF5
                 recorder.record_frame(frame)
                 
+                # NOW start moving to NEXT position (after capture is complete)
+                if i + 1 < num_positions:
+                    next_z_target = z_positions[i + 1]
+                    stage_manager.move_z_to(next_z_target)  # Non-blocking command
+                    move_start_time = time.time()  # Track when movement started
+                else:
+                    next_z_target = None
+                
                 # Emit progress
-                self.frame_captured.emit(i, z_pos)
+                self.frame_captured.emit(i, actual_z_pos)
                 self.progress.emit(i + 1, num_positions, 
-                                 f"Captured frame {i+1}/{num_positions} at Z={z_pos:.0f} µm")
+                                 f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
             
             # Return Z-stage to 0 position after LUT acquisition
             try:
@@ -299,9 +328,9 @@ class LUTAcquisitionThreadStandalone(QThread):
                 time.sleep(0.3)
                 # Verify position
                 actual_pos = stage_manager.get_z_position()
-                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.3f} µm)")
+                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.0f} µm)")
                 if abs(actual_pos) > 0.5:
-                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.3f} µm)")
+                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.0f} µm)")
             except Exception as e:
                 logger.warning(f"Failed to return Z-stage to 0: {e}")
             
@@ -341,8 +370,8 @@ class LookupTableWidget(QDialog):
     def __init__(self, camera=None, hdf5_recorder=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Lookup Table Generator")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
+        self.setMinimumWidth(450)
+        self.setMinimumHeight(300)
         
         self.camera = camera  # Optional: use provided camera instead of creating new one
         self.hdf5_recorder = hdf5_recorder  # Optional: save into existing recording
@@ -354,60 +383,89 @@ class LookupTableWidget(QDialog):
     def _setup_ui(self):
         """Setup the user interface."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(5)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # Parameters group
         params_group = QGroupBox("Acquisition Parameters")
         params_layout = QVBoxLayout()
         params_layout.setSpacing(8)
         
-        # Z range
-        z_range_layout = QHBoxLayout()
-        z_range_layout.addWidget(QLabel("Z Range:"))
+        # Use grid layout for proper alignment
+        from PyQt5.QtWidgets import QGridLayout
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        
+        # Set fixed widths for labels and spinboxes
+        label_width = 80
+        spinbox_width = 100
+        
+        # Z range - Row 0
+        start_label = QLabel("Start:")
+        start_label.setMinimumWidth(label_width)
+        start_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(start_label, 0, 0)
         
         self.start_z_spin = QDoubleSpinBox()
         self.start_z_spin.setRange(0, 100)
         self.start_z_spin.setValue(0)
         self.start_z_spin.setSuffix(" µm")
         self.start_z_spin.setDecimals(0)
-        z_range_layout.addWidget(QLabel("Start:"))
-        z_range_layout.addWidget(self.start_z_spin)
+        self.start_z_spin.setFixedWidth(spinbox_width)
+        self.start_z_spin.setAlignment(Qt.AlignRight)
+        grid.addWidget(self.start_z_spin, 0, 1)
+        
+        end_label = QLabel("End:")
+        end_label.setMinimumWidth(label_width)
+        end_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(end_label, 0, 2)
         
         self.end_z_spin = QDoubleSpinBox()
         self.end_z_spin.setRange(0, 100)
         self.end_z_spin.setValue(100)
         self.end_z_spin.setSuffix(" µm")
         self.end_z_spin.setDecimals(0)
-        z_range_layout.addWidget(QLabel("End:"))
-        z_range_layout.addWidget(self.end_z_spin)
-        z_range_layout.addStretch()
+        self.end_z_spin.setFixedWidth(spinbox_width)
+        self.end_z_spin.setAlignment(Qt.AlignRight)
+        grid.addWidget(self.end_z_spin, 0, 3)
         
-        params_layout.addLayout(z_range_layout)
+        # Step size - Row 1
+        step_label = QLabel("Step Size:")
+        step_label.setMinimumWidth(label_width)
+        step_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(step_label, 1, 0)
         
-        # Step size
-        step_layout = QHBoxLayout()
-        step_layout.addWidget(QLabel("Step Size:"))
         self.step_spin = QSpinBox()
         self.step_spin.setRange(10, 10000)
         self.step_spin.setValue(100)
         self.step_spin.setSuffix(" nm")
         self.step_spin.setSingleStep(10)
-        step_layout.addWidget(self.step_spin)
-        step_layout.addStretch()
-        params_layout.addLayout(step_layout)
+        self.step_spin.setFixedWidth(spinbox_width)
+        self.step_spin.setAlignment(Qt.AlignRight)
+        grid.addWidget(self.step_spin, 1, 1)
         
-        # Settle time
-        settle_layout = QHBoxLayout()
-        settle_layout.addWidget(QLabel("Settle Time:"))
+        # Settle time - Row 2
+        settle_label = QLabel("Settle Time:")
+        settle_label.setMinimumWidth(label_width)
+        settle_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        settle_label.setToolTip("Time to wait after moving Z-stage before capturing frame")
+        grid.addWidget(settle_label, 2, 0)
+        
         self.settle_spin = QSpinBox()
         self.settle_spin.setRange(0, 5000)
         self.settle_spin.setValue(200)
         self.settle_spin.setSuffix(" ms")
         self.settle_spin.setSingleStep(50)
+        self.settle_spin.setFixedWidth(spinbox_width)
+        self.settle_spin.setAlignment(Qt.AlignRight)
         self.settle_spin.setToolTip("Time to wait after moving Z-stage before capturing frame")
-        settle_layout.addWidget(self.settle_spin)
-        settle_layout.addStretch()
-        params_layout.addLayout(settle_layout)
+        grid.addWidget(self.settle_spin, 2, 1)
+        
+        # Add stretch to right side
+        grid.setColumnStretch(4, 1)
+        
+        params_layout.addLayout(grid)
         
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
@@ -424,11 +482,6 @@ class LookupTableWidget(QDialog):
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #666;")
         progress_layout.addWidget(self.status_label)
-        
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(100)
-        progress_layout.addWidget(self.log_text)
         
         progress_group.setLayout(progress_layout)
         layout.addWidget(progress_group)
@@ -452,31 +505,6 @@ class LookupTableWidget(QDialog):
         
         layout.addLayout(button_layout)
         
-    def _update_info_label(self):
-        """Update the information label with calculated values."""
-        start = self.start_z_spin.value()
-        end = self.end_z_spin.value()
-        step_nm = self.step_spin.value()
-        settle_ms = self.settle_spin.value()
-        
-        if end <= start:
-            self.info_label.setText("⚠ End position must be greater than start position")
-            return
-        
-        step_um = step_nm / 1000.0
-        num_frames = int((end - start) / step_um) + 1
-        total_time_s = num_frames * (settle_ms / 1000.0)
-        
-        self.info_label.setText(
-            f"Will capture {num_frames} frames | "
-            f"Estimated time: {total_time_s:.1f}s ({total_time_s/60:.1f} min)"
-        )
-        
-    def _log(self, message: str):
-        """Add message to log."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
-        
     def _start_acquisition(self):
         """Start the LUT acquisition."""
         # Validate parameters
@@ -484,13 +512,11 @@ class LookupTableWidget(QDialog):
         end = self.end_z_spin.value()
         
         if end <= start:
-            self._log("❌ End position must be greater than start position")
             return
         
         # Check if we're using external camera/recorder or standalone mode
         if self.camera and self.hdf5_recorder:
             # Recording mode - use provided camera and recorder
-            self._log("📹 Recording mode: using active camera and HDF5 file")
             
             # Create thread with camera and recorder
             self.acquisition_thread = LUTAcquisitionThread(
@@ -507,8 +533,6 @@ class LookupTableWidget(QDialog):
             default_dir = Path.cwd() / "raw_data" / "LUT"
             default_dir.mkdir(parents=True, exist_ok=True)
             output_path = default_dir / f"lut_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
-            
-            self._log(f"📁 Standalone mode: saving to {output_path}")
             
             # Create standalone thread
             self.acquisition_thread = LUTAcquisitionThreadStandalone(
@@ -534,13 +558,11 @@ class LookupTableWidget(QDialog):
         self.settle_spin.setEnabled(False)
         
         # Start acquisition
-        self._log("🚀 Starting acquisition...")
         self.acquisition_thread.start()
         
     def _stop_acquisition(self):
         """Stop the acquisition."""
         if self.acquisition_thread:
-            self._log("⏹ Stopping acquisition...")
             self.acquisition_thread.request_stop()
             
     def _on_progress(self, current: int, total: int, message: str):
@@ -552,7 +574,7 @@ class LookupTableWidget(QDialog):
         
     def _on_frame_captured(self, frame_num: int, z_pos: float):
         """Handle frame captured event."""
-        self._log(f"✓ Frame {frame_num} captured at Z={z_pos:.0f} µm")
+        pass  # Minimal mode - no logging
         
     def _on_finished(self, success: bool, message: str):
         """Handle acquisition finished."""
@@ -565,18 +587,16 @@ class LookupTableWidget(QDialog):
         self.settle_spin.setEnabled(True)
         
         if success:
-            self._log(f"✅ {message}")
             self.progress_bar.setValue(100)
             # Auto-close dialog after successful acquisition
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(500, self.accept)  # Close after 500ms to show success message
         else:
-            self._log(f"❌ {message}")
+            pass  # Minimal mode - no logging
             
     def closeEvent(self, event):
         """Handle dialog close."""
         if self.is_acquiring:
-            self._log("⚠ Cannot close during acquisition. Please stop first.")
             event.ignore()
         else:
             event.accept()
