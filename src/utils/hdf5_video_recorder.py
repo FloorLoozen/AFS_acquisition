@@ -2338,6 +2338,87 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
         return _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
 
 
+def _create_compressed_dataset(target_group: h5py.Group, dataset_name: str, 
+                                n_frames: int, frame_shape: Tuple, 
+                                source_attrs: Dict) -> h5py.Dataset:
+    """
+    Create a compressed HDF5 dataset with optimal settings.
+    
+    This is the common compression configuration shared by both in-place 
+    and temp-file compression methods.
+    
+    Args:
+        target_group: HDF5 group where dataset will be created
+        dataset_name: Name of the dataset to create
+        n_frames: Number of frames in the video
+        frame_shape: Shape of each frame (height, width) or (height, width, channels)
+        source_attrs: Attributes from source dataset to copy
+        
+    Returns:
+        Newly created compressed dataset
+    """
+    # Calculate optimal chunk size (6 MB chunks)
+    frame_size_bytes = np.prod(frame_shape)
+    optimal_frames = max(1, int(6 * 1024 * 1024 / frame_size_bytes))
+    chunk_shape = (optimal_frames, *frame_shape)
+    
+    # Create compressed dataset with optimal settings
+    # GZIP level 4: best compression/speed tradeoff (~95% of level 9, 3x faster)
+    compressed_ds = target_group.create_dataset(
+        dataset_name,
+        shape=(n_frames, *frame_shape),
+        dtype=np.uint8,
+        chunks=chunk_shape,
+        compression='gzip',
+        compression_opts=4,
+        shuffle=True,
+        fletcher32=False
+    )
+    
+    # Copy attributes (excluding old compression settings)
+    for key, value in source_attrs.items():
+        if key not in ['compression', 'compression_level']:
+            compressed_ds.attrs[key] = value
+    
+    # Add new compression metadata
+    compressed_ds.attrs['compression'] = 'gzip'
+    compressed_ds.attrs['compression_level'] = 4
+    compressed_ds.attrs['post_compressed'] = True
+    
+    return compressed_ds
+
+
+def _copy_frames_with_progress(source_ds: h5py.Dataset, target_ds: h5py.Dataset,
+                                 quality_reduction: bool, progress_callback,
+                                 n_frames: int, batch_size: int = 100) -> None:
+    """
+    Copy frames from source to target dataset with optional quality reduction.
+    
+    Args:
+        source_ds: Source HDF5 dataset
+        target_ds: Target HDF5 dataset
+        quality_reduction: Whether to apply quality reduction (80% brightness)
+        progress_callback: Function to call with (current, total, message)
+        n_frames: Total number of frames
+        batch_size: Number of frames to process at once
+    """
+    for i in range(0, n_frames, batch_size):
+        end_idx = min(i + batch_size, n_frames)
+        batch = source_ds[i:end_idx]
+        
+        # Apply quality reduction if requested
+        if quality_reduction:
+            batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)
+        
+        target_ds[i:end_idx] = batch
+        
+        if progress_callback:
+            progress_callback(end_idx, n_frames, f"Compressing... {end_idx}/{n_frames}")
+        
+        if i % 500 == 0 and i > 0:
+            logger.debug(f"Compressed {end_idx}/{n_frames} frames...")
+
+
 def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool, 
                        progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
     """
@@ -2346,16 +2427,13 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
     
     Strategy:
     1. Read uncompressed dataset in batches
-    2. Delete uncompressed dataset
-    3. Create compressed dataset with same data
-    4. Copy data in chunks
+    2. Delete uncompressed dataset  
+    3. Create compressed dataset using common helper
+    4. Copy data using common helper
     
     This only needs ~100MB temporary space instead of full file copy.
     """
     try:
-        import shutil
-        from concurrent.futures import ThreadPoolExecutor
-        
         # Get original file size
         original_size = os.path.getsize(file_path)
         
@@ -2391,8 +2469,7 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
             if progress_callback:
                 progress_callback(0, n_frames, "Loading video data...")
             
-            # Read ALL data into memory (this is the only way to do in-place compression)
-            # For large files, we'll need to use batched approach
+            # Read ALL data into memory (required for in-place compression)
             batch_size = 100  # Process 100 frames at a time to save memory
             all_frames = []
             
@@ -2410,8 +2487,8 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
                 if progress_callback:
                     progress_callback(end_idx, n_frames * 2, f"Loading data... {end_idx}/{n_frames}")
                 
-                if i % 500 == 0:
-                    logger.info(f"Loaded {end_idx}/{n_frames} frames...")
+                if i % 500 == 0 and i > 0:
+                    logger.debug(f"Loaded {end_idx}/{n_frames} frames...")
             
             # Concatenate all batches
             logger.info("Combining batches...")
@@ -2425,26 +2502,13 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
             logger.info("Removing uncompressed dataset...")
             del f['raw_data/main_video']
             
-            # Create new compressed dataset
+            # Create new compressed dataset using common helper
             logger.info("Creating compressed dataset...")
-            # OPTIMIZED: gzip level 4 = best compression/speed tradeoff
-            # Level 4: ~95% of level 9 compression, ~3x faster
-            frame_size_bytes = np.prod(frame_shape) * 1
-            optimal_frames = max(1, int(6 * 1024 * 1024 / frame_size_bytes))  # 6 MB chunks
-            chunk_shape = (optimal_frames, *frame_shape)
-            
-            video_compressed = f['raw_data'].create_dataset(
-                'main_video',
-                shape=video_data.shape,
-                dtype=np.uint8,
-                chunks=chunk_shape,  # OPTIMIZED: calculated for best I/O
-                compression='gzip',
-                compression_opts=4,  # OPTIMIZED: level 4 (sweet spot)
-                shuffle=True,  # OPTIMIZED: always enabled
-                fletcher32=False
+            video_compressed = _create_compressed_dataset(
+                f['raw_data'], 'main_video', n_frames, frame_shape, dataset_attrs
             )
             
-            # Copy data in batches to save memory
+            # Copy data in batches (can't use helper - copying from numpy array, not dataset)
             logger.info("Writing compressed data...")
             for i in range(0, n_frames, batch_size):
                 end_idx = min(i + batch_size, n_frames)
@@ -2453,19 +2517,8 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
                 if progress_callback:
                     progress_callback(n_frames + end_idx, n_frames * 2, f"Compressing... {end_idx}/{n_frames}")
                 
-                if i % 500 == 0:
-                    logger.info(f"Compressed {end_idx}/{n_frames} frames...")
-            
-            # Restore attributes (but override compression settings)
-            for key, value in dataset_attrs.items():
-                if key not in ['compression', 'compression_level']:  # Don't copy old compression attrs
-                    video_compressed.attrs[key] = value
-            
-            # Set correct compression attributes
-            video_compressed.attrs['compression'] = 'gzip'
-            video_compressed.attrs['compression_level'] = 4  # OPTIMIZED
-            video_compressed.attrs['post_compressed'] = True
-            video_compressed.attrs['post_compression_level'] = 'optimized'
+                if i % 500 == 0 and i > 0:
+                    logger.debug(f"Compressed {end_idx}/{n_frames} frames...")
             
             # Update root metadata
             f.attrs['compression_level'] = 9
@@ -2501,12 +2554,6 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
         return None
 
 
-def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: bool,
-                              progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
-    """
-    Compress HDF5 using temporary file (original method).
-    Safer but requires 2x disk space.
-    """
 def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: bool,
                               progress_callback, start_time: float) -> Optional[Dict[str, Any]]:
     """
@@ -2560,32 +2607,17 @@ def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: 
                         n_frames = video_in.shape[0]
                         frame_shape = video_in.shape[1:]
                         
-                        # Create output group and dataset with max compression
+                        # Create output group
                         raw_data_out = f_out.create_group('raw_data')
                         raw_data_out.attrs['description'] = f_in['raw_data'].attrs.get('description', b'')
                         
-                        # OPTIMIZED: gzip level 4 with calculated chunk size
-                        # Level 4: best balance of compression and speed
-                        frame_size_bytes = np.prod(frame_shape) * 1
-                        optimal_frames = max(1, int(6 * 1024 * 1024 / frame_size_bytes))
-                        chunk_shape = (optimal_frames, *frame_shape)
+                        # Save dataset attributes
+                        dataset_attrs = dict(video_in.attrs)
                         
-                        video_out = raw_data_out.create_dataset(
-                            'main_video',
-                            shape=(n_frames, *frame_shape),
-                            dtype=np.uint8,
-                            chunks=chunk_shape,  # OPTIMIZED: calculated
-                            compression='gzip',
-                            compression_opts=4,  # OPTIMIZED: level 4
-                            shuffle=True,  # OPTIMIZED: always enabled
-                            fletcher32=False
+                        # Create compressed dataset using common helper
+                        video_out = _create_compressed_dataset(
+                            raw_data_out, 'main_video', n_frames, frame_shape, dataset_attrs
                         )
-                        
-                        # Copy attributes
-                        for key, value in video_in.attrs.items():
-                            video_out.attrs[key] = value
-                        video_out.attrs['post_compressed'] = True
-                        video_out.attrs['post_compression_level'] = 'maximum'
                         
                         # Report initial progress to show dialog immediately
                         if progress_callback:
