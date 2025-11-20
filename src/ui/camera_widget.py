@@ -466,6 +466,20 @@ class CameraWidget(QGroupBox):
             self.update_status("Live")
         
         self.update_button_states()
+    
+    def pause_live(self):
+        """Pause live view to save processing power (e.g., during LUT acquisition)."""
+        if self.is_live:
+            self.is_live = False
+            self.update_status("Paused (background task)")
+            logger.info("Live view paused to save processing power")
+    
+    def resume_live(self):
+        """Resume live view after pausing."""
+        if not self.is_live and self.is_running:
+            self.is_live = True
+            self.update_status("Live")
+            logger.info("Live view resumed")
 
     def _camera_frame_arrived(self):
         """Called from camera capture thread when a new frame is queued.

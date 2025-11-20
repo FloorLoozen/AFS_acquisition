@@ -38,7 +38,7 @@ class LUTAcquisitionThread(QThread):
     frame_captured = pyqtSignal(int, float)  # frame_number, z_position
     
     def __init__(self, start_um: float, end_um: float, step_nm: float, 
-                 camera, hdf5_recorder, settle_time_ms: int):
+                 camera, hdf5_recorder, settle_time_ms: int, camera_widget=None):
         super().__init__()
         self.start_um = start_um
         self.end_um = end_um
@@ -47,6 +47,7 @@ class LUTAcquisitionThread(QThread):
         self.hdf5_recorder = hdf5_recorder
         self.settle_time_s = settle_time_ms / 1000.0
         self._stop_requested = False
+        self.camera_widget = camera_widget
         
     def request_stop(self):
         """Request the acquisition to stop."""
@@ -54,9 +55,15 @@ class LUTAcquisitionThread(QThread):
         
     def run(self):
         """Execute the LUT acquisition."""
+        from PyQt5.QtCore import QMetaObject, Qt
         stage_manager = StageManager.get_instance()
         
         try:
+            # Pause live view to save processing power during acquisition
+            if self.camera_widget and hasattr(self.camera_widget, 'pause_live'):
+                QMetaObject.invokeMethod(self.camera_widget, 'pause_live', Qt.QueuedConnection)
+                logger.info("Pausing live view during LUT acquisition")
+            
             # Connect to Z-stage if needed
             if not stage_manager.z_is_connected:
                 self.progress.emit(0, 100, "Connecting to Z-stage...")
@@ -369,7 +376,7 @@ class LookupTableWidget(QDialog):
     to create a reference library for 3D particle tracking.
     """
     
-    def __init__(self, camera=None, hdf5_recorder=None, parent=None):
+    def __init__(self, camera=None, hdf5_recorder=None, camera_widget=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Lookup Table Generator")
         self.setMinimumWidth(450)
@@ -377,6 +384,7 @@ class LookupTableWidget(QDialog):
         
         self.camera = camera  # Optional: use provided camera instead of creating new one
         self.hdf5_recorder = hdf5_recorder  # Optional: save into existing recording
+        self.camera_widget = camera_widget  # Optional: pause/resume live view during acquisition
         self.acquisition_thread: Optional[LUTAcquisitionThread] = None
         self.is_acquiring = False
         
@@ -527,7 +535,8 @@ class LookupTableWidget(QDialog):
                 step_nm=self.step_spin.value(),
                 camera=self.camera,
                 hdf5_recorder=self.hdf5_recorder,
-                settle_time_ms=self.settle_spin.value()
+                settle_time_ms=self.settle_spin.value(),
+                camera_widget=getattr(self, 'camera_widget', None)
             )
         else:
             # Standalone mode - create own camera and file
@@ -580,6 +589,12 @@ class LookupTableWidget(QDialog):
         
     def _on_finished(self, success: bool, message: str):
         """Handle acquisition finished."""
+        # Resume live view after acquisition
+        if hasattr(self, 'camera_widget') and self.camera_widget:
+            if hasattr(self.camera_widget, 'resume_live'):
+                self.camera_widget.resume_live()
+                logger.info("Resuming live view after LUT acquisition")
+        
         self.is_acquiring = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)

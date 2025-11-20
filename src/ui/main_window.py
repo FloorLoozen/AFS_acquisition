@@ -619,8 +619,13 @@ class MainWindow(QMainWindow):
                 was_updating = self.camera_widget.is_updating
                 self.camera_widget.is_updating = False
             
-            # Open LUT widget with camera and recorder
-            dialog = LookupTableWidget(camera=camera, hdf5_recorder=hdf5_recorder, parent=self)
+            # Open LUT widget with camera, recorder, and camera_widget for pausing live view
+            dialog = LookupTableWidget(
+                camera=camera, 
+                hdf5_recorder=hdf5_recorder, 
+                camera_widget=self.camera_widget,
+                parent=self
+            )
             dialog.exec_()
             
             logger.info("LUT dialog closed")

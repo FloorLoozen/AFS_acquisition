@@ -2279,25 +2279,48 @@ class HDF5VideoRecorder:
                 # Add comprehensive recording statistics (fast - just metadata)
                 try:
                     if self.start_time:
-                        duration = (datetime.now() - self.start_time).total_seconds()
+                        end_time = datetime.now()
+                        duration = (end_time - self.start_time).total_seconds()
                         actual_fps = self.frame_count / duration if duration > 0 else 0
+                        
+                        # Calculate resolution
+                        height, width = self.frame_shape[0], self.frame_shape[1]
+                        channels = self.frame_shape[2] if len(self.frame_shape) > 2 else 1
                         
                         # Batch attribute writes for efficiency
                         attrs = {
-                            'recording_duration_s': duration,
+                            # Frame counts and timing
                             'total_frames': self.frame_count,
+                            'recording_duration_s': duration,
+                            'recording_duration_min': duration / 60.0,
+                            'video_time_s': self.frame_count / self.fps if self.fps > 0 else 0,
+                            
+                            # Frame rates
+                            'target_fps': self.fps,
                             'actual_fps': actual_fps,
-                            'finished_at': datetime.now().isoformat(),
+                            'real_fps': actual_fps,  # Alias for clarity
+                            'fps_efficiency': (actual_fps / self.fps * 100) if self.fps > 0 else 0,
+                            
+                            # Timestamps
+                            'recording_start_time': self.start_time.isoformat(),
+                            'recording_end_time': end_time.isoformat(),
+                            'finished_at': end_time.isoformat(),
+                            
+                            # Resolution
+                            'frame_width': width,
+                            'frame_height': height,
+                            'frame_channels': channels,
+                            'resolution': f"{width}x{height}x{channels}",
                         }
                         
                         # Performance statistics
-                        frame_size_bytes = self.frame_shape[0] * self.frame_shape[1] * self.frame_shape[2]
+                        frame_size_bytes = height * width * channels
                         total_data_mb = (self.frame_count * frame_size_bytes) / (1024 * 1024)
                         
                         attrs.update({
                             'frame_size_bytes': frame_size_bytes,
                             'total_data_mb': total_data_mb,
-                            'fps_efficiency': (actual_fps / self.fps * 100) if self.fps > 0 else 0,
+                            'total_data_gb': total_data_mb / 1024.0,
                         })
                         
                         # GPU performance statistics
