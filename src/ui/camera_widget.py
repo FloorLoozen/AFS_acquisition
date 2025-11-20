@@ -158,21 +158,21 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Live display configuration: strict 12 FPS for smooth low-latency UI
-        self.live_display_fps = 12  # 12 FPS = 83.33ms interval, smooth and responsive
+        # Live display configuration: 15 FPS for smooth responsive UI (drops half of 30 FPS camera frames)
+        self.live_display_fps = 15  # 15 FPS = 66.67ms interval, smooth and responsive
         self._last_display_time = 0  # Track last display update
-        self._min_display_interval = 1.0 / 12.0  # Exact 83.33ms between frames
+        self._min_display_interval = 1.0 / 15.0  # Exact 66.67ms between frames
         try:
             cfg = get_config()
-            self.live_display_fps = int(getattr(cfg.ui, 'live_display_fps', 12))
+            self.live_display_fps = int(getattr(cfg.ui, 'live_display_fps', 15))
             self._min_display_interval = 1.0 / self.live_display_fps
         except Exception:
             pass
         
-        # Fallback timer for display (exact 12 FPS)
+        # Fallback timer for display (exact 15 FPS)
         self.fallback_timer = QTimer(self)
         self.fallback_timer.timeout.connect(self._process_frame_immediate)
-        self.fallback_timer.setInterval(int(1000.0 / 12.0))  # 83.33ms = exact 12 FPS
+        self.fallback_timer.setInterval(int(1000.0 / 15.0))  # 66.67ms = exact 15 FPS
         
         # Pipeline diagnostics
         self._last_capture_ts = 0
@@ -485,8 +485,9 @@ class CameraWidget(QGroupBox):
         
         current_time = time.time()
         
-        # Get latest frame
-        frame_data = self.camera.get_latest_frame(timeout=0.001)
+        # Get latest frame with minimal timeout since we always keep newest frame
+        # Queue always has the freshest frame, no need for long timeout
+        frame_data = self.camera.get_latest_frame(timeout=0.01)
         if frame_data is None:
             return
         
@@ -542,17 +543,17 @@ class CameraWidget(QGroupBox):
             else:
                 display_fps = 0.0
             
-            # If recording, also show recording FPS
+            # If recording, also show recording FPS (targeting 30 FPS)
             if self.is_recording and hasattr(self, 'recording_fps_tracker'):
                 frame_times = self.recording_fps_tracker.get('frame_times', [])
                 if len(frame_times) >= 2:
                     time_span = frame_times[-1] - frame_times[0]
                     recording_fps = (len(frame_times) - 1) / time_span if time_span > 0 else 0.0
-                    status_text = f"Rec: {recording_fps:.1f} FPS | Live: {display_fps:.1f} FPS"
+                    status_text = f"Recording: {recording_fps:.1f} FPS | Live: {display_fps:.1f} FPS"
                 else:
-                    status_text = f"Live @ {display_fps:.1f} FPS"
+                    status_text = f"Live: {display_fps:.1f} FPS"
             else:
-                status_text = f"Live @ {display_fps:.1f} FPS"
+                status_text = f"Live: {display_fps:.1f} FPS"
             
             # Add latency
             total_latency = (current_time - frame_data.timestamp) * 1000
@@ -673,16 +674,16 @@ class CameraWidget(QGroupBox):
                 frame_shape = (480, 640, 1)  # Default to grayscale
             
             # Create recorder with compression and resolution settings
-            # CAMERA CAPABLE: 50+ FPS! Target 40-50 FPS for maximum recording speed
-            TARGET_FPS = 50.0
+            # Target 30 FPS for stable recording with low lag (camera runs at 30 FPS baseline)
+            TARGET_FPS = 30.0
             MIN_FPS = 25.0
             
-            # Increase camera queue size during recording to prevent frame drops at high FPS
+            # Increase camera queue size during recording to prevent frame drops (modest size for low lag)
             if self.camera:
                 try:
-                    # Temporarily increase queue to handle high-speed recording
-                    self.camera.max_queue_size = 10
-                    logger.info(f"Increased camera queue to {self.camera.max_queue_size} for high-speed recording")
+                    # Modest queue size for 30 FPS recording (lower lag than larger buffers)
+                    self.camera.max_queue_size = 3  # ~100ms buffer at 30 FPS
+                    logger.info(f"Increased camera queue to {self.camera.max_queue_size} for recording")
                 except Exception as e:
                     logger.warning(f"Could not increase queue size: {e}")
             
@@ -698,7 +699,7 @@ class CameraWidget(QGroupBox):
             # Build info message based on actual settings
             resolution_desc = {1: "full resolution", 2: "half resolution", 4: "quarter resolution"}
             res_text = resolution_desc.get(self.recording_settings['downscale_factor'], f"{self.recording_settings['downscale_factor']}x downscale")
-            logger.info(f"Recording configured: Target {TARGET_FPS} FPS (camera max 50 FPS), {res_text} + MONO8 for high-speed capture")
+            logger.info(f"Recording configured: {TARGET_FPS} FPS (30 FPS baseline), {res_text} + MONO8 for stable capture")
             
             # Track FPS performance during recording
             self.recording_fps_tracker = {
@@ -965,10 +966,10 @@ class CameraWidget(QGroupBox):
             # Restore live camera FPS target (best-effort)
             try:
                 if self.camera and hasattr(self.camera, 'apply_settings'):
-                    self.camera.apply_settings({'fps': 17.0})
-                    # Restore small queue for live view
+                    self.camera.apply_settings({'fps': 30.0})
+                    # Restore small queue for live view (minimal lag)
                     self.camera.max_queue_size = 1
-                    logger.info("Restored camera to live view settings (17 FPS, queue=1)")
+                    logger.info("Restored camera to live view settings (30 FPS, queue=1)")
             except Exception:
                 pass
 
@@ -1227,11 +1228,11 @@ class CameraWidget(QGroupBox):
             logger.warning("Cannot apply default settings: camera not available")
             return
         
-        # Default settings optimized for live view (15-20 FPS range)
+        # Default settings optimized for live view with 30 FPS camera, 15 FPS display
         default_settings = {
-            'exposure_ms': 15.0,
+            'exposure_ms': 15.0,  # Fast enough for 30 FPS (33ms frame time)
             'gain_master': 2,
-            'fps': 17.0,  # 17 FPS for live view (middle of 15-20 range)
+            'fps': 30.0,  # Camera runs at 30 FPS, display shows 15 FPS (drops half)
             'brightness': 50,
             'contrast': 50,
             'saturation': 50

@@ -472,12 +472,25 @@ class CameraController:
             except Exception as e:
                 logger.warning(f"Frame rate optimization error: {e}")
             
-            # Start continuous capture
-            ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_DONT_WAIT)
+            # Allocate memory
+            ret = ueye.is_AllocImageMem(
+                self.h_cam, self.width, self.height,
+                self.bits_per_pixel, self.mem_ptr, self.mem_id
+            )
             if ret != ueye.IS_SUCCESS:
-                logger.error(f"CaptureVideo failed: {ret}")
+                logger.error(f"AllocImageMem failed: {ret}")
                 self._cleanup_hardware()
                 return False
+            
+            # Set active memory
+            ret = ueye.is_SetImageMem(self.h_cam, self.mem_ptr, self.mem_id)
+            if ret != ueye.IS_SUCCESS:
+                logger.error(f"SetImageMem failed: {ret}")
+                self._cleanup_hardware()
+                return False
+            
+            # Use FreezeVideo mode for fresh frames with minimal lag
+            # Camera captures on-demand which gives us the newest frame always
             
             # Initialize frame pool with actual camera dimensions (grayscale)
             if self.frame_pool is None:
@@ -643,6 +656,17 @@ class CameraController:
                     
                     # Try to add to queue (non-blocking)
                     try:
+                        # ALWAYS KEEP NEWEST FRAME: If queue is full, remove old frame first
+                        if self.frame_queue.full():
+                            try:
+                                old_frame = self.frame_queue.get_nowait()
+                                # Return old frame to pool
+                                if self.frame_pool and hasattr(old_frame, 'frame'):
+                                    self.frame_pool.return_frame(old_frame.frame)
+                            except queue.Empty:
+                                pass
+                        
+                        # Now add the fresh frame
                         self.frame_queue.put(frame_data, block=False)
                         
                         # Update FPS statistics
@@ -673,7 +697,7 @@ class CameraController:
                     with self.stats_lock:
                         self.consecutive_errors += 1
                 
-                # No sleep for hardware mode - poll at maximum speed for minimum latency
+                # FreezeVideo naturally rate-limits to camera FPS, no sleep needed
                 last_capture_time = current_time
                 
             except Exception as e:
@@ -690,21 +714,23 @@ class CameraController:
             return self._capture_hardware_frame()
     
     def _capture_hardware_frame(self) -> Optional[np.ndarray]:
-        """Capture frame from camera hardware in continuous capture mode."""
+        """Capture fresh frame using FreezeVideo - minimal lag, captures on-demand."""
         if not PYUEYE_AVAILABLE or not self.h_cam:
             return None
         
         try:
-            # In continuous capture mode, frames are written to buffer automatically
-            # The camera's configured FPS controls how fast new frames arrive
-            # We just read the buffer - no blocking needed
+            # FreezeVideo with IS_WAIT: Blocks until a NEW frame is captured
+            # This ensures we always get fresh frames, no old buffered data
+            ret = ueye.is_FreezeVideo(self.h_cam, ueye.IS_WAIT)
+            if ret != ueye.IS_SUCCESS:
+                return None
             
             height = int(self.height)
             width = int(self.width)
             
             array = ueye.get_data(
                 self.mem_ptr, width, height,
-                8, width, copy=True  # 8 bits per pixel, width bytes per line
+                8, width, copy=True  # 8 bits per pixel
             )
             
             frame = np.frombuffer(array, dtype=np.uint8)
@@ -768,7 +794,11 @@ class CameraController:
         try:
             if self.h_cam:
                 ueye.is_StopLiveVideo(self.h_cam, ueye.IS_FORCE_VIDEO_STOP)
-                ueye.is_FreeImageMem(self.h_cam, self.mem_ptr, self.mem_id)
+                
+                # Free buffers
+                if self.mem_ptr and self.mem_id:
+                    ueye.is_FreeImageMem(self.h_cam, self.mem_ptr, self.mem_id)
+                
                 ueye.is_ExitCamera(self.h_cam)
         except Exception as e:
             pass  # Hardware cleanup error
