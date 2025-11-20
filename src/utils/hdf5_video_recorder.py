@@ -159,13 +159,21 @@ class HDF5VideoRecorder:
         
         file_path_obj = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
         
-        # Compression settings - OPTIMIZED FOR MAXIMUM EFFICIENCY
-        # LZF: 2x faster than gzip-1, better compression, ZERO quality loss
+        # Compression settings - OPTIMIZED FOR FILE SIZE
+        # Level 0: No compression (fast but large files)
+        # Level 1-3: LZF compression (fast, moderate compression)
+        # Level 4-9: GZIP compression (slower, maximum compression for small files)
         self.compression_level = max(0, min(9, compression_level))  # Clamp 0-9
-        if self.compression_level > 0:
-            self.compression_type = 'lzf'  # OPTIMAL: fastest lossless compression
+        if self.compression_level >= 4:
+            # Use GZIP for maximum compression (levels 4-9)
+            self.compression_type = 'gzip'
+            # Keep the level for gzip (4-9 maps to 1-9 internally, but we use the input level)
+        elif self.compression_level > 0:
+            # Use LZF for fast compression (levels 1-3)
+            self.compression_type = 'lzf'
             self.compression_level = None  # LZF doesn't use levels
         else:
+            # No compression
             self.compression_type = None
             self.compression_level = None
         
@@ -208,6 +216,7 @@ class HDF5VideoRecorder:
         self._last_accepted_frame_time: Optional[float] = None
         
         # Metadata storage
+        self.metadata = {}  # Initialize empty metadata dictionary
         self.camera_settings_saved = False
         self.stage_settings_saved = False
         
@@ -403,6 +412,10 @@ class HDF5VideoRecorder:
     def _setup_datasets_and_metadata(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Set up video dataset and metadata."""
         try:
+            # Store metadata for later use
+            if metadata:
+                self.metadata = metadata
+            
             # Create video dataset
             self._create_video_dataset()
             
@@ -437,11 +450,20 @@ class HDF5VideoRecorder:
         else:
             data_group = self.h5_file['raw_data']
         
-        # Check if main_video dataset already exists (e.g., from previous recording attempt)
+        # Check if main_video dataset already exists (e.g., from LUT-only recording)
         if 'main_video' in data_group:
-            logger.info("Video dataset already exists, using existing dataset")
-            self.video_dataset = data_group['main_video']
-            return
+            old_dataset = data_group['main_video']
+            old_compression = old_dataset.compression
+            old_level = old_dataset.compression_opts if hasattr(old_dataset, 'compression_opts') else None
+            
+            # If dataset exists but has different compression settings, delete and recreate
+            if old_compression != self.compression_type or old_level != self.compression_level:
+                logger.info(f"Deleting old video dataset (compression: {old_compression} level {old_level}) to create new one with {self.compression_type} level {self.compression_level}")
+                del data_group['main_video']
+            else:
+                logger.info("Video dataset already exists with matching compression, using existing dataset")
+                self.video_dataset = data_group['main_video']
+                return
         
         # USER SPEC: Dataset shape (time, height, width) - NO channel dimension for grayscale
         # Frame shape is (height, width, channels) but dataset should be (time, height, width)
@@ -497,6 +519,13 @@ class HDF5VideoRecorder:
         self.audit_trail.log_event('recording_started', 
                                    f'Started recording to {self.file_path.name}',
                                    {'fps': self.fps, 'compression_level': self.compression_level})
+        
+        # Log camera settings
+        if 'camera_id' in self.metadata:
+            self.audit_trail.log_event('camera_initialized',
+                                      f'Camera {self.metadata.get("camera_id", "unknown")} active',
+                                      {'exposure': self.metadata.get('exposure_ms'),
+                                       'gain': self.metadata.get('gain')})
         
         # Initialize GPU resources if available
         if _USE_GPU and self.downscale_factor > 1:
@@ -1389,10 +1418,35 @@ class HDF5VideoRecorder:
             if len(self.fg_timeline_buffer) >= self.fg_timeline_buffer_size:
                 self._flush_fg_timeline_buffer()
             
+            # Log significant events to audit trail
+            if event_type in ['output_on', 'output_off']:
+                state = 'ON' if output_enabled else 'OFF'
+                self.audit_trail.log_event('function_generator_toggled',
+                                          f'Function generator {state}: {frequency_mhz:.1f} MHz, {amplitude_vpp:.1f} Vpp',
+                                          {'frequency_mhz': frequency_mhz, 'amplitude_vpp': amplitude_vpp, 'enabled': output_enabled})
+            
             return True
             
         except Exception as e:
             logger.error(f"Error logging FG timeline event: {e}")
+            return False
+    
+    def log_hardware_event(self, event_type: str, description: str, metadata: dict = None) -> bool:
+        """Log a hardware or user action event to the audit trail.
+        
+        Args:
+            event_type: Type of event (e.g., 'camera_settings_changed', 'stage_moved', 'error')
+            description: Human-readable description
+            metadata: Optional additional data
+            
+        Returns:
+            True if logged successfully
+        """
+        try:
+            self.audit_trail.log_event(event_type, description, metadata or {})
+            return True
+        except Exception as e:
+            logger.error(f"Error logging hardware event: {e}")
             return False
     
     def _create_fg_timeline_dataset(self):
@@ -1582,10 +1636,10 @@ class HDF5VideoRecorder:
             if 'lut_frames' in self.lut_group:
                 del self.lut_group['lut_frames']
             
-            # For large LUT datasets (>100 frames), use gzip for better compression
+            # Use recorder's compression level for consistency
             if num_frames > 100:
                 compression_type = 'gzip'
-                compression_opts = 4  # Fast gzip
+                compression_opts = self.compression_level if self.compression_level >= 4 else 4  # Use recorder's level
                 # Optimal chunk: 1 frame per chunk for random access
                 chunk_shape = (1, lut_stack.shape[1], lut_stack.shape[2])
             else:
@@ -1640,6 +1694,11 @@ class HDF5VideoRecorder:
                 self.h5_file.flush()
             except Exception as flush_error:
                 logger.warning(f"LUT flush failed: {flush_error}")
+            
+            # Log LUT acquisition event
+            self.audit_trail.log_event('lut_acquired',
+                                      f'Lookup table saved: {len(frames)} frames from {z_positions[0]:.3f} to {z_positions[-1]:.3f} µm',
+                                      metadata)
             
             logger.info(f"LUT data saved successfully: {len(frames)} frames at {len(z_positions)} Z positions")
             return True
@@ -1918,7 +1977,7 @@ class HDF5VideoRecorder:
                         # Update system metrics
                         _performance_monitor.update_system_metrics()
                         # Save recovery state
-                        self.state_recovery.save_state({
+                        self.state_recovery.save_state('recording_state', {
                             'frames_written': self._frames_written,
                             'file_path': str(self.file_path),
                             'recording': True
@@ -2290,6 +2349,13 @@ class HDF5VideoRecorder:
             
             # Save audit trail to HDF5
             try:
+                # Log recording stop event before saving
+                if self.start_time:
+                    duration = (datetime.now() - self.start_time).total_seconds()
+                    self.audit_trail.log_event('recording_stopped',
+                                              f'Recording completed: {self.frame_count} frames in {duration:.1f}s',
+                                              {'duration_s': duration, 'total_frames': self.frame_count})
+                
                 self.audit_trail.save_to_hdf5(self.h5_file)
             except Exception as e:
                 logger.warning(f"Error saving audit trail: {e}")
@@ -2664,11 +2730,13 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
                 current_level = video_dataset.compression_opts or 1
                 if current_level >= 4:
                     logger.info(f"File already compressed with gzip level {current_level}, skipping")
+                    size_mb = original_size / (1024 * 1024)
                     return {
-                        'original_size_mb': original_size / (1024 * 1024),
-                        'compressed_size_mb': original_size / (1024 * 1024),
-                        'compression_ratio': 0,
-                        'processing_time_s': 0
+                        'path': file_path,
+                        'original_mb': size_mb,
+                        'compressed_mb': size_mb,
+                        'reduction_pct': 0.0,
+                        'duration_sec': 0.0
                     }
             
             logger.info(f"Recompressing {n_frames} frames ({current_compression} -> gzip-4)...")

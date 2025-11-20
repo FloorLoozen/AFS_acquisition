@@ -252,13 +252,13 @@ class LUTAcquisitionThreadStandalone(QThread):
                 'frame_height': test_frame.shape[0]
             }
             
-            # Create HDF5 recorder with compression enabled
-            # Using compression_level=9 for maximum file size reduction
-            # LZF compression is lossless and provides ~2x compression ratio
+            # Create HDF5 recorder with maximum compression for small file size
+            # Using compression_level=9 to match main recording compression
+            # This ensures consistency across LUT and video datasets
             recorder = HDF5VideoRecorder(
                 self.output_path,
                 frame_shape=test_frame.shape,
-                compression_level=9
+                compression_level=9  # Maximum compression to match main recording
             )
             
             # Start recording BEFORE moving stages
@@ -347,7 +347,9 @@ class LUTAcquisitionThreadStandalone(QThread):
             # Cleanup
             if recorder:
                 try:
+                    self.progress.emit(num_positions, num_positions, "Saving LUT data to HDF5 (compression)...")
                     recorder.stop_recording()
+                    self.progress.emit(num_positions, num_positions, "LUT data saved successfully")
                 except Exception as e:
                     logger.error(f"Error stopping recorder: {e}")
                     

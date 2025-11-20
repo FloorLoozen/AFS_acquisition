@@ -139,9 +139,9 @@ class CameraWidget(QGroupBox):
         # compression_level: 0=none (FASTEST), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
         # NOTE: Half resolution (2x) provides good balance between file size and FPS.
-        #       Post-processing compression (99%+ reduction) happens AFTER recording completes.
+        #       GZIP level 9 compression for maximum file size reduction.
         self.recording_settings = {
-            'compression_level': 0,  # NO compression during recording = MAX FPS
+            'compression_level': 9,  # GZIP level 9 for smallest files
             'downscale_factor': 2    # HALF resolution = Good balance of speed & file size
         }
         
