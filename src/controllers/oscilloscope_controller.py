@@ -56,7 +56,7 @@ class OscilloscopeController:
         """Check if oscilloscope is connected."""
         return self.scope is not None
 
-    def connect(self) -> bool:
+    def connect(self, fast_fail: bool = False) -> bool:
         """Connect to the oscilloscope using PyVISA."""
         if self.scope:
             return True
@@ -64,6 +64,9 @@ class OscilloscopeController:
         resources = VISAHelper.list_resources()
         if not resources:
             logger.warning("No VISA resources found")
+            # In fast-fail mode simply return False quickly for health checks.
+            if fast_fail:
+                return False
             return False
 
         target = self.resource_name
@@ -249,6 +252,78 @@ class OscilloscopeController:
             self.scope.write("PESU ON,INFINITE")
         except Exception:  # noqa: BLE001 - best effort only
             logger.debug("Failed to toggle persistence")
+
+    def take_screenshot(
+        self,
+        file_path: str | Path,
+        command: str = "SCDP",
+        timeout: float = 20.0,
+    ) -> Optional[Path]:
+        """Capture a screen image from the scope and save to `file_path`.
+
+        Many Siglent examples use the simple `SCDP` command which returns a
+        BMP image as raw bytes. Some instruments expose other hardcopy
+        commands; you can pass a different `command` if needed.
+
+        Returns the saved :class:`pathlib.Path` on success or ``None`` on
+        failure.
+        """
+        if not self.scope:
+            logger.error("take_screenshot called before connect")
+            return None
+
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Be conservative with timeouts for potentially large images.
+        prev_timeout = getattr(self.scope, "timeout", None)
+        try:
+            # pyvisa timeouts are in milliseconds for many backends; use seconds
+            # as a convenience but write the backend value directly if it's int.
+            self.scope.timeout = int(timeout * 1000)
+            try:
+                # Prefer write (command may be a simple trigger like "SCDP").
+                self.scope.write(command)
+            except Exception:
+                # If write fails, try query style (some commands are '?'-terminated).
+                try:
+                    raw = self.scope.query(command)
+                except Exception as exc:  # noqa: BLE001 - best effort only
+                    logger.error("Failed to send screenshot command '%s': %s", command, exc)
+                    return None
+                else:
+                    # Received text response; save as bytes.
+                    data = raw.encode("latin1", errors="surrogateescape")
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    logger.info("Saved screenshot to %s (query style)", path)
+                    return path
+
+            # Read raw bytes from the instrument. Many scopes send a binary block
+            # (e.g. '#<digits><len><data>'). read_raw() returns the raw bytes
+            # including any block header which we write straight to disk.
+            try:
+                data = self.scope.read_raw()
+            except Exception as exc:  # noqa: BLE001 - best effort only
+                logger.error("Failed to read screenshot bytes: %s", exc)
+                return None
+
+            if not data:
+                logger.error("No data received for screenshot command '%s'", command)
+                return None
+
+            with open(path, "wb") as f:
+                f.write(data)
+
+            logger.info("Saved screenshot to %s", path)
+            return path
+        finally:
+            if prev_timeout is not None:
+                try:
+                    self.scope.timeout = prev_timeout
+                except Exception:
+                    # Best-effort restore; ignore failures
+                    pass
 
     def set_time_division(self, time_div: str) -> None:
         if not self.scope:
