@@ -50,6 +50,8 @@ class OscilloscopeController:
         self.resource_name = resource_name
         self.scope: Optional[pyvisa.Resource] = None
         self._time_division_seconds: Optional[float] = None
+        # Public attribute used by UI code to detect model-specific commands
+        self._is_siglent: Optional[bool] = None
 
     @property
     def is_connected(self) -> bool:
@@ -91,7 +93,15 @@ class OscilloscopeController:
         scope.write_termination = "\n"
         scope.query_delay = max(getattr(scope, "query_delay", 0.0), 0.1)
         scope.write(":SYSTem:REMote")
-        logger.info("Oscilloscope ID: %s", scope.query("*IDN?").strip())
+        idn = scope.query("*IDN?").strip()
+        logger.info("Oscilloscope ID: %s", idn)
+
+        # Heuristic: mark Siglent instruments for UI-specific commands
+        idn_up = idn.upper()
+        if "SIGLENT" in idn_up or "SDS" in idn_up or "0X1017" in idn_up:
+            self._is_siglent = True
+        else:
+            self._is_siglent = False
 
         self.scope = scope
         return True
@@ -252,6 +262,64 @@ class OscilloscopeController:
             self.scope.write("PESU ON,INFINITE")
         except Exception:  # noqa: BLE001 - best effort only
             logger.debug("Failed to toggle persistence")
+
+    def _send_command(self, command: str, read_response: bool = False) -> Optional[str]:
+        """Send a SCPI command to the instrument.
+
+        If ``read_response`` is True the response string is returned (stripped).
+        This is a small compatibility shim used by older UI code.
+        """
+        if not self.scope:
+            raise RuntimeError("_send_command called before connect")
+
+        try:
+            if read_response:
+                # Use query for commands that return a response
+                return self.scope.query(command).strip()
+            else:
+                self.scope.write(command)
+                return None
+        except Exception as e:
+            logger.error("SCPI command failed '%s': %s", command, e)
+            raise
+
+    def acquire_single_waveform(self, channel: int = 1) -> Optional[np.ndarray]:
+        """Acquire a single waveform and return the voltage samples as a numpy array.
+
+        This wraps :meth:`acquire_waveform` and is provided for compatibility
+        with code that expects a simple array of samples.
+        """
+        wf = self.acquire_waveform(channel=channel, require_trigger=False)
+        if wf is None:
+            return None
+        return wf.voltages
+
+    def reset_to_normal_mode(self) -> None:
+        """Return the oscilloscope to a sensible normal display mode.
+
+        Used by UI cleanup code to disable persistence and set trigger/display
+        back to normal viewing.
+        """
+        if not self.scope:
+            return
+        try:
+            try:
+                # Normal trigger/display modes
+                self.scope.write("TRMD NORM")
+            except Exception:
+                logger.debug("Failed to set TRMD NORM")
+            try:
+                # Disable persistence and other transient modes
+                self.scope.write("PESU OFF")
+            except Exception:
+                logger.debug("Failed to disable persistence")
+            try:
+                # Ensure acquisition is in RUN mode
+                self.scope.write(":RUN")
+            except Exception:
+                logger.debug("Failed to set RUN mode")
+        except Exception:  # noqa: BLE001 - best effort only
+            logger.debug("Failed to reset oscilloscope to normal mode")
 
     def take_screenshot(
         self,

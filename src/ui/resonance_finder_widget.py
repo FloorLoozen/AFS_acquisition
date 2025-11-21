@@ -89,15 +89,16 @@ class SweepWorker(QThread):
             
             # Check if function generator is connected
             if self.funcgen and self.funcgen.is_connected:
-                # Start HARDWARE frequency sweep on function generator (fixed 2 seconds)
-                sweep_duration = 2.0  # Fixed 2 second sweep
+                # Start HARDWARE frequency sweep on function generator using
+                # the user-selected sweep time passed into the worker.
+                sweep_duration = float(self.sweep_time)
                 try:
                     success = self.funcgen.sine_frequency_sweep(
                         amplitude=self.amplitude,
                         freq_start=self.freq_start,
                         freq_end=self.freq_stop,
                         sweep_time=sweep_duration,
-                        channel=1
+                        channel=1,
                     )
                     if not success:
                         self.sweep_error.emit("Failed to start hardware sweep")
@@ -109,7 +110,7 @@ class SweepWorker(QThread):
                     return
             else:
                 logger.warning("Function generator not connected - using demo mode")
-                sweep_duration = 2.0
+                sweep_duration = float(self.sweep_time)
             
             # Generate frequency array for X-axis (maps to sweep settings)
             num_points = 100  # Sample 100 points during the sweep
