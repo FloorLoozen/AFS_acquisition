@@ -55,14 +55,25 @@ class LUTAcquisitionThread(QThread):
         
     def run(self):
         """Execute the LUT acquisition."""
-        from PyQt5.QtCore import QMetaObject, Qt
+        from PyQt5.QtCore import QMetaObject, Qt, QTimer
         stage_manager = StageManager.get_instance()
         
         try:
             # Pause live view to save processing power during acquisition
-            if self.camera_widget and hasattr(self.camera_widget, 'pause_live'):
-                QMetaObject.invokeMethod(self.camera_widget, 'pause_live', Qt.QueuedConnection)
-                logger.info("Pausing live view during LUT acquisition")
+            if self.camera_widget and hasattr(self.camera_widget, 'pause_live') and callable(getattr(self.camera_widget, 'pause_live')):
+                # Schedule pause_live on the main thread safely. Some CameraWidget implementations
+                # don't expose pause_live as a Qt slot, so QMetaObject.invokeMethod fails.
+                # Using QTimer.singleShot(0, ...) posts the call to the GUI event loop.
+                try:
+                    QTimer.singleShot(0, self.camera_widget.pause_live)
+                    logger.info("Pausing live view during LUT acquisition")
+                except Exception:
+                    # Fall back to direct call if scheduling fails
+                    try:
+                        self.camera_widget.pause_live()
+                        logger.info("Pausing live view (direct call) during LUT acquisition")
+                    except Exception:
+                        logger.debug("Could not pause live view")
             
             # Connect to Z-stage if needed
             if not stage_manager.z_is_connected:
@@ -155,6 +166,12 @@ class LUTAcquisitionThread(QThread):
                 }
                 self.hdf5_recorder.add_lut_data(lut_frames, lut_z_positions, metadata)
                 logger.info(f"LUT data saved: {len(lut_frames)} frames")
+                # If acquisition ran against an active recorder, let camera_widget know the LUT file
+                try:
+                    if self.camera_widget and hasattr(self.hdf5_recorder, 'file_path'):
+                        setattr(self.camera_widget, 'last_lut_file', str(self.hdf5_recorder.file_path))
+                except Exception:
+                    pass
             
             # Return Z-stage to 0 position after LUT acquisition
             try:
@@ -259,24 +276,27 @@ class LUTAcquisitionThreadStandalone(QThread):
                 'frame_height': test_frame.shape[0]
             }
             
-            # Create HDF5 recorder with maximum compression for small file size
-            # Using compression_level=9 to match main recording compression
-            # This ensures consistency across LUT and video datasets
+            # Create HDF5 recorder for metadata storage. Use light/fast recording
+            # because LUT frames will be saved into a dedicated LUT dataset (fast LZF).
             recorder = HDF5VideoRecorder(
                 self.output_path,
                 frame_shape=test_frame.shape,
-                compression_level=9  # Maximum compression to match main recording
+                compression_level=1  # LZF for any incidental main_video dataset (fast)
             )
-            
-            # Start recording BEFORE moving stages
+
+            # Start recording to create file and metadata groups before saving LUT
             recorder.start_recording(metadata=metadata)
-            logger.info(f"Started HDF5 recording to {self.output_path}")
+            logger.info(f"Started HDF5 file for LUT to {self.output_path}")
             
             # Move to start position
             self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.0f} µm...")
             stage_manager.move_z_to(self.start_um)
             time.sleep(self.settle_time_s)
             
+            # Prepare in-memory buffers for LUT frames and positions
+            lut_frames = []
+            lut_z_positions = []
+
             # Acquire frames at each Z position with optimized pipelining
             # Parallel strategy: overlap stage movement with frame capture and HDF5 writing
             next_z_target = None
@@ -311,8 +331,10 @@ class LUTAcquisitionThreadStandalone(QThread):
                     logger.warning(f"Failed to capture frame at Z={actual_z_pos:.0f} µm")
                     continue
                 
-                # Record frame to HDF5
-                recorder.record_frame(frame)
+                # Collect frame in memory to later store as LUT (we avoid writing main_video)
+                # This keeps LUT storage consistent and allows very fast LZF compression.
+                lut_frames.append(frame)
+                lut_z_positions.append(actual_z_pos)
                 
                 # NOW start moving to NEXT position (after capture is complete)
                 if i + 1 < num_positions:
@@ -326,7 +348,18 @@ class LUTAcquisitionThreadStandalone(QThread):
                 self.frame_captured.emit(i, actual_z_pos)
                 self.progress.emit(i + 1, num_positions, 
                                  f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
-            
+            # Save collected LUT frames into the HDF5 file (fast LZF compression)
+            if recorder and lut_frames:
+                try:
+                    self.progress.emit(num_positions, num_positions, "Saving LUT frames into HDF5 (max compression)...")
+                    metadata.update({'saved_at': datetime.now().isoformat()})
+                    # Store LUT with maximum final compression (gzip-9) since standalone LUTs are accessed offline
+                    recorder.add_lut_data(lut_frames, lut_z_positions, metadata, optimize_for='max_compression')
+                    logger.info(f"Standalone LUT data saved: {len(lut_frames)} frames (max compression)")
+                    self.progress.emit(num_positions, num_positions, "LUT frames saved")
+                except Exception as e:
+                    logger.error(f"Failed to save LUT frames: {e}")
+
             # Return Z-stage to 0 position after LUT acquisition
             try:
                 self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
@@ -357,6 +390,20 @@ class LUTAcquisitionThreadStandalone(QThread):
                     self.progress.emit(num_positions, num_positions, "Saving LUT data to HDF5 (compression)...")
                     recorder.stop_recording()
                     self.progress.emit(num_positions, num_positions, "LUT data saved successfully")
+                    # Notify parent widget (if present) about the saved LUT file for session reuse
+                    try:
+                        if hasattr(self, 'parent_widget') and getattr(self, 'parent_widget'):
+                            saved_path = str(getattr(recorder, 'file_path', self.output_path))
+                            setattr(self.parent_widget, 'last_lut_file', saved_path)
+                            # Also propagate to camera_widget if available on the parent
+                            try:
+                                pw = self.parent_widget
+                                if hasattr(pw, 'camera_widget') and getattr(pw, 'camera_widget'):
+                                    setattr(pw.camera_widget, 'last_lut_file', saved_path)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.error(f"Error stopping recorder: {e}")
                     
@@ -525,27 +572,38 @@ class LookupTableWidget(QDialog):
             return
         
         # Check if we're using external camera/recorder or standalone mode
-        if self.camera and self.hdf5_recorder:
-            # Recording mode - use provided camera and recorder
-            
-            # Create thread with camera and recorder
+        # Prefer saving LUT into the active recording HDF5 file when available
+        active_recorder = None
+        active_camera = None
+        if getattr(self, 'hdf5_recorder', None):
+            active_recorder = self.hdf5_recorder
+            active_camera = getattr(self, 'camera', None)
+        elif getattr(self, 'camera_widget', None):
+            # If this widget was given a CameraWidget, check for an active recorder there
+            cw = self.camera_widget
+            if getattr(cw, 'hdf5_recorder', None) and getattr(cw, 'is_recording', False):
+                active_recorder = cw.hdf5_recorder
+                active_camera = getattr(cw, 'camera', None)
+
+        if active_recorder and active_camera:
+            # Use the recorder attached to the running session so LUT is stored inside
+            # the same HDF5 file under /raw_data/LUT
             self.acquisition_thread = LUTAcquisitionThread(
                 start_um=start,
                 end_um=end,
                 step_nm=self.step_spin.value(),
-                camera=self.camera,
-                hdf5_recorder=self.hdf5_recorder,
+                camera=active_camera,
+                hdf5_recorder=active_recorder,
                 settle_time_ms=self.settle_spin.value(),
                 camera_widget=getattr(self, 'camera_widget', None)
             )
         else:
-            # Standalone mode - create own camera and file
-            # Generate output path automatically
+            # Standalone mode - create own camera and file (no active recording available)
             default_dir = Path.cwd() / "raw_data" / "LUT"
             default_dir.mkdir(parents=True, exist_ok=True)
             output_path = default_dir / f"lut_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
-            
-            # Create standalone thread
+
+            # Create standalone thread that will create its own HDF5 file
             self.acquisition_thread = LUTAcquisitionThreadStandalone(
                 start_um=start,
                 end_um=end,
@@ -553,6 +611,11 @@ class LookupTableWidget(QDialog):
                 output_path=str(output_path),
                 settle_time_ms=self.settle_spin.value()
             )
+            # Let the thread notify this widget of the saved LUT file path
+            try:
+                self.acquisition_thread.parent_widget = self
+            except Exception:
+                pass
         
         # Connect signals
         self.acquisition_thread.progress.connect(self._on_progress)

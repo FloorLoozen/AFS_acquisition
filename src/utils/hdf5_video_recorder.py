@@ -131,7 +131,7 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
-                 fps: float = 20.0, min_fps: float = 20.0, compression_level: int = 4, downscale_factor: int = 1) -> None:
+                 fps: float = 20.0, min_fps: float = 20.0, compression_level: int = 1, downscale_factor: int = 1) -> None:
         """
         Initialize the HDF5 video recorder with configurable compression.
         
@@ -1598,8 +1598,16 @@ class HDF5VideoRecorder:
             self.execution_data_group = None
             self.lut_group = None
     
-    def add_lut_data(self, frames: List[np.ndarray], z_positions: List[float], metadata: Dict[str, Any]) -> bool:
+    def add_lut_data(self, frames: List[np.ndarray], z_positions: List[float], metadata: Dict[str, Any], optimize_for: str = 'fast_write') -> bool:
         """Add lookup table data to the HDF5 file with optimized parallel writing.
+
+        Args:
+            frames: List of LUT frames (diffraction patterns at different Z positions)
+            z_positions: List of corresponding Z positions in micrometers
+            metadata: LUT acquisition metadata
+            optimize_for: 'fast_write' (default) for minimal write overhead using LZF,
+                          or 'max_compression' to store LUT with gzip level 9 for
+                          maximum final compression (better for offline access).
         
         Args:
             frames: List of LUT frames (diffraction patterns at different Z positions)
@@ -1616,14 +1624,13 @@ class HDF5VideoRecorder:
         try:
             logger.info(f"Saving LUT data: {len(frames)} frames...")
             
-            # Get frame shape from first frame
+            # Get frame shape from first frame and stack into array
             first_frame = frames[0]
             lut_frame_shape = first_frame.shape
-            
-            # Pre-allocate array for efficiency (faster than list comprehension for large datasets)
+
             num_frames = len(frames)
+            # Stack frames into a numpy array; store grayscale as (N,H,W) for compactness
             if lut_frame_shape[2] == 1:  # Grayscale
-                # Stack and squeeze channel dimension
                 lut_stack = np.empty((num_frames, lut_frame_shape[0], lut_frame_shape[1]), dtype=first_frame.dtype)
                 for i, frame in enumerate(frames):
                     lut_stack[i] = frame.squeeze()
@@ -1631,28 +1638,47 @@ class HDF5VideoRecorder:
                 lut_stack = np.empty((num_frames, *lut_frame_shape), dtype=first_frame.dtype)
                 for i, frame in enumerate(frames):
                     lut_stack[i] = frame
-            
-            # Create LUT frames dataset with optimal chunking for large datasets
+
+            # Create or replace LUT frames dataset
             if 'lut_frames' in self.lut_group:
                 del self.lut_group['lut_frames']
-            
-            # Use recorder's compression level for consistency
-            if num_frames > 100:
+
+            # Choose compression and chunking strategy based on optimize_for hint
+            optimize_for_mode = (optimize_for or 'fast_write').lower()
+
+            if optimize_for_mode == 'max_compression':
+                # Use gzip-9 and multi-frame chunking (better compression for sequential reads)
                 compression_type = 'gzip'
-                compression_opts = self.compression_level if self.compression_level >= 4 else 4  # Use recorder's level
-                # Optimal chunk: 1 frame per chunk for random access
-                chunk_shape = (1, lut_stack.shape[1], lut_stack.shape[2])
+                compression_opts = 9
+                # Prefer multi-frame chunking similar to video dataset calculation
+                if lut_stack.ndim == 3:
+                    # (N, H, W) -> chunk several frames together to improve gzip efficiency
+                    frame_bytes = lut_stack.shape[1] * lut_stack.shape[2]
+                else:
+                    frame_bytes = lut_stack.shape[1] * lut_stack.shape[2] * lut_stack.shape[3]
+                target_bytes = getattr(self, 'target_chunk_mb', 6) * 1024 * 1024
+                frames_per_chunk = max(1, min(64, target_bytes // frame_bytes))
+                if lut_stack.ndim == 3:
+                    chunk_shape = (min(frames_per_chunk, lut_stack.shape[0]), lut_stack.shape[1], lut_stack.shape[2])
+                else:
+                    chunk_shape = (min(frames_per_chunk, lut_stack.shape[0]), lut_stack.shape[1], lut_stack.shape[2], lut_stack.shape[3])
+                shuffle_flag = True
             else:
-                compression_type = 'lzf'  # Fast for small datasets
+                # Default: fast write (LZF) and single-frame chunking for random access
+                compression_type = 'lzf'
                 compression_opts = None
-                chunk_shape = True  # Auto chunking
-            
+                if lut_stack.ndim == 3:
+                    chunk_shape = (1, lut_stack.shape[1], lut_stack.shape[2])
+                else:
+                    chunk_shape = (1, lut_stack.shape[1], lut_stack.shape[2], lut_stack.shape[3])
+                shuffle_flag = False
+
             lut_frames_dataset = self.lut_group.create_dataset(
                 'lut_frames',
                 data=lut_stack,
                 compression=compression_type,
                 compression_opts=compression_opts,
-                shuffle=True,
+                shuffle=shuffle_flag,
                 chunks=chunk_shape
             )
             lut_frames_dataset.attrs['description'] = b'Diffraction patterns at different Z positions'
@@ -2660,14 +2686,14 @@ def _create_compressed_dataset(target_group: h5py.Group, dataset_name: str,
     chunk_shape = (optimal_frames, *frame_shape)
     
     # Create compressed dataset with optimal settings
-    # GZIP level 4: best compression/speed tradeoff (~95% of level 9, 3x faster)
+    # GZIP level 9: maximize compression for main video post-processing
     compressed_ds = target_group.create_dataset(
         dataset_name,
         shape=(n_frames, *frame_shape),
         dtype=np.uint8,
         chunks=chunk_shape,
         compression='gzip',
-        compression_opts=4,
+        compression_opts=9,
         shuffle=True,
         fletcher32=False
     )
@@ -2747,11 +2773,12 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
             n_frames = video_dataset.shape[0]
             frame_shape = video_dataset.shape[1:]
             
-            # Check if already compressed with gzip
+            # Check if already compressed with gzip. If it's already gzip at a
+            # high level and no quality_reduction is requested, skip recompression.
             current_compression = video_dataset.compression
             if current_compression == 'gzip':
                 current_level = video_dataset.compression_opts or 1
-                if current_level >= 4:
+                if current_level >= 4 and not quality_reduction:
                     logger.info(f"File already compressed with gzip level {current_level}, skipping")
                     size_mb = original_size / (1024 * 1024)
                     return {

@@ -36,6 +36,7 @@ User Experience:
 import time
 import cv2
 import os
+from pathlib import Path
 import numpy as np
 from datetime import datetime
 from typing import Optional
@@ -293,6 +294,50 @@ class CameraWidget(QGroupBox):
             f"{change_label}: {change_value:.1f}%\n\n"
             f"✓ Lossless compression - 100% data preserved"
         )
+        # Additionally probe dataset-level storage to report actual on-disk compression
+        try:
+            import h5py
+            import numpy as np
+            ds_info_lines = []
+            with h5py.File(path, 'r') as f:
+                # Prefer main_video dataset under /raw_data
+                if 'raw_data' in f and 'main_video' in f['raw_data']:
+                    ds = f['raw_data']['main_video']
+                    # Compute uncompressed bytes from dataset shape and dtype
+                    try:
+                        dtype_itemsize = np.dtype(ds.dtype).itemsize
+                        uncompressed_bytes = int(np.prod(ds.shape) * dtype_itemsize)
+                    except Exception:
+                        uncompressed_bytes = None
+
+                    try:
+                        storage_bytes = int(ds.id.get_storage_size())
+                    except Exception:
+                        storage_bytes = None
+
+                    comp = getattr(ds, 'compression', None)
+                    comp_opts = getattr(ds, 'compression_opts', None)
+
+                    if uncompressed_bytes and storage_bytes:
+                        try:
+                            pct = (1.0 - (storage_bytes / float(uncompressed_bytes))) * 100.0
+                        except Exception:
+                            pct = 0.0
+                    else:
+                        pct = None
+
+                    if comp:
+                        ds_info_lines.append(f"Dataset compression: {comp} (opts={comp_opts})")
+                    if pct is not None:
+                        ds_info_lines.append(f"On-disk reduction vs raw bytes: {pct:.1f}% (storage {storage_bytes/1024/1024:.1f} MB vs raw {uncompressed_bytes/1024/1024:.1f} MB)")
+                    elif storage_bytes is not None:
+                        ds_info_lines.append(f"Dataset storage: {storage_bytes/1024/1024:.1f} MB")
+
+            if ds_info_lines:
+                message += "\n" + "\n".join(ds_info_lines)
+        except Exception:
+            # If probing fails, don't block the user notification
+            pass
         
         # Show completion notification with statistics
         QMessageBox.information(
@@ -701,6 +746,17 @@ class CameraWidget(QGroupBox):
                 except Exception as e:
                     logger.warning(f"Could not increase queue size: {e}")
             
+            # Prefer using the LUT file created earlier in this session if present
+            try:
+                if hasattr(self, 'last_lut_file') and self.last_lut_file:
+                    lut_path = Path(self.last_lut_file)
+                    if lut_path.exists():
+                        logger.info(f"Using session LUT HDF5 for recording: {lut_path}")
+                        file_path = str(lut_path)
+            except Exception:
+                # Fall back to provided file_path
+                pass
+
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,
                 frame_shape=frame_shape,
@@ -888,21 +944,77 @@ class CameraWidget(QGroupBox):
                                     logger.debug(f"Compression progress: {current}/{total} - {status}")
                                     self.compression_progress_signal.emit(current, total, status)
                                 
+                                # First try lossless recompression (safe)
                                 result = post_process_compress_hdf5(
                                     path,
                                     quality_reduction=False,  # Lossless: preserve 100% of scientific data
                                     parallel=True,
                                     progress_callback=progress_callback
                                 )
+
                                 if result:
-                                    logger.info(f"Compression completed: {result['path']}")
-                                    # Emit signal to main thread with full statistics
-                                    self.compression_complete_signal.emit(
-                                        result['path'],
-                                        result['original_mb'],
-                                        result['compressed_mb'],
-                                        result['reduction_pct']
-                                    )
+                                    logger.info(f"Compression completed: {result['path']} (reduction {result.get('reduction_pct'):.1f}%)")
+                                    # If little or no reduction, attempt aggressive lossy recompression
+                                    try:
+                                        reduction = float(result.get('reduction_pct', 0.0))
+                                    except Exception:
+                                        reduction = 0.0
+
+                                    # Store initial result and decide whether to emit immediately
+                                    initial_result = result
+
+                                    emitted = False
+
+                                    # If reduction was small (<2%), try aggressive pass with quality reduction
+                                    if reduction < 2.0:
+                                        try:
+                                            import shutil
+                                            # Check available free space for temp-file mode (needs ~1.5x file)
+                                            total, used, free = shutil.disk_usage(os.path.dirname(path) or '.')
+                                            free_mb = free / (1024**2)
+                                            original_mb = result.get('original_mb', 0.0)
+                                            required_mb = original_mb * 1.5
+
+                                            if free_mb >= required_mb:
+                                                logger.info("Little gain from lossless compression; running aggressive temp-file compression (lossy) to reduce size further")
+                                                aggressive = post_process_compress_hdf5(
+                                                    path,
+                                                    quality_reduction=True,
+                                                    parallel=True,
+                                                    progress_callback=progress_callback,
+                                                    in_place=False
+                                                )
+                                            else:
+                                                logger.info("Insufficient free space for temp-file compression; attempting in-place lossy recompression")
+                                                aggressive = post_process_compress_hdf5(
+                                                    path,
+                                                    quality_reduction=True,
+                                                    parallel=True,
+                                                    progress_callback=progress_callback,
+                                                    in_place=True
+                                                )
+
+                                            if aggressive:
+                                                logger.info(f"Aggressive compression completed: {aggressive['path']} (reduction {aggressive.get('reduction_pct'):.1f}%)")
+                                                # Emit only final aggressive result (avoid duplicate popups)
+                                                self.compression_complete_signal.emit(
+                                                    aggressive['path'],
+                                                    aggressive['original_mb'],
+                                                    aggressive['compressed_mb'],
+                                                    aggressive['reduction_pct']
+                                                )
+                                                emitted = True
+                                        except Exception as ag_err:
+                                            logger.warning(f"Aggressive compression attempt failed: {ag_err}")
+
+                                    # If we didn't run or didn't get a successful aggressive result, emit the initial lossless result
+                                    if not emitted:
+                                        self.compression_complete_signal.emit(
+                                            initial_result['path'],
+                                            initial_result['original_mb'],
+                                            initial_result['compressed_mb'],
+                                            initial_result['reduction_pct']
+                                        )
                                 else:
                                     logger.warning("Compression returned no result")
                             except Exception as comp_error:
