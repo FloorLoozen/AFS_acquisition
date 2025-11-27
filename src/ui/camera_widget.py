@@ -819,16 +819,10 @@ class CameraWidget(QGroupBox):
                 except Exception as e:
                     logger.warning(f"Could not increase queue size: {e}")
             
-            # Prefer using the LUT file created earlier in this session if present
-            try:
-                if hasattr(self, 'last_lut_file') and self.last_lut_file:
-                    lut_path = Path(self.last_lut_file)
-                    if lut_path.exists():
-                        logger.info(f"Using session LUT HDF5 for recording: {lut_path}")
-                        file_path = str(lut_path)
-            except Exception:
-                # Fall back to provided file_path
-                pass
+            # Clear last_lut_file to ensure each recording gets a new file
+            # (LUT file is only reused for the FIRST recording after LUT acquisition)
+            if hasattr(self, 'last_lut_file'):
+                self.last_lut_file = None
 
             self.hdf5_recorder = HDF5VideoRecorder(
                 file_path=file_path,

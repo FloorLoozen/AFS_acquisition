@@ -806,15 +806,11 @@ class MainWindow(QMainWindow):
                 "Camera is not running. Please ensure camera is connected and running.")
             return
         
-        # Check if we just acquired LUT - reuse that file path
+        # Each recording gets its own new file
+        # LUT data is stored separately and referenced if needed
         import os
         import h5py
         import time
-        
-        if hasattr(self, '_lut_file_path') and self._lut_file_path and os.path.exists(self._lut_file_path):
-            logger.info(f"Reusing file with LUT: {self._lut_file_path}")
-            file_path = self._lut_file_path
-            self._lut_file_path = None  # Clear after use
         
         file_has_lut = False
         
