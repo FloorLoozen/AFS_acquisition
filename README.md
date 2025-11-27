@@ -1,133 +1,126 @@
 # AFS Acquisition
 
-## Overview
+Scientific instrument control and data acquisition system for high-speed camera recording with synchronized positioning stages, function generators, and oscilloscopes.
 
-Real-time control of cameras, positioning stages, function generators, and oscilloscopes with scientific data recording in HDF5 format.
+## System Requirements
 
-**Key Features:**
-- 🎥 High-performance video recording with metadata
-- 🎛️ Multi-instrument control (cameras, stages, function generators, oscilloscopes)  
-- 📊 Scientific data management with HDF5 format
-- 🔍 Interactive frequency sweep analysis
-- ⚡ Force path design and automated measurements
-- 🖥️ Modern PyQt5 interface with real-time monitoring
+**Platform:**
+- Windows 11 Enterprise (x64)
+- Intel Core i7-14700 (20 cores, 28 threads)
+- 64 GB RAM
+- AMD Radeon Pro WX 3100 (OpenCL support)
 
-## Quick Start
+**Software:**
+- Python 3.11+
+- PyQt5 3.0.0
+
+## Hardware Configuration
+
+**Camera:**
+- IDS uEye UI-3080CP (MONO8)
+- Resolution: 1296 × 1024 pixels
+- Max Frame Rate: 57.2 FPS
+- Interface: USB 3.0
+
+**Positioning Stages:**
+- Mad City Labs Nano-Drive XY Stage
+- Mad City Labs Nano-Drive Z Stage
+- Interface: USB
+
+**Signal Generation & Measurement:**
+- Siglent SDG1032X Function Generator (USB/VISA)
+- Siglent SDS804X HD Oscilloscope (USB/VISA)
+
+## Installation
 
 ```bash
-# Clone and setup
-git clone https://github.com/FloorLoozen/AFS_tracking.git
-cd AFS_tracking
+git clone https://github.com/FloorLoozen/AFS_acquisition.git
+cd AFS_acquisition
 python -m venv .venv
-.venv\Scripts\activate  # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run application
 python src/main.py
 ```
 
-**Requirements:** Python 3.8+, Windows 10/11, 4+ GB RAM
+## Features
 
-## Hardware Support
+**Real-Time Acquisition:**
+- 30 FPS high-speed recording (MONO8, 1296×1024)
+- 12 FPS live preview during recording
+- Real-time LZF compression
+- 2× downsampling option
 
-| Type | Manufacturer | Models | Interface |
-|------|--------------|--------|-----------|
-| Camera | IDS Imaging | uEye Series | USB 3.0 |
-| XY Stage | Mad City Labs | MicroDrive | USB |
-| Function Generator | Siglent | SDG Series | USB/VISA |
-| Oscilloscope | Tektronix | Various | VISA |
+**Instrument Control:**
+- Synchronized camera and stage positioning
+- Function generator waveform control
+- Oscilloscope measurement integration
+- Lookup table (LUT) acquisition for calibration
 
-*Includes demo modes for testing without hardware*
+**Data Management:**
+- HDF5 hierarchical storage format
+- Automatic metadata capture
+- Force path execution with multi-point measurements
+- Resonance frequency sweep analysis
+
+**User Interface:**
+- Live camera view with histogram and statistics
+- Hardware status monitoring
+- Configurable measurement settings (10×, 20×, 40× magnification)
+- Keyboard shortcuts for stage control and recording
 
 ## Data Format
 
-HDF5 scientific format with hierarchical structure:
+HDF5 files with the following structure:
+
 ```
-experiment.hdf5
+recording.hdf5
 ├── raw_data/
-│   ├── main_video                     # 4D video dataset (frames, height, width, channels)
-│   ├── function_generator_timeline    # FG parameter changes over time
-│   └── LUT/                           # Lookup tables (placeholder)
+│   ├── main_video                  # Shape: (n_frames, height, width, 1), dtype: uint8
+│   ├── function_generator_timeline # FG parameters over time
+│   └── LUT/                        # Lookup table calibration data
 └── meta_data/
     ├── hardware_settings/
-    │   ├── camera_settings            # Camera parameters and configuration
-    │   └── stage_settings             # XY stage position and settings
-    ├── recording_info                 # Recording session metadata
-    └── force_path_execution           # Force path table (optional, if used)
+    │   ├── camera_settings         # Exposure, gain, FPS, pixel format
+    │   └── stage_settings          # XY/Z position coordinates
+    ├── recording_info              # Timestamp, duration, frame count
+    └── force_path_execution        # Measurement sequence (if used)
 ```
 
-### Camera Frame Format
+**Video Encoding:**
+- Format: MONO8 (8-bit grayscale)
+- Compression: LZF (real-time) or GZIP (configurable)
+- Downscaling: 1× (full), 2× (half), 4× (quarter)
+- Storage: 4D array `(frames, height, width, 1)`
 
-**Expected format:** MONO8 (grayscale, 8-bit unsigned)
-- Shape: `(height, width, 1)` - single channel for grayscale
-- Data type: `numpy.uint8`
-- HDF5 storage: 4D dataset `(n_frames, height, width, 1)`
+## Performance
 
-**Example shapes:**
-- Full resolution: `(1200, 1920, 1)` → stored as `(n_frames, 1200, 1920, 1)`
-- Quarter resolution (downscale=4): `(300, 480, 1)` → stored as `(n_frames, 300, 480, 1)`
+**Frame Rates:**
+- Camera acquisition: 57.2 FPS (hardware maximum)
+- Recording: 30 FPS (software-limited for stable performance)
+- Live preview: 12 FPS (UI optimization)
 
-**Performance optimization:**
-- Real-time compression: LZF (fast) or GZIP (best)
-- Downscale options: 1x (full), 2x (half), 4x (quarter)
-- Post-recording compression: configurable via `ConfigManager`
+**Compression:**
+- Real-time LZF compression during acquisition
+- Optional post-processing GZIP compression
+- Typical file size: ~25 MB per second of recording
 
-## Key Components
-
-- **Main Interface**: Live camera view, instrument controls, real-time monitoring
-- **Force Path Designer**: Multi-point measurement sequences with spatial/temporal control
-- **Resonance Finder**: Interactive frequency sweeps with automatic peak detection
-- **Configuration Manager**: Hardware profiles and performance optimization
-
-## Live View / Recording Decoupling
-
-The application separates the live display from recording to ensure a responsive UI even when disk I/O or compression is slow.
-
-- Live view runs at 12 FPS (optimized to prevent lag)
-- Recording runs at 30 FPS with strict rate limiting
-- Real-time LZF compression during recording (no post-processing wait)
-- Frames are enqueued and processed asynchronously to avoid blocking the GUI
-- Live view continues during recording with dual FPS display
-
-This design prevents lag in the live view while maintaining high-quality recordings.
-
-## Recent Optimizations (2025-11-27)
-
-### Recording Performance
-- **30 FPS Recording**: Fixed double rate limiting issue (was 17 FPS, now 30 FPS)
-- **Real-time Compression**: Enabled LZF compression during recording (eliminates 77+ second post-processing wait)
-- **Instant Save**: Files ready immediately after stopping recording
-- **File Size**: LZF compression more effective than post-processing GZIP (was increasing files 59%)
-
-### Post-LUT Bug Fixes
-- **Black Recording Fix**: Automatic camera settings restoration after LUT acquisition
-- **Buffer Flushing**: Stale frames automatically flushed before recording
-- **Camera Restart**: Clean camera state after LUT completion
-- **Settings Recovery**: Exposure/gain/FPS properly restored (5ms, gain 2, 30 FPS)
-
-### Code Quality
-- **Eliminated Duplication**: Extracted `_flush_camera_buffer()` helper method
-- **Unified Recording Path**: Both LUT and non-LUT recordings use same code path
-- **Removed Redundant Imports**: Moved imports to module level
-- **Better Error Handling**: Graceful fallbacks for camera state issues
-- **Improved Logging**: Clear status messages for debugging
-
-### Performance Metrics
-- Camera: 57.2 FPS max (IDS uEye MONO8)
-- Live Display: 12 FPS (lag-free UI)
-- Recording: 30 FPS (strict enforcement)
-- File Format: HDF5 with LZF compression
-- Typical File Size: ~25 MB/second of recording
+**Processing:**
+- Asynchronous frame handling (ThreadPoolExecutor)
+- 16 worker threads (optimized for i7-14700)
+- OpenCL GPU support for display processing (optional)
+- Automatic camera buffer flushing for clean recordings
 
 ## Keyboard Shortcuts
 
-- `Ctrl + Arrow Keys`: Stage movement (fine)
-- `Ctrl + Shift + Arrow`: Stage movement (coarse)  
-- `Ctrl + Space`: Start/stop recording
-- `F11`: Toggle fullscreen
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl + Arrow Keys` | Fine stage movement |
+| `Ctrl + Shift + Arrow` | Coarse stage movement |
+| `Ctrl + Space` | Start/stop recording |
+| `F11` | Toggle fullscreen |
 
 ---
 
-**Version 3.0.0** | Python 3.8+ | Scientific HDF5 Data Standard
+**Version 3.0.0** | Scientific Data Acquisition System
 
 
