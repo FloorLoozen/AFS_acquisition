@@ -122,7 +122,7 @@ class StateRecovery:
             logger.info("Recovery state cleared")
     
     def _write_to_file(self):
-        \"\"\"Write current state to file atomically.\"\"\"
+        """Write current state to file atomically."""
         try:
             # Write to temp file first, then rename (atomic operation)
             base, _ = os.path.splitext(self.state_file)
