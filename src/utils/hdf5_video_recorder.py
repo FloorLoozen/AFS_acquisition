@@ -34,7 +34,7 @@ import gc
 
 from src.utils.logger import get_logger
 from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
-from src.utils.constants import RecordingConstants, GPUConstants
+from src.utils import constants as C
 from src.utils.performance_monitor import get_performance_monitor, profile_performance, track_memory
 from src.utils.data_integrity import AuditTrail, add_integrity_metadata, compute_dataset_checksum
 from src.utils.state_recovery import StateRecovery
@@ -45,7 +45,7 @@ _performance_monitor = get_performance_monitor()
 # GPU Acceleration Configuration
 # Supports both AMD (via OpenCL) and NVIDIA GPUs (via OpenCL or CUDA)
 _GPU_AVAILABLE = False
-_USE_GPU = False
+_USE_GPU = False  # Do not enable GPU by default; allow caller to opt-in via HDF5VideoRecorder(use_gpu=True)
 try:
     import cv2
     # Try OpenCL first (works with AMD and NVIDIA GPUs)
@@ -53,8 +53,9 @@ try:
         cv2.ocl.setUseOpenCL(True)
         if cv2.ocl.useOpenCL():
             _GPU_AVAILABLE = True
-            _USE_GPU = True
-            logger.info("GPU acceleration available: OpenCL enabled (AMD/NVIDIA GPU)")
+            # NOTE: although OpenCL is available, we do not enable GPU acceleration automatically
+            # because GPU transfers can add latency. Users may opt-in by passing use_gpu=True
+            logger.info("OpenCL available: GPU acceleration is available but disabled by default")
         else:
             logger.info("OpenCL detected but failed to enable - using CPU")
     else:
@@ -131,7 +132,8 @@ class HDF5VideoRecorder:
     """
     
     def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
-                 fps: float = 20.0, min_fps: float = 20.0, compression_level: int = 1, downscale_factor: int = 1) -> None:
+                 fps: float = 20.0, min_fps: float = 20.0, compression_level: int = 1, downscale_factor: int = 1,
+                 use_gpu: Optional[bool] = None) -> None:
         """
         Initialize the HDF5 video recorder with configurable compression.
         
@@ -157,7 +159,7 @@ class HDF5VideoRecorder:
             logger.warning(f"min_fps ({self.min_fps}) > fps ({self.fps}), adjusting fps to match min_fps")
             self.fps = self.min_fps
         
-        file_path_obj = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
+        self.file_path = validate_file_path(file_path, must_exist=False, create_parent=True, field_name="file_path")
         
         # Compression settings - OPTIMIZED FOR FILE SIZE
         # Level 0: No compression (fast but large files)
@@ -185,8 +187,6 @@ class HDF5VideoRecorder:
             self.frame_shape = (h // self.downscale_factor, w // self.downscale_factor, c)
         else:
             self.frame_shape = self.original_frame_shape
-        
-        self.file_path = file_path_obj  # Keep as Path object for .parent access
         
         # Recording state with proper type annotations
         self.h5_file: Optional[h5py.File] = None
@@ -228,10 +228,10 @@ class HDF5VideoRecorder:
         self.execution_data_group = None
         
         # High-performance asynchronous writing - bounded buffer for constant FPS
-        self._write_queue = queue.Queue(maxsize=RecordingConstants.MAX_WRITE_QUEUE_SIZE)
+        self._write_queue = queue.Queue(maxsize=C.MAX_WRITE_QUEUE_SIZE)
         self._write_thread = None
         # Processing queue for offloading downscaling from the GUI thread
-        self._process_queue = queue.Queue(maxsize=RecordingConstants.MAX_PROCESS_QUEUE_SIZE)
+        self._process_queue = queue.Queue(maxsize=C.MAX_PROCESS_QUEUE_SIZE)
         self._process_thread = None
         self._stop_writing = threading.Event()
         self._write_lock = threading.RLock()  # Reentrant lock for thread safety
@@ -239,8 +239,8 @@ class HDF5VideoRecorder:
         # Optimized frame batching for constant performance
         self._frame_batch = []
         self._batch_indices = []
-        self._batch_size = RecordingConstants.BATCH_SIZE
-        self._max_sub_batch = RecordingConstants.MAX_SUB_BATCH
+        self._batch_size = C.BATCH_SIZE
+        self._max_sub_batch = C.MAX_SUB_BATCH
         self._batch_lock = threading.Lock()
         
         # Performance counters
@@ -257,7 +257,7 @@ class HDF5VideoRecorder:
         
         # GPU acceleration: Pre-allocated buffers for batch processing
         self._gpu_buffer_pool = []  # Pool of reusable GPU buffers (UMat objects)
-        self._gpu_buffer_size = GPUConstants.GPU_BUFFER_POOL_SIZE
+        self._gpu_buffer_size = C.GPU_BUFFER_POOL_SIZE
         self._gpu_buffer_lock = threading.Lock()
         self._gpu_buffers_initialized = False
         
@@ -267,12 +267,20 @@ class HDF5VideoRecorder:
         
         # Performance monitoring integration
         self._session_start_time = None
+
+        # Instance-level GPU preference: allow caller to force CPU even if OpenCL is available
+        # If use_gpu is None, follow module-level detection performed at import time (_USE_GPU)
+        if use_gpu is None:
+            self._use_gpu = bool(_USE_GPU)
+        else:
+            # Explicit override
+            self._use_gpu = bool(use_gpu)
         
         # Data integrity - audit trail (memory only, saved to HDF5)
         self.audit_trail = AuditTrail()
         
         # State recovery
-        state_file = self.file_path.parent / ".recording_state.json"
+        state_file = os.path.join(os.path.dirname(self.file_path), ".recording_state.json")
         self.state_recovery = StateRecovery(state_file)
         
     def _calculate_optimal_chunk_size(self, frame_shape: Tuple[int, int, int]) -> Tuple[int, ...]:
@@ -517,7 +525,7 @@ class HDF5VideoRecorder:
         
         # Audit trail: log recording start
         self.audit_trail.log_event('recording_started', 
-                                   f'Started recording to {self.file_path.name}',
+                                   f'Started recording to {os.path.basename(self.file_path)}',
                                    {'fps': self.fps, 'compression_level': self.compression_level})
         
         # Log camera settings
@@ -527,8 +535,8 @@ class HDF5VideoRecorder:
                                       {'exposure': self.metadata.get('exposure_ms'),
                                        'gain': self.metadata.get('gain')})
         
-        # Initialize GPU resources if available
-        if _USE_GPU and self.downscale_factor > 1:
+        # Initialize GPU resources if available and requested
+        if self._use_gpu and self.downscale_factor > 1:
             self._initialize_gpu_buffers()
             logger.info(f"GPU batch processing enabled: {self._gpu_buffer_size} buffer pool for efficient downscaling")
         
@@ -821,13 +829,19 @@ class HDF5VideoRecorder:
             frame_copy = np.copy(frame) if not frame.flags.owndata else frame
 
             # If process queue is nearly full, drop frame silently to preserve responsiveness
-            if self._process_queue.qsize() >= self._process_queue.maxsize * 0.95:
+            queue_size = self._process_queue.qsize()
+            max_size = self._process_queue.maxsize
+            if queue_size >= max_size * 0.95:
+                # Log queue full issue for debugging
+                if queue_size >= max_size - 1:
+                    logger.warning(f"Process queue FULL ({queue_size}/{max_size}) - dropping frames! Downscaling too slow for 60 FPS.")
                 return False
 
             try:
                 self._process_queue.put(frame_copy, timeout=0.01)
                 return True
             except queue.Full:
+                logger.warning(f"Process queue timeout - dropping frame (queue: {queue_size}/{max_size})")
                 return False
         except Exception as e:
             logger.error(f"Failed to enqueue frame for processing: {e}")
@@ -838,8 +852,6 @@ class HDF5VideoRecorder:
         Downscale multiple frames in batch for better GPU efficiency.
         Reduces GPU transfer overhead by ~20-30% compared to individual frame processing.
         """
-        global _USE_GPU
-        
         if not frames:
             return []
         
@@ -855,12 +867,12 @@ class HDF5VideoRecorder:
             downscaled_frames = []
             
             # GPU batch processing (more efficient for multiple frames)
-            if _USE_GPU:
+            if self._use_gpu:
                 try:
                     # Initialize GPU buffers on first use
                     if not self._gpu_buffers_initialized:
                         self._initialize_gpu_buffers()
-                    
+
                     # Process all frames on GPU
                     for frame in frames:
                         is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
@@ -874,14 +886,15 @@ class HDF5VideoRecorder:
                             gpu_frame = cv2.UMat(frame)
                             gpu_resized = cv2.resize(gpu_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
                             downscaled = gpu_resized.get()
-                        
+
                         downscaled_frames.append(downscaled)
-                    
+
                     return downscaled_frames
-                    
+
                 except Exception as gpu_error:
                     logger.warning(f"GPU batch downscaling failed, falling back to CPU: {gpu_error}")
-                    _USE_GPU = False
+                    # Disable GPU for this recorder instance to avoid repeated failures
+                    self._use_gpu = False
                     downscaled_frames.clear()  # Clear partial results
             
             # CPU fallback or no GPU
@@ -904,7 +917,7 @@ class HDF5VideoRecorder:
     
     def _initialize_gpu_buffers(self):
         """Initialize pre-allocated GPU buffers for efficient batch processing."""
-        if not _USE_GPU or self._gpu_buffers_initialized:
+        if not self._use_gpu or self._gpu_buffers_initialized:
             return
         
         try:
@@ -935,63 +948,61 @@ class HDF5VideoRecorder:
             self._gpu_buffers_initialized = False
     
     def _downscale_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Downscale frame using fast area interpolation (GPU-accelerated via OpenCL with buffer pooling)."""
-        global _USE_GPU  # Declare global at the start of the function
-        
+        """Downscale frame using fast area interpolation (prefer CPU unless GPU explicitly enabled).
+
+        The recorder uses an instance-level flag `self._use_gpu`. If a GPU path fails for any reason,
+        the recorder disables GPU for the remainder of the instance to avoid repeated transfer overheads.
+        """
         downscale_start = time.time()
-        
+
         try:
             import cv2
             new_height = self.frame_shape[0]
             new_width = self.frame_shape[1]
-            
+
             # GPU-accelerated path using OpenCL (works with AMD and NVIDIA GPUs)
-            if _USE_GPU:
+            if self._use_gpu:
                 try:
                     # Initialize GPU buffers on first use
                     if not self._gpu_buffers_initialized:
                         self._initialize_gpu_buffers()
-                    
+
                     # Handle grayscale frames (H, W, 1) - squeeze before resize
                     is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
                     if is_grayscale:
                         frame_2d = frame.squeeze()  # (H, W, 1) -> (H, W)
-                        # Use UMat for OpenCL GPU acceleration
-                        # UMat automatically manages GPU memory efficiently
                         gpu_frame = cv2.UMat(frame_2d)
                         gpu_resized = cv2.resize(gpu_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
                         downscaled_2d = gpu_resized.get()  # Download from GPU
                         downscaled = downscaled_2d.reshape((new_height, new_width, 1))  # -> (H, W, 1)
                     else:
-                        # Use UMat for OpenCL GPU acceleration
                         gpu_frame = cv2.UMat(frame)
                         gpu_resized = cv2.resize(gpu_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
                         downscaled = gpu_resized.get()  # Download from GPU
-                    
+
                     # Track GPU performance
                     self._gpu_frames_processed += 1
                     self._total_downscale_time += (time.time() - downscale_start)
-                    
+
                     return downscaled
                 except Exception as gpu_error:
                     # Fall back to CPU if GPU fails
                     logger.warning(f"GPU downscaling failed, falling back to CPU: {gpu_error}")
-                    # Don't try GPU again
-                    _USE_GPU = False
-            
-            # CPU path (fallback or no GPU)
+                    # Disable GPU for this recorder instance to avoid repeated failures
+                    self._use_gpu = False
+
+            # CPU path (fallback or when GPU disabled)
             is_grayscale = len(frame.shape) == 3 and frame.shape[2] == 1
             if is_grayscale:
                 frame_2d = frame.squeeze()  # (H, W, 1) -> (H, W)
                 downscaled_2d = cv2.resize(frame_2d, (new_width, new_height), interpolation=cv2.INTER_AREA)
                 downscaled = downscaled_2d.reshape((new_height, new_width, 1))  # -> (H, W, 1)
             else:
-                # Color frames work normally
                 downscaled = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-            
-            # Track performance (CPU fallback)
+
+            # Track performance (CPU path)
             self._total_downscale_time += (time.time() - downscale_start)
-            
+
             return downscaled
         except Exception as e:
             logger.error(f"Error downscaling frame: {e}")
@@ -1817,13 +1828,14 @@ class HDF5VideoRecorder:
         This keeps expensive downscaling off the GUI thread.
         """
         batch = []
-        batch_timeout = 0.02
+        batch_timeout = 0.002  # 2ms timeout for 60 FPS (was 20ms, too slow)
         last_time = time.time()
         while not self._stop_writing.is_set() or not self._process_queue.empty():
             try:
                 start = time.time()
-                # Collect a small batch for GPU efficiency
-                while len(batch) < self._max_sub_batch and time.time() - start < batch_timeout:
+                # Collect a small batch for efficiency (4 frames max for low latency at 60 FPS)
+                max_batch_frames = 4  # Small batch for low latency (was _max_sub_batch=10)
+                while len(batch) < max_batch_frames and time.time() - start < batch_timeout:
                     try:
                         frame = self._process_queue.get(timeout=0.005)
                         if frame is None:
@@ -1971,11 +1983,15 @@ class HDF5VideoRecorder:
                     # Write sub-batch
                     for frame, index in zip(sub_frames, sub_indices):
                         try:
-                            # For grayscale frames (H,W,1), squeeze to (H,W) for dataset shape (time,H,W)
-                            if frame.ndim == 3 and frame.shape[2] == 1:
-                                frame_to_write = frame.squeeze(axis=2)
-                            else:
-                                frame_to_write = frame
+                            # ALWAYS ensure proper shape for grayscale dataset (time, H, W)
+                            # Squeeze any trailing singleton dimensions
+                            frame_to_write = np.squeeze(frame) if frame.ndim >= 3 else frame
+                            
+                            # Verify shape matches dataset expectations
+                            if self.video_dataset and frame_to_write.ndim != len(self.video_dataset.shape) - 1:
+                                logger.error(f"Frame shape mismatch: frame {frame_to_write.shape} vs dataset expects {len(self.video_dataset.shape)-1}D")
+                                continue
+                            
                             self.video_dataset[index] = frame_to_write
                             with self._write_lock:
                                 self._frames_written += 1
@@ -2028,9 +2044,8 @@ class HDF5VideoRecorder:
         # Grow by at least the growth factor, but ensure we have enough space
         new_size = max(int(current_size * self.growth_factor), required_size)
         
-        
-        # Resize dataset
-        new_shape = (new_size, *self.frame_shape)
+        # Resize dataset - use existing dataset dimensions (without adding channel for grayscale)
+        new_shape = (new_size,) + self.video_dataset.shape[1:]
         self.video_dataset.resize(new_shape)
     
 
@@ -2041,17 +2056,16 @@ class HDF5VideoRecorder:
             current_size = self.video_dataset.shape[0]
             new_size = int(current_size * self.growth_factor)
             
-            
             # Check disk space before growing
-            estimated_growth_mb = (new_size - current_size) * np.prod(self.frame_shape) / (1024**2)
+            estimated_growth_mb = (new_size - current_size) * np.prod(self.video_dataset.shape[1:]) / (1024**2)
             
             if not self._check_disk_space(estimated_growth_mb / 1024 + 0.5):  # Add 0.5GB buffer
                 logger.error("Insufficient disk space to grow dataset")
                 self.stop_recording()
                 return
             
-            # Resize dataset
-            new_shape = (new_size, *self.frame_shape)
+            # Resize dataset - use existing dataset dimensions (without adding channel for grayscale)
+            new_shape = (new_size,) + self.video_dataset.shape[1:]
             self.video_dataset.resize(new_shape)
             
             logger.info(f"Dataset grown to {new_size} frames capacity")
@@ -2350,7 +2364,7 @@ class HDF5VideoRecorder:
                         })
                         
                         # GPU performance statistics
-                        if _USE_GPU and self._gpu_frames_processed > 0:
+                        if self._use_gpu and self._gpu_frames_processed > 0:
                             avg_downscale_time_ms = (self._total_downscale_time / self._gpu_frames_processed) * 1000
                             attrs['gpu_acceleration'] = 'OpenCL'
                             attrs['gpu_frames_processed'] = self._gpu_frames_processed
@@ -2611,7 +2625,7 @@ def load_hdf5_frame_range(file_path: str, start_frame: int, end_frame: int) -> O
 
 def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True, 
                                 parallel: bool = True, progress_callback=None,
-                                in_place: bool = True) -> Optional[Dict[str, Any]]:
+                                in_place: bool = True, use_gpu: bool = True) -> Optional[Dict[str, Any]]:
     """
     Apply aggressive post-processing compression to HDF5 video file.
     This is done AFTER recording completes to maximize compression.
@@ -2619,6 +2633,7 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
     Strategy:
     - IN-PLACE MODE (default): Compresses dataset within same file, uses minimal extra space
     - TEMP FILE MODE: Creates temporary file, safer but needs 2x disk space
+    - GPU ACCELERATION: Uses OpenCL for faster quality reduction (if available)
     
     Args:
         file_path: Path to the HDF5 file to compress
@@ -2626,6 +2641,7 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
         parallel: If True, use parallel processing (highly recommended)
         progress_callback: Optional callable(current, total, status_text) for progress updates
         in_place: If True, compress in same file (saves space). If False, use temp file (safer)
+        use_gpu: If True, use GPU acceleration for compression (faster)
         
     Returns:
         Dictionary with compression statistics:
@@ -2638,27 +2654,38 @@ def post_process_compress_hdf5(file_path: str, quality_reduction: bool = True,
         }
         or None if error occurred
     """
-    logger.info(f"Starting post-processing compression: {file_path} (in_place={in_place})")
+    logger.info(f"Starting post-processing compression: {file_path} (in_place={in_place}, gpu={use_gpu and _GPU_AVAILABLE})")
     start_time = time.time()
     
-    # Track compression performance
-    from .performance_monitor import get_performance_monitor
-    _perf_monitor = get_performance_monitor()
+    # Enable GPU for compression if requested and available
+    global _USE_GPU
+    old_use_gpu = _USE_GPU
+    if use_gpu and _GPU_AVAILABLE:
+        _USE_GPU = True
+        logger.info("GPU acceleration ENABLED for compression")
     
-    # Choose compression method based on mode
-    if in_place:
-        result = _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
-    else:
-        result = _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
-    
-    # Record compression metrics
-    if result:
-        compression_time = result.get('duration_sec', time.time() - start_time)
-        original_mb = result.get('original_mb', 0)
-        compressed_mb = result.get('compressed_mb', 0)
-        _perf_monitor.record_compression(compression_time, original_mb, compressed_mb)
-    
-    return result
+    try:
+        # Track compression performance
+        from .performance_monitor import get_performance_monitor
+        _perf_monitor = get_performance_monitor()
+        
+        # Choose compression method based on mode
+        if in_place:
+            result = _compress_in_place(file_path, quality_reduction, parallel, progress_callback, start_time)
+        else:
+            result = _compress_with_temp_file(file_path, quality_reduction, parallel, progress_callback, start_time)
+        
+        # Record compression metrics
+        if result:
+            compression_time = result.get('duration_sec', time.time() - start_time)
+            original_mb = result.get('original_mb', 0)
+            compressed_mb = result.get('compressed_mb', 0)
+            _perf_monitor.record_compression(compression_time, original_mb, compressed_mb)
+        
+        return result
+    finally:
+        # Restore original GPU setting
+        _USE_GPU = old_use_gpu
 
 
 def _create_compressed_dataset(target_group: h5py.Group, dataset_name: str, 
@@ -2804,9 +2831,23 @@ def _compress_in_place(file_path: str, quality_reduction: bool, parallel: bool,
                 end_idx = min(i + batch_size, n_frames)
                 batch = video_dataset[i:end_idx]
                 
-                # Apply quality reduction if requested
+                # Apply quality reduction if requested - USE GPU if available
                 if quality_reduction:
-                    batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)
+                    if _GPU_AVAILABLE and _USE_GPU:
+                        # GPU-accelerated quality reduction using OpenCL
+                        try:
+                            # Upload to GPU
+                            gpu_batch = cv2.UMat(batch)
+                            # Scale: multiply by 204/256 = 0.796875 (slight quality reduction)
+                            gpu_scaled = cv2.multiply(gpu_batch, 0.796875)
+                            # Download from GPU
+                            batch = gpu_scaled.get().astype(np.uint8)
+                        except Exception:
+                            # Fallback to CPU
+                            batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)
+                    else:
+                        # CPU fallback
+                        batch = ((batch.astype(np.uint16) * 204) >> 8).astype(np.uint8)
                 
                 all_frames.append(batch)
                 
@@ -2962,11 +3003,20 @@ def _compress_with_temp_file(file_path: str, quality_reduction: bool, parallel: 
                                 end_idx = min(start_idx + batch_size, n_frames)
                                 batch_frames = video_in[start_idx:end_idx]
                                 
-                                # Apply quality reduction if requested (FASTER: skip float conversion)
+                                # Apply quality reduction if requested - USE GPU if available
                                 if quality_reduction:
-                                    # AGGRESSIVE quality reduction: 80% for maximum compression
-                                    # Still preserves enough detail for bead tracking
-                                    batch_frames = ((batch_frames.astype(np.uint16) * 204) >> 8).astype(np.uint8)  # ~80%
+                                    if _GPU_AVAILABLE and _USE_GPU:
+                                        # GPU-accelerated quality reduction using OpenCL
+                                        try:
+                                            gpu_batch = cv2.UMat(batch_frames)
+                                            gpu_scaled = cv2.multiply(gpu_batch, 0.796875)
+                                            batch_frames = gpu_scaled.get().astype(np.uint8)
+                                        except Exception:
+                                            # Fallback to CPU
+                                            batch_frames = ((batch_frames.astype(np.uint16) * 204) >> 8).astype(np.uint8)
+                                    else:
+                                        # CPU: ~80% quality for maximum compression
+                                        batch_frames = ((batch_frames.astype(np.uint16) * 204) >> 8).astype(np.uint8)
                                 
                                 return start_idx, end_idx, batch_frames
                             

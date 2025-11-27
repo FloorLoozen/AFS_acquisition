@@ -82,7 +82,7 @@ class MeasurementSettingsWidget(QGroupBox):
         layout.addSpacing(12)  # Separator
         
         self._add_text_row(layout, "Sample:", "sample", "")
-        self._add_dropdown_row(layout, "Magnification:", "magnification", ["10x", "40x"])
+        self._add_dropdown_row(layout, "Magnification:", "magnification", ["40x", "20x", "10x"])
         self._add_text_row(layout, "Flowcell ID:", "flowcell_id", "")
         self._add_text_row(layout, "Notes:", "notes", "")
         

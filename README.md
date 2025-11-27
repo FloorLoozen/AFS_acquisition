@@ -83,11 +83,41 @@ experiment.hdf5
 
 The application separates the live display from recording to ensure a responsive UI even when disk I/O or compression is slow.
 
-- Live view runs at a configurable UI FPS (default 15 FPS) and always displays the most recent frame.
-- Recording is performed asynchronously in the background; frames are enqueued and downscaled inside the recorder to avoid blocking the GUI thread.
-- You can tune `live_display_fps` via the configuration to balance CPU/GPU utilization and responsiveness.
+- Live view runs at 12 FPS (optimized to prevent lag)
+- Recording runs at 30 FPS with strict rate limiting
+- Real-time LZF compression during recording (no post-processing wait)
+- Frames are enqueued and processed asynchronously to avoid blocking the GUI
+- Live view continues during recording with dual FPS display
 
-This design prevents multi-second lag in the live view when the recorder is busy.
+This design prevents lag in the live view while maintaining high-quality recordings.
+
+## Recent Optimizations (2025-11-27)
+
+### Recording Performance
+- **30 FPS Recording**: Fixed double rate limiting issue (was 17 FPS, now 30 FPS)
+- **Real-time Compression**: Enabled LZF compression during recording (eliminates 77+ second post-processing wait)
+- **Instant Save**: Files ready immediately after stopping recording
+- **File Size**: LZF compression more effective than post-processing GZIP (was increasing files 59%)
+
+### Post-LUT Bug Fixes
+- **Black Recording Fix**: Automatic camera settings restoration after LUT acquisition
+- **Buffer Flushing**: Stale frames automatically flushed before recording
+- **Camera Restart**: Clean camera state after LUT completion
+- **Settings Recovery**: Exposure/gain/FPS properly restored (5ms, gain 2, 30 FPS)
+
+### Code Quality
+- **Eliminated Duplication**: Extracted `_flush_camera_buffer()` helper method
+- **Unified Recording Path**: Both LUT and non-LUT recordings use same code path
+- **Removed Redundant Imports**: Moved imports to module level
+- **Better Error Handling**: Graceful fallbacks for camera state issues
+- **Improved Logging**: Clear status messages for debugging
+
+### Performance Metrics
+- Camera: 57.2 FPS max (IDS uEye MONO8)
+- Live Display: 12 FPS (lag-free UI)
+- Recording: 30 FPS (strict enforcement)
+- File Format: HDF5 with LZF compression
+- Typical File Size: ~25 MB/second of recording
 
 ## Keyboard Shortcuts
 

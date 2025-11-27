@@ -448,7 +448,15 @@ class CameraController:
             
             # Optimize camera settings for maximum frame rate
             try:
-                # Set pixel clock to maximum for best performance
+                # 1. Set MINIMUM exposure for maximum FPS (3ms allows ~333 FPS theoretical)
+                min_exposure = ueye.DOUBLE(3.0)  # 3ms minimum exposure
+                ret = ueye.is_Exposure(self.h_cam, ueye.IS_EXPOSURE_CMD_SET_EXPOSURE, min_exposure, 8)
+                if ret == ueye.IS_SUCCESS:
+                    logger.info(f"Exposure set to minimum: {min_exposure.value:.2f} ms for maximum FPS")
+                else:
+                    logger.warning(f"Failed to set minimum exposure: {ret}")
+                
+                # 2. Set pixel clock to maximum for best performance
                 pixel_clock_range = (ueye.c_uint * 3)()
                 ret = ueye.is_PixelClock(self.h_cam, ueye.IS_PIXELCLOCK_CMD_GET_RANGE, pixel_clock_range, 12)
                 if ret == ueye.IS_SUCCESS:
@@ -457,18 +465,20 @@ class CameraController:
                     if ret == ueye.IS_SUCCESS:
                         logger.info(f"Pixel clock set to maximum: {max_pixel_clock.value} MHz")
                 
-                # Get and log the achievable frame rate
+                # 3. Get current achievable frame rate after exposure/pixel clock changes
                 fps_ptr = ueye.DOUBLE()
                 ret = ueye.is_SetFrameRate(self.h_cam, ueye.IS_GET_FRAMERATE, fps_ptr)
                 if ret == ueye.IS_SUCCESS:
-                    logger.info(f"Camera maximum FPS: {fps_ptr.value:.1f} FPS")
+                    logger.info(f"Camera achievable FPS (after optimization): {fps_ptr.value:.1f} FPS")
                 
-                # Try to set to maximum (usually auto after pixel clock set)
-                target_fps = ueye.DOUBLE(200.0)  # Request very high FPS, camera will cap to max
+                # 4. Request 60 FPS target (or maximum if less)
+                target_fps = ueye.DOUBLE(60.0)  # Target 60 FPS for smooth recording
                 actual_fps = ueye.DOUBLE()
                 ret = ueye.is_SetFrameRate(self.h_cam, target_fps, actual_fps)
                 if ret == ueye.IS_SUCCESS:
-                    logger.info(f"Camera configured for: {actual_fps.value:.1f} FPS")
+                    logger.info(f"Camera configured for: {actual_fps.value:.1f} FPS (requested {target_fps.value:.0f})")
+                else:
+                    logger.warning(f"Failed to set frame rate: {ret}")
             except Exception as e:
                 logger.warning(f"Frame rate optimization error: {e}")
             
@@ -489,8 +499,13 @@ class CameraController:
                 self._cleanup_hardware()
                 return False
             
-            # Use FreezeVideo mode for fresh frames with minimal lag
-            # Camera captures on-demand which gives us the newest frame always
+            # CRITICAL: Enable CONTINUOUS CAPTURE MODE for high FPS (was using slow FreezeVideo)
+            # CaptureVideo with IS_DONT_WAIT enables free-running capture at full camera speed
+            ret = ueye.is_CaptureVideo(self.h_cam, ueye.IS_DONT_WAIT)
+            if ret == ueye.IS_SUCCESS:
+                logger.info("Enabled continuous capture mode (CaptureVideo) for maximum FPS - camera now free-running!")
+            else:
+                logger.warning(f"Failed to enable continuous capture: {ret}, will use slower single-frame mode")
             
             # Initialize frame pool with actual camera dimensions (grayscale)
             if self.frame_pool is None:
@@ -719,23 +734,29 @@ class CameraController:
             return None
         
         try:
-            # FreezeVideo with IS_WAIT: Blocks until a NEW frame is captured
-            # This ensures we always get fresh frames, no old buffered data
-            ret = ueye.is_FreezeVideo(self.h_cam, ueye.IS_WAIT)
-            if ret != ueye.IS_SUCCESS:
-                return None
+            # In CaptureVideo mode, just copy the current buffer (camera continuously updates it)
+            # This is MUCH faster than FreezeVideo which waits for each frame
+            # IMPORTANT: Add tiny delay to ensure buffer is updated (camera needs ~17ms at 57 FPS)
+            import time
+            time.sleep(0.001)  # 1ms safety margin for buffer update
             
             height = int(self.height)
             width = int(self.width)
             
             array = ueye.get_data(
                 self.mem_ptr, width, height,
-                8, width, copy=True  # 8 bits per pixel
+                8, width, copy=True  # 8 bits per pixel, MUST copy since buffer updates continuously
             )
             
             frame = np.frombuffer(array, dtype=np.uint8)
             # Grayscale: (height, width) -> (height, width, 1) for consistency
-            return frame.reshape((height, width, 1))
+            frame_reshaped = frame.reshape((height, width, 1))
+            
+            # Validate frame is not all black (camera issue detection)
+            if frame_reshaped.max() == 0:
+                logger.warning("Camera returned all-black frame - check lens cap or exposure settings")
+            
+            return frame_reshaped
             
         except Exception as e:
             return None

@@ -1,1 +1,3 @@
-"""AFS Acquisition - Source module."""
+"""AFS Acquisition - Source package."""
+
+__version__ = "3.0.0"

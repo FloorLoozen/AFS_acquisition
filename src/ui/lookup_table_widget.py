@@ -651,12 +651,35 @@ class LookupTableWidget(QDialog):
         pass  # Minimal mode - no logging
         
     def _on_finished(self, success: bool, message: str):
-        """Handle acquisition finished."""
-        # Resume live view after acquisition
+        """Handle LUT acquisition completion."""
         if hasattr(self, 'camera_widget') and self.camera_widget:
+            # Resume live view (restores camera settings and flushes buffers)
             if hasattr(self.camera_widget, 'resume_live'):
                 self.camera_widget.resume_live()
                 logger.info("Resuming live view after LUT acquisition")
+            
+            # Restart camera capture to ensure clean state (only if not recording)
+            try:
+                camera = getattr(self.camera_widget, 'camera', None)
+                is_recording = getattr(self.camera_widget, 'is_recording', False)
+                
+                if camera and not is_recording:
+                    logger.info("Restarting camera capture after LUT to ensure clean state")
+                    
+                    if hasattr(camera, 'stop_capture'):
+                        camera.stop_capture()
+                    
+                    import time
+                    time.sleep(0.2)
+                    
+                    if hasattr(camera, 'start_capture'):
+                        camera.start_capture()
+                    
+                    logger.info("Camera capture restarted successfully after LUT")
+                elif is_recording:
+                    logger.info("Skipping camera restart - recording in progress")
+            except Exception as e:
+                logger.warning(f"Failed to restart camera capture after LUT: {e}")
         
         self.is_acquiring = False
         self.start_btn.setEnabled(True)

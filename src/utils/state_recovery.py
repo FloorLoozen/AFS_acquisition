@@ -4,6 +4,7 @@ Automatically saves application state and allows recovery after crashes.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -36,7 +37,7 @@ class StateRecovery:
     def _load_state(self):
         """Load state from file."""
         try:
-            if self.state_file.exists():
+            if os.path.exists(self.state_file):
                 with open(self.state_file, 'r') as f:
                     self._state = json.load(f)
                 
@@ -121,16 +122,16 @@ class StateRecovery:
             logger.info("Recovery state cleared")
     
     def _write_to_file(self):
-        """Write current state to file."""
+        \"\"\"Write current state to file atomically.\"\"\"
         try:
-            # Write to temp file first, then rename (atomic)
-            temp_file = self.state_file.with_suffix('.tmp')
+            # Write to temp file first, then rename (atomic operation)
+            base, _ = os.path.splitext(self.state_file)
+            temp_file = base + '.tmp'
             
             with open(temp_file, 'w') as f:
                 json.dump(self._state, f, indent=2)
             
-            temp_file.replace(self.state_file)
-        
+            os.replace(temp_file, self.state_file)
         except Exception as e:
             logger.error(f"Failed to write recovery state: {e}")
     

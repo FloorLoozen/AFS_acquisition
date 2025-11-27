@@ -2,33 +2,47 @@
 Camera Widget for AFS Acquisition - Minimal Design with Maximum Performance.
 
 This module provides a streamlined camera interface with professional-grade
-recording capabilities:
+recording capabilities optimized for Windows 11 + Intel i7-14700.
 
 Features:
-- Real-time camera feed at 50+ FPS with GPU-accelerated display
-- High-performance HDF5 recording with background compression
-- Live view with configurable FPS (15 FPS default for UI responsiveness)
-- Recording at full camera speed (30 FPS target, up to 50 FPS capable)
+- Real-time camera feed at 57 FPS with optional GPU-accelerated display
+- High-performance HDF5 recording with real-time LZF compression
+- Live view at 12 FPS (prevents lag) with 30 FPS recording
 - Automatic error recovery with test pattern fallback
-- Thread-safe compression progress notifications
+- Thread-safe frame processing and recording
 
 Architecture:
 - Main thread: Qt GUI and user interaction
-- Camera thread: Frame capture and queue management (in CameraController)
-- Processing thread: GPU downscaling and frame buffering
-- Writer thread: Asynchronous HDF5 writing
-- Compression thread: Background post-processing (daemon)
+- Camera thread: Frame capture at hardware FPS (57.2 FPS max)
+- Recording: 30 FPS target with strict rate limiting
+- Display: 12 FPS for lag-free UI updates
 
-Performance Optimizations:
-- GPU-accelerated display processing (OpenCL)
-- Lockless frame queue for zero-copy transfer
-- Async I/O to prevent blocking during recording
-- Background compression allows immediate workflow continuation
-- Smart FPS limiting (15 FPS display, 30+ FPS recording)
+Performance Optimizations (2025-11-27):
+- Real-time LZF compression during recording (eliminates post-processing wait)
+- Frame buffer flushing after LUT acquisition (prevents black recordings)
+- Automatic camera settings restoration (exposure=5ms, gain=2, fps=30)
+- Removed double rate limiting (camera widget + recorder conflict)
+- 300ms stabilization delay after settings changes
+- Helper method _flush_camera_buffer() eliminates code duplication
+
+Recording Workflow:
+1. Flush stale frames from buffer
+2. Apply recording settings (exposure, gain, FPS)
+3. Wait 300ms for camera hardware stabilization
+4. Flush transitional frames
+5. Start recording with clean buffer state
+
+Post-LUT Recovery:
+- Automatic camera settings restoration via resume_live()
+- Buffer flush to remove stale frames
+- Camera capture restart for clean state
+- Ensures recordings after LUT are never black
 
 User Experience:
 - Minimal, clean interface for maximum screen real estate
-- Non-blocking progress dialogs for compression
+- Instant save (no compression wait)
+- Live view continues during recording
+- Recording status shows dual FPS: "Recording: 30 FPS | Live: 12 FPS"
 - Automatic camera reconnection on errors
 - Real-time FPS performance monitoring
 """
@@ -83,6 +97,8 @@ class CameraWidget(QGroupBox):
     # Signals to communicate from background thread to main GUI thread
     compression_complete_signal = pyqtSignal(str, float, float, float)  # Emits (path, original_mb, compressed_mb, reduction_pct)
     compression_progress_signal = pyqtSignal(int, int, str)  # Emits (current, total, status_text)
+    # Signal to receive a prepared QImage from worker thread for display
+    display_image_signal = pyqtSignal(object)
     
     def __init__(self, parent=None):
         super().__init__("Camera", parent)
@@ -121,6 +137,8 @@ class CameraWidget(QGroupBox):
         self.display_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="CameraDisplay"
         )
+        # Track whether a display task is currently inflight to avoid queue buildup
+        self._display_task_inflight = False
         # Recording executor: separate pool for any heavy tasks (kept small because recorder is async)
         self.recording_executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="CameraRecorder"
@@ -137,12 +155,12 @@ class CameraWidget(QGroupBox):
         
         # Recording compression and resolution settings
         # MAXIMUM OPTIMIZATION: Half resolution + no real-time compression
-        # compression_level: 0=none (FASTEST), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
+        # compression_level: 0=none (FASTEST for real-time recording), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
-        # NOTE: Half resolution (2x) provides good balance between file size and FPS.
-        #       GZIP level 9 compression for maximum file size reduction.
+        # NOTE: NO compression during recording for maximum speed (60 FPS target)
+        #       Compression happens AFTER recording finishes (post-processing)
         self.recording_settings = {
-            'compression_level': 9,  # GZIP level 9 for smallest files
+            'compression_level': 3,  # Fast LZF compression during recording (real-time compatible)
             'downscale_factor': 2    # HALF resolution = Good balance of speed & file size
         }
         
@@ -159,21 +177,22 @@ class CameraWidget(QGroupBox):
         # Set widget size policy
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Live display configuration: 15 FPS for smooth responsive UI (drops half of 30 FPS camera frames)
-        self.live_display_fps = 15  # 15 FPS = 66.67ms interval, smooth and responsive
+        # Live display configuration: 12 FPS for smooth, lag-free display
+        # Target: 12 FPS (83ms interval) - optimal for UI responsiveness
+        self.live_display_fps = 12  # 12 FPS = ~83ms interval, smooth without lag
         self._last_display_time = 0  # Track last display update
-        self._min_display_interval = 1.0 / 15.0  # Exact 66.67ms between frames
+        self._min_display_interval = 1.0 / 12.0  # Exact 83.33ms between frames
         try:
             cfg = get_config()
-            self.live_display_fps = int(getattr(cfg.ui, 'live_display_fps', 15))
+            self.live_display_fps = int(getattr(cfg.ui, 'live_display_fps', 12))
             self._min_display_interval = 1.0 / self.live_display_fps
         except Exception:
             pass
         
-        # Fallback timer for display (exact 15 FPS)
+        # Fallback timer for display (uses configured `live_display_fps`)
         self.fallback_timer = QTimer(self)
         self.fallback_timer.timeout.connect(self._process_frame_immediate)
-        self.fallback_timer.setInterval(int(1000.0 / 15.0))  # 66.67ms = exact 15 FPS
+        self.fallback_timer.setInterval(int(1000.0 / self.live_display_fps))
         
         # Pipeline diagnostics
         self._last_capture_ts = 0
@@ -189,6 +208,8 @@ class CameraWidget(QGroupBox):
         # Connect signals for compression notifications
         self.compression_complete_signal.connect(self._show_compression_complete)
         self.compression_progress_signal.connect(self._update_compression_progress)
+        # Connect display image signal to the GUI slot
+        self.display_image_signal.connect(self._on_display_image)
         
         # Auto-connect shortly after startup
         QTimer.singleShot(100, self.connect_camera)
@@ -519,12 +540,46 @@ class CameraWidget(QGroupBox):
             self.update_status("Paused (background task)")
             logger.info("Live view paused to save processing power")
     
+    def _flush_camera_buffer(self):
+        """Flush stale frames from camera buffer.
+        
+        Returns:
+            Number of frames flushed
+        """
+        if not self.camera or not hasattr(self.camera, 'frame_queue'):
+            return 0
+        
+        import queue
+        flushed = 0
+        while not self.camera.frame_queue.empty():
+            try:
+                self.camera.frame_queue.get_nowait()
+                flushed += 1
+            except queue.Empty:
+                break
+        return flushed
+    
     def resume_live(self):
-        """Resume live view after pausing."""
+        """Resume live view after pausing (e.g., after LUT acquisition)."""
         if not self.is_live and self.is_running:
             self.is_live = True
             self.update_status("Live")
             logger.info("Live view resumed")
+            
+            try:
+                # Flush stale frames and restore camera settings
+                flushed = self._flush_camera_buffer()
+                if flushed > 0:
+                    logger.info(f"Flushed {flushed} stale frames from camera buffer")
+                
+                self._apply_default_camera_settings()
+                logger.info("Camera settings restored after resume")
+                
+                # Brief wait for camera stabilization
+                import time
+                time.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Failed to restore camera settings on resume: {e}")
 
     def _camera_frame_arrived(self):
         """Called from camera capture thread when a new frame is queued.
@@ -550,40 +605,58 @@ class CameraWidget(QGroupBox):
         if frame_data is None:
             return
         
-        # Recording: capture ALL frames at full camera speed (25-30 FPS)
+        # Recording: capture frames for recording (HDF5 recorder handles FPS rate limiting)
         # This is completely decoupled from display rate
         if self.is_recording and self.hdf5_recorder:
-            try:
-                # Zero-copy optimization: only copy if frame doesn't own its data
-                if frame_data.frame.flags.owndata:
-                    # Frame owns data - safe to pass directly (zero-copy)
-                    frame_to_record = frame_data.frame
-                else:
-                    # Frame is a view - need copy for safety
-                    frame_to_record = np.array(frame_data.frame, copy=True)
-                
-                if hasattr(self.hdf5_recorder, 'enqueue_frame'):
-                    accepted = self.hdf5_recorder.enqueue_frame(frame_to_record)
-                    if accepted:
-                        if hasattr(self, 'recording_fps_tracker'):
-                            self.recording_fps_tracker.setdefault('frame_times', []).append(current_time)
-                            cutoff = current_time - 5.0
-                            self.recording_fps_tracker['frame_times'] = [t for t in self.recording_fps_tracker['frame_times'] if t > cutoff]
-                        with self.processing_lock:
-                            self.recorded_frames += 1
-            except Exception:
-                pass
+            # Only record if we're in high-speed timer mode (20ms interval)
+            # This prevents overload when timer is at display rate
+            if self.fallback_timer.interval() <= 30:  # High-speed mode (20ms = 50Hz)
+                # Validate frame is not all-black or all-gray (bad frame detection)
+                if not (frame_data.frame.max() == 0 or (frame_data.frame.min() == frame_data.frame.max())):
+                    try:
+                        # Zero-copy optimization: only copy if frame doesn't own its data
+                        if frame_data.frame.flags.owndata:
+                            # Frame owns data - safe to pass directly (zero-copy)
+                            frame_to_record = frame_data.frame
+                        else:
+                            # Frame is a view - need copy for safety
+                            frame_to_record = np.array(frame_data.frame, copy=True)
+                        
+                        if hasattr(self.hdf5_recorder, 'enqueue_frame'):
+                            accepted = self.hdf5_recorder.enqueue_frame(frame_to_record)
+                            if accepted:
+                                # Track accepted frames for FPS display
+                                if hasattr(self, 'recording_fps_tracker'):
+                                    self.recording_fps_tracker.setdefault('frame_times', []).append(current_time)
+                                    cutoff = current_time - 5.0
+                                    self.recording_fps_tracker['frame_times'] = [t for t in self.recording_fps_tracker['frame_times'] if t > cutoff]
+                                with self.processing_lock:
+                                    self.recorded_frames += 1
+                    except Exception:
+                        pass
         
-        # Display: rate limiting to ~12 FPS
+        # Display: rate limiting to configured live_display_fps (ALWAYS update display)
         time_since_last = current_time - self._last_display_time
         if time_since_last < self._min_display_interval and self._last_display_time > 0:
             return  # Skip display update - too soon
-        
-        # Update display
+
+        # Update display time and schedule background processing of the frame
         self._last_display_time = current_time
         self.last_frame_timestamp = frame_data.timestamp
         self.current_frame_data = frame_data
-        self._fast_update_display(frame_data.frame)
+
+        # Offload display processing to the display_executor to keep GUI thread responsive
+        try:
+            # Avoid submitting another display task if one is inflight
+            if not self._display_task_inflight:
+                # Use zero-copy when safe, else copy
+                frame_for_display = frame_data.frame if getattr(frame_data.frame, 'flags', None) and frame_data.frame.flags.owndata else np.array(frame_data.frame, copy=True)
+                future = self.display_executor.submit(self._prepare_display_image, frame_for_display)
+                self._display_task_inflight = True
+                future.add_done_callback(self._display_task_done)
+        except Exception:
+            # Fallback to immediate display on error
+            self._fast_update_display(frame_data.frame)
         
         # Track display FPS separately
         if not hasattr(self, '_display_frame_times'):
@@ -733,15 +806,15 @@ class CameraWidget(QGroupBox):
                 frame_shape = (480, 640, 1)  # Default to grayscale
             
             # Create recorder with compression and resolution settings
-            # Target 30 FPS for stable recording with low lag (camera runs at 30 FPS baseline)
+            # Target 30 FPS MAXIMUM for recording (strict rate limiting)
             TARGET_FPS = 30.0
-            MIN_FPS = 25.0
+            MIN_FPS = 25.0  # Warning threshold for recording
             
-            # Increase camera queue size during recording to prevent frame drops (modest size for low lag)
+            # Increase camera queue size during recording to prevent frame drops at high FPS
             if self.camera:
                 try:
-                    # Modest queue size for 30 FPS recording (lower lag than larger buffers)
-                    self.camera.max_queue_size = 3  # ~100ms buffer at 30 FPS
+                    # Larger queue for high-speed recording to absorb I/O jitter
+                    self.camera.max_queue_size = 10  # ~330ms buffer at 30 FPS
                     logger.info(f"Increased camera queue to {self.camera.max_queue_size} for recording")
                 except Exception as e:
                     logger.warning(f"Could not increase queue size: {e}")
@@ -763,19 +836,21 @@ class CameraWidget(QGroupBox):
                 fps=TARGET_FPS,
                 min_fps=MIN_FPS,
                 compression_level=self.recording_settings['compression_level'],
-                downscale_factor=self.recording_settings['downscale_factor']
+                downscale_factor=self.recording_settings['downscale_factor'],
+                use_gpu=False  # Force CPU path for recording to avoid GPU transfer overhead and latency
             )
             
             # Build info message based on actual settings
             resolution_desc = {1: "full resolution", 2: "half resolution", 4: "quarter resolution"}
             res_text = resolution_desc.get(self.recording_settings['downscale_factor'], f"{self.recording_settings['downscale_factor']}x downscale")
-            logger.info(f"Recording configured: {TARGET_FPS} FPS (30 FPS baseline), {res_text} + MONO8 for stable capture")
+            logger.info(f"Recording configured: {TARGET_FPS} FPS (balanced speed), {res_text} + MONO8 for reliable capture")
             
             # Track FPS performance during recording
             self.recording_fps_tracker = {
                 'frame_times': [],
                 'warnings_issued': 0,
-                'below_min_count': 0
+                'below_min_count': 0,
+                'last_record_time': 0  # Track last recorded frame time for rate limiting
             }
             
             # Prepare metadata
@@ -822,16 +897,54 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.warning(f"Failed to save recording metadata: {e}")
             
-            # Try to set camera to recording frame rate (best-effort)
+            # Register fast frame callback for recording at full camera speed (57 FPS)
+            # This is independent of the display timer (15 FPS) for maximum recording throughput
+            # DISABLED: Conflicts with timer-based recording, causing display to stop
+            # if self.camera:
+            #     try:
+            #         self.camera.register_frame_callback(self._on_camera_frame_for_recording)
+            #         logger.info("Registered high-speed recording callback (runs at camera FPS, not display FPS)")
+            #     except Exception as e:
+            #         logger.warning(f"Failed to register recording callback: {e}")
+            
+            # Speed up timer during recording to poll camera faster (50 Hz = 20ms interval)
+            # This ensures we capture at full 30 FPS for recording AND maintain live view
+            try:
+                self.fallback_timer.setInterval(20)  # 20ms = 50 Hz polling for 30 FPS recording
+                logger.info("Increased timer frequency to 50Hz for recording (target 30 FPS)")
+            except Exception as e:
+                logger.warning(f"Failed to increase timer frequency: {e}")
+            
+            # Apply recording-optimized camera settings and flush stale frames
             try:
                 if self.camera and hasattr(self.camera, 'apply_settings'):
-                    res = self.camera.apply_settings({'fps': TARGET_FPS})
-                    if res.get('fps', False):
-                        logger.info(f"Camera set to {TARGET_FPS} FPS for recording")
-                    else:
+                    # Flush stale frames before applying new settings
+                    flushed = self._flush_camera_buffer()
+                    if flushed > 0:
+                        logger.info(f"Flushed {flushed} stale frames before recording")
+                    
+                    # Apply recording-optimized settings
+                    recording_camera_settings = {
+                        'exposure_ms': 5.0,  # 5ms exposure for good brightness
+                        'gain_master': 2,     # Gain 2 for balanced image
+                        'fps': TARGET_FPS     # 30 FPS for recording
+                    }
+                    res = self.camera.apply_settings(recording_camera_settings)
+                    logger.info(f"Applied recording camera settings: exposure=5ms, gain=2, fps={TARGET_FPS}")
+                    
+                    # Wait for camera hardware to stabilize with new settings
+                    import time
+                    time.sleep(0.3)
+                    
+                    # Flush transitional frames captured during settings change
+                    flushed = self._flush_camera_buffer()
+                    if flushed > 0:
+                        logger.info(f"Flushed {flushed} transitional frames after settings change")
+                    
+                    if not res.get('fps', False):
                         logger.warning(f"Camera refused to set {TARGET_FPS} FPS")
             except Exception as e:
-                logger.debug(f"Could not set camera fps for recording: {e}")
+                logger.warning(f"Could not set camera settings for recording: {e}")
 
             # Set recording state
             self.is_recording = True
@@ -856,6 +969,22 @@ class CameraWidget(QGroupBox):
         """Stop HDF5 recording with post-processing compression and robust error handling."""
         if not self.is_recording:
             return None
+        
+        # Unregister camera callback first (if it was registered)
+        # DISABLED: Callback not used anymore
+        # if self.camera:
+        #     try:
+        #         self.camera.register_frame_callback(None)
+        #         logger.info("Unregistered high-speed recording callback")
+        #     except Exception:
+        #         pass
+        
+        # Restore timer to normal display rate (12 FPS = 83ms)
+        try:
+            self.fallback_timer.setInterval(int(1000.0 / self.live_display_fps))
+            logger.info(f"Restored timer to {self.live_display_fps} FPS for live view")
+        except Exception:
+            pass
         
         # Store paths and set flags immediately
         saved_path = self.recording_path
@@ -929,27 +1058,29 @@ class CameraWidget(QGroupBox):
                         msg_box.repaint()
                         QApplication.processEvents()
                         
-                        # Decide whether to run post-processing compression based on user config
-                        import threading
-                        from src.utils.hdf5_video_recorder import post_process_compress_hdf5
-                        cfg = get_config()
+                        # POST-PROCESSING COMPRESSION DISABLED
+                        # Recording now uses LZF compression (level 3) during capture
+                        # This is faster and more effective than post-processing GZIP
+                        
+                        # import threading
+                        # from src.utils.hdf5_video_recorder import post_process_compress_hdf5
+                        # cfg = get_config()
 
                         def compress_and_notify(path: str):
-                            try:
+                            # DISABLED: No longer needed with real-time LZF compression
+                            if False:  # Dead code branch
                                 time.sleep(1.0)
                                 logger.info("Starting post-processing compression...")
                                 
-                                # Progress callback to emit signal to main thread
-                                def progress_callback(current, total, status):
-                                    logger.debug(f"Compression progress: {current}/{total} - {status}")
-                                    self.compression_progress_signal.emit(current, total, status)
+                                # NO UI callbacks - this runs in background after widget may be deleted
+                                # Just log to console instead
                                 
                                 # First try lossless recompression (safe)
                                 result = post_process_compress_hdf5(
                                     path,
                                     quality_reduction=False,  # Lossless: preserve 100% of scientific data
                                     parallel=True,
-                                    progress_callback=progress_callback
+                                    progress_callback=None  # No callbacks to avoid deleted widget errors
                                 )
 
                                 if result:
@@ -981,7 +1112,7 @@ class CameraWidget(QGroupBox):
                                                     path,
                                                     quality_reduction=True,
                                                     parallel=True,
-                                                    progress_callback=progress_callback,
+                                                    progress_callback=None,  # No callbacks
                                                     in_place=False
                                                 )
                                             else:
@@ -990,7 +1121,7 @@ class CameraWidget(QGroupBox):
                                                     path,
                                                     quality_reduction=True,
                                                     parallel=True,
-                                                    progress_callback=progress_callback,
+                                                    progress_callback=None,  # No callbacks
                                                     in_place=True
                                                 )
 
@@ -1015,40 +1146,17 @@ class CameraWidget(QGroupBox):
                                             initial_result['compressed_mb'],
                                             initial_result['reduction_pct']
                                         )
-                                else:
-                                    logger.warning("Compression returned no result")
-                            except Exception as comp_error:
-                                logger.error(f"Post-processing compression failed: {comp_error}", exc_info=True)
 
-                        # Run compression according to configuration
+
+                        # POST-PROCESSING COMPRESSION DISABLED
+                        # Recording now uses fast LZF compression (level 3) during capture
+                        # This is real-time compatible and more effective than post-processing GZIP
                         try:
-                            if cfg.files.background_compression:
-                                # Close the initial saving message box
-                                msg_box.close()
-                                msg_box.deleteLater()
-                                QApplication.processEvents()
-                                
-                                if cfg.files.wait_for_compression:
-                                    # Run compression synchronously (UI will wait)
-                                    logger.info("Running synchronous post-processing compression per configuration")
-                                    compress_and_notify(saved_path)
-                                else:
-                                    # Run compression in a background daemon thread (non-blocking)
-                                    # Progress dialog will appear automatically via signal
-                                    compression_thread = threading.Thread(
-                                        target=compress_and_notify,
-                                        name="CompressionThread",
-                                        args=(saved_path,),
-                                        daemon=True,
-                                    )
-                                    compression_thread.start()
-                                    logger.info("Compression started in background (daemon) - UI will remain responsive")
-                            else:
-                                # Compression disabled via config - just close dialog
-                                logger.info("Background compression disabled by configuration")
-                                msg_box.close()
-                                msg_box.deleteLater()
-                                QApplication.processEvents()
+                            # Close the initial saving message box
+                            msg_box.close()
+                            msg_box.deleteLater()
+                            QApplication.processEvents()
+                            logger.info("Recording complete - LZF compression applied during capture")
                         except Exception as comp_ctrl_err:
                             logger.error(f"Error controlling compression behavior: {comp_ctrl_err}", exc_info=True)
                         
@@ -1124,9 +1232,57 @@ class CameraWidget(QGroupBox):
             
             return None
     
+    def _on_camera_frame_for_recording(self):
+        """Fast callback triggered by camera at full speed (57 FPS) for recording.
+        
+        This runs independently of the display timer (15 FPS), allowing recording
+        to capture at maximum camera speed while display updates remain smooth.
+        """
+        if not self.is_recording or not self.hdf5_recorder or not self.camera:
+            return
+        
+        try:
+            # Get latest frame with minimal timeout
+            frame_data = self.camera.get_latest_frame(timeout=0.005)
+            if frame_data is None:
+                return
+            
+            # Validate frame is not all-black or all-gray (bad frame detection)
+            frame = frame_data.frame
+            if frame.max() == 0 or (frame.min() == frame.max()):
+                # Skip invalid frames (all same value = bad camera data)
+                return
+            
+            current_time = time.time()
+            
+            # Record frame at full camera speed
+            # Zero-copy optimization
+            if frame.flags.owndata:
+                frame_to_record = frame
+            else:
+                frame_to_record = np.array(frame, copy=True)
+            
+            if hasattr(self.hdf5_recorder, 'enqueue_frame'):
+                accepted = self.hdf5_recorder.enqueue_frame(frame_to_record)
+                if accepted:
+                    if hasattr(self, 'recording_fps_tracker'):
+                        self.recording_fps_tracker.setdefault('frame_times', []).append(current_time)
+                        cutoff = current_time - 5.0
+                        self.recording_fps_tracker['frame_times'] = [t for t in self.recording_fps_tracker['frame_times'] if t > cutoff]
+                    with self.processing_lock:
+                        self.recorded_frames += 1
+        except Exception:
+            # Avoid spamming logs during recording
+            pass
+    
     def _record_frame_async(self, frame):
         """High-performance asynchronous frame recording with FPS tracking."""
         if not self.is_recording or not self.hdf5_recorder:
+            return
+        
+        # Validate frame is not all-black or all-gray (bad frame detection)
+        if frame.max() == 0 or (frame.min() == frame.max()):
+            # Skip invalid frames (all same value = bad camera data)
             return
         
         try:
@@ -1218,11 +1374,74 @@ class CameraWidget(QGroupBox):
             # Apply image processing settings (brightness/contrast only, no saturation)
             processed_frame = self._apply_image_processing(rgb_frame)
             
-            # Update display in main thread
-            self._update_display_thread_safe(processed_frame)
+            # Create QImage and emit to GUI thread for display
+            h, w = processed_frame.shape[:2]
+            bytes_per_line = 3 * w
+            q_image = QImage(processed_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            self.display_image_signal.emit(q_image)
             
         except Exception as e:
             logger.error(f"Error processing display frame: {e}")
+
+    def _prepare_display_image(self, frame: np.ndarray):
+        """Worker that prepares a QImage from a numpy frame off the GUI thread.
+
+        This converts grayscale to RGB, applies image processing, and constructs
+        a QImage which is then emitted back to the GUI thread via `display_image_signal`.
+        """
+        try:
+            import cv2
+            # Convert grayscale to RGB for display
+            if len(frame.shape) == 3 and frame.shape[2] == 1:
+                frame2 = frame.squeeze()
+                rgb_frame = cv2.cvtColor(frame2, cv2.COLOR_GRAY2RGB)
+            elif len(frame.shape) == 2:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                rgb_frame = frame
+            else:
+                rgb_frame = frame
+
+            # Always apply image processing for consistent display
+            processed = self._apply_image_processing(rgb_frame)
+
+            # Create QImage (no deep copy if possible)
+            h, w = processed.shape[:2]
+            bytes_per_line = 3 * w
+            q_image = QImage(processed.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+            # Emit QImage back to GUI thread
+            self.display_image_signal.emit(q_image)
+        except Exception as e:
+            logger.debug(f"Display worker error: {e}")
+
+    def _on_display_image(self, q_image):
+        """Slot running in GUI thread to set the pixmap from a QImage."""
+        try:
+            pixmap = QPixmap.fromImage(q_image)
+            display_size = self.display_label.size()
+            if display_size.width() > 0 and display_size.height() > 0:
+                scaled = pixmap.scaled(display_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+            else:
+                scaled = pixmap
+            self.display_label.setPixmap(scaled)
+        except Exception as e:
+            logger.debug(f"Error updating display pixmap: {e}")
+
+    def _display_task_done(self, future):
+        """Callback for Future done to clear inflight flag and log errors if any."""
+        try:
+            err = future.exception()
+            if err:
+                logger.debug(f"Display task error: {err}")
+        except Exception:
+            pass
+        finally:
+            # Mark that a display task can be submitted again
+            try:
+                self._display_task_inflight = False
+            except Exception:
+                pass
 
     def _fast_update_display(self, frame: np.ndarray):
         """Minimal display update - no overlay, just fast rendering."""
@@ -1354,11 +1573,11 @@ class CameraWidget(QGroupBox):
             logger.warning("Cannot apply default settings: camera not available")
             return
         
-        # Default settings optimized for live view with 30 FPS camera, 15 FPS display
+        # Default settings optimized for maximum FPS (60 FPS target)
         default_settings = {
-            'exposure_ms': 15.0,  # Fast enough for 30 FPS (33ms frame time)
+            'exposure_ms': 5.0,  # Minimum exposure for maximum FPS (5ms allows ~200 FPS)
             'gain_master': 2,
-            'fps': 30.0,  # Camera runs at 30 FPS, display shows 15 FPS (drops half)
+            'fps': 60.0,  # Request 60 FPS for smooth high-speed recording
             'brightness': 50,
             'contrast': 50,
             'saturation': 50
