@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QDoubleSpinBox, QSizePolicy,
-    QDialogButtonBox, QFrame, QApplication, QLineEdit, QWidget
+    QDialogButtonBox, QFrame, QApplication, QLineEdit, QWidget, QGroupBox, QSpinBox
 )
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QCloseEvent, QCursor
@@ -42,7 +42,7 @@ class StagesWidget(QDialog):
         # Set dialog properties - with title
         self.setWindowTitle("Stage Control")
         self.setModal(False)  # Non-modal dialog so user can interact with main window
-        self.resize(420, 360)  # Compact clean design
+        self.setMinimumWidth(450)  # Compact clean design
         
         # Auto-connect if possible
         self.connect_stage()
@@ -51,269 +51,197 @@ class StagesWidget(QDialog):
     # --- UI ---
     def _build_ui(self):
         main = QVBoxLayout(self)
-        main.setSpacing(15)
-        main.setContentsMargins(15, 15, 15, 15)
+        main.setSpacing(5)
+        main.setContentsMargins(10, 10, 10, 10)
         
         # Status display at the top
         self.status_display = StatusDisplay()
         main.addWidget(self.status_display)
         
-        # ===== XY AND Z STAGES SIDE BY SIDE WITH GRID =====
-        # Using grid layout for perfect alignment
-        stages_grid = QGridLayout()
-        stages_grid.setHorizontalSpacing(30)
-        stages_grid.setVerticalSpacing(12)
+        # ===== XY AND Z STAGES IN SEPARATE GROUP BOXES =====
+        # Using horizontal layout for side-by-side group boxes
+        stages_layout = QHBoxLayout()
+        stages_layout.setSpacing(10)
         
-        # Column headers
-        xy_title = QLabel("XY Stage")
-        xy_title.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(xy_title, 0, 0)
+        spinbox_width = 85
         
-        z_title = QLabel("Z Stage")
-        z_title.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(z_title, 0, 1)
+        # XY Stage Group
+        xy_group = QGroupBox("XY Stage")
+        xy_grid = QGridLayout()
+        xy_grid.setSpacing(8)
+        xy_grid.setContentsMargins(15, 15, 15, 15)
         
-        # Row 0.5: Underline for titles
-        xy_title_separator = QFrame()
-        xy_title_separator.setFrameShape(QFrame.HLine)
-        xy_title_separator.setFrameShadow(QFrame.Sunken)
-        stages_grid.addWidget(xy_title_separator, 1, 0)
+        # Row 0: X position
+        self.x_pos_label = QLabel("X: 0.000 mm")
+        self.x_pos_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        xy_grid.addWidget(self.x_pos_label, 0, 0, 1, 3)
         
-        z_title_separator = QFrame()
-        z_title_separator.setFrameShape(QFrame.HLine)
-        z_title_separator.setFrameShadow(QFrame.Sunken)
-        stages_grid.addWidget(z_title_separator, 1, 1)
+        # Row 1: Y position
+        self.y_pos_label = QLabel("Y: 0.000 mm")
+        self.y_pos_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        xy_grid.addWidget(self.y_pos_label, 1, 0, 1, 3)
         
-        # Row 1: Position displays
-        xy_pos_widget = QWidget()
-        xy_pos_layout = QVBoxLayout(xy_pos_widget)
-        xy_pos_layout.setContentsMargins(0, 0, 0, 0)
-        xy_pos_layout.setSpacing(4)
-        
-        x_layout = QHBoxLayout()
-        x_label = QLabel("X")
-        x_label.setStyleSheet("color: #666;")
-        self.x_pos_label = QLabel("0.000 mm")
-        self.x_pos_label.setStyleSheet("color: #333;")
-        x_layout.addWidget(x_label)
-        x_layout.addWidget(self.x_pos_label)
-        x_layout.addStretch()
-        
-        y_layout = QHBoxLayout()
-        y_label = QLabel("Y")
-        y_label.setStyleSheet("color: #666;")
-        self.y_pos_label = QLabel("0.000 mm")
-        self.y_pos_label.setStyleSheet("color: #333;")
-        y_layout.addWidget(y_label)
-        y_layout.addWidget(self.y_pos_label)
-        y_layout.addStretch()
-        
-        xy_pos_layout.addLayout(x_layout)
-        xy_pos_layout.addLayout(y_layout)
-        stages_grid.addWidget(xy_pos_widget, 2, 0)
-        
-        z_pos_layout = QHBoxLayout()
-        z_label = QLabel("Z")
-        z_label.setStyleSheet("color: #666;")
-        self.z_pos_label = QLabel("0.000 µm")
-        self.z_pos_label.setStyleSheet("color: #333;")
-        z_pos_layout.addWidget(z_label)
-        z_pos_layout.addWidget(self.z_pos_label)
-        z_pos_layout.addStretch()
-        z_pos_widget = QWidget()
-        z_pos_widget.setLayout(z_pos_layout)
-        stages_grid.addWidget(z_pos_widget, 2, 1)
-        
-        # Row 2: Move labels
-        xy_move_label = QLabel("Move")
-        xy_move_label.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(xy_move_label, 3, 0)
-        
-        z_move_label = QLabel("Move")
-        z_move_label.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(z_move_label, 3, 1)
-        
-        # Row 3: Movement controls
-        grid = QGridLayout()
-        grid.setSpacing(6)
-        
+        # Row 2: Up button only
         self.up_btn = QPushButton("↑")
         self.up_btn.clicked.connect(self.move_up)
         self.up_btn.setFixedSize(40, 40)
-        self.up_btn.setStyleSheet("font-size: 14px;")
+        self.up_btn.setToolTip("Ctrl+Up")
+        xy_grid.addWidget(self.up_btn, 2, 1, Qt.AlignCenter)
         
+        # Row 3: Left and Right buttons
         self.left_btn = QPushButton("←")
         self.left_btn.clicked.connect(self.move_left)
         self.left_btn.setFixedSize(40, 40)
-        self.left_btn.setStyleSheet("font-size: 14px;")
+        self.left_btn.setToolTip("Ctrl+Left")
+        xy_grid.addWidget(self.left_btn, 3, 0, Qt.AlignRight)
         
         self.right_btn = QPushButton("→")
         self.right_btn.clicked.connect(self.move_right)
         self.right_btn.setFixedSize(40, 40)
-        self.right_btn.setStyleSheet("font-size: 14px;")
+        self.right_btn.setToolTip("Ctrl+Right")
+        xy_grid.addWidget(self.right_btn, 3, 2, Qt.AlignLeft)
         
+        # Row 4: Down button only
         self.down_btn = QPushButton("↓")
         self.down_btn.clicked.connect(self.move_down)
         self.down_btn.setFixedSize(40, 40)
-        self.down_btn.setStyleSheet("font-size: 14px;")
-        
-        # Tooltips
-        self.up_btn.setToolTip("Ctrl+Up")
         self.down_btn.setToolTip("Ctrl+Down")
-        self.left_btn.setToolTip("Ctrl+Left")
-        self.right_btn.setToolTip("Ctrl+Right")
+        xy_grid.addWidget(self.down_btn, 4, 1, Qt.AlignCenter)
         
-        grid.addWidget(self.up_btn, 0, 1)
-        grid.addWidget(self.left_btn, 1, 0)
-        grid.addWidget(self.right_btn, 1, 2)
-        grid.addWidget(self.down_btn, 2, 1)
+        # Row 5: Step
+        step_label = QLabel("Step:")
+        step_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        xy_grid.addWidget(step_label, 5, 0)
+        self.step_size = QDoubleSpinBox()
+        self.step_size.setRange(0.001, 10.0)
+        self.step_size.setValue(self.manager.default_step_size)
+        self.step_size.setSuffix(" mm")
+        self.step_size.setDecimals(3)
+        self.step_size.setFixedWidth(spinbox_width)
+        self.step_size.setAlignment(Qt.AlignRight)
+        self.step_size.valueChanged.connect(self._on_step_changed_spinbox)
+        xy_grid.addWidget(self.step_size, 5, 1, 1, 2, Qt.AlignRight)
         
-        xy_arrows_widget = QWidget()
-        xy_arrows_widget.setLayout(grid)
-        stages_grid.addWidget(xy_arrows_widget, 4, 0)
+        # Row 6: Empty spacer
+        xy_grid.setRowMinimumHeight(6, 10)
         
-        # Z movement controls
-        z_controls_layout = QHBoxLayout()
-        z_controls_layout.setSpacing(6)
+        # Row 7: Go to X
+        x_abs_label = QLabel("Go to X:")
+        x_abs_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        xy_grid.addWidget(x_abs_label, 7, 0)
+        self.x_abs = QDoubleSpinBox()
+        self.x_abs.setRange(-100.0, 100.0)
+        self.x_abs.setValue(0.0)
+        self.x_abs.setSuffix(" mm")
+        self.x_abs.setDecimals(3)
+        self.x_abs.setFixedWidth(spinbox_width)
+        self.x_abs.setAlignment(Qt.AlignRight)
+        xy_grid.addWidget(self.x_abs, 7, 1, 1, 2, Qt.AlignRight)
         
-        z_buttons_layout = QVBoxLayout()
-        z_buttons_layout.setSpacing(6)
+        # Row 8: Go to Y
+        y_abs_label = QLabel("Go to Y:")
+        y_abs_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        xy_grid.addWidget(y_abs_label, 8, 0)
+        self.y_abs = QDoubleSpinBox()
+        self.y_abs.setRange(-100.0, 100.0)
+        self.y_abs.setValue(0.0)
+        self.y_abs.setSuffix(" mm")
+        self.y_abs.setDecimals(3)
+        self.y_abs.setFixedWidth(spinbox_width)
+        self.y_abs.setAlignment(Qt.AlignRight)
+        xy_grid.addWidget(self.y_abs, 8, 1, 1, 2, Qt.AlignRight)
         
-        self.z_up_btn = QPushButton("↑ Up")
-        self.z_up_btn.clicked.connect(self.move_z_up)
-        self.z_up_btn.setFixedSize(115, 35)
-        self.z_up_btn.setToolTip("Ctrl+U")
-        
-        self.z_down_btn = QPushButton("↓ Down")
-        self.z_down_btn.clicked.connect(self.move_z_down)
-        self.z_down_btn.setFixedSize(115, 35)
-        self.z_down_btn.setToolTip("Ctrl+D")
-        
-        z_buttons_layout.addWidget(self.z_up_btn)
-        z_buttons_layout.addWidget(self.z_down_btn)
-        
-        z_controls_layout.addLayout(z_buttons_layout)
-        z_controls_layout.addStretch()
-        
-        z_controls_widget = QWidget()
-        z_controls_widget.setLayout(z_controls_layout)
-        stages_grid.addWidget(z_controls_widget, 4, 1)
-        
-        # Row 5: Step inputs with inline labels
-        xy_step_layout = QHBoxLayout()
-        xy_step_label = QLabel("Step")
-        xy_step_label.setStyleSheet("color: #666;")
-        xy_step_label.setMinimumWidth(35)
-        self.step_size = QLineEdit()
-        self.step_size.setFixedWidth(70)
-        self.step_size.setText(f"{self.manager.default_step_size:.3f}")
-        self.step_size.setPlaceholderText("mm")
-        self.step_size.editingFinished.connect(self._on_step_changed)
-        xy_step_layout.addWidget(xy_step_label)
-        xy_step_layout.addWidget(self.step_size)
-        xy_step_layout.addStretch()
-        xy_step_widget = QWidget()
-        xy_step_widget.setLayout(xy_step_layout)
-        stages_grid.addWidget(xy_step_widget, 5, 0)
-        
-        z_step_layout = QHBoxLayout()
-        z_step_label = QLabel("Step")
-        z_step_label.setStyleSheet("color: #666;")
-        z_step_label.setMinimumWidth(35)
-        self.z_step_size = QLineEdit()
-        self.z_step_size.setFixedWidth(70)
-        self.z_step_size.setText(f"{self.manager.default_z_step_size:.1f}")
-        self.z_step_size.setPlaceholderText("µm")
-        self.z_step_size.editingFinished.connect(self._on_z_step_changed)
-        z_step_layout.addWidget(z_step_label)
-        z_step_layout.addWidget(self.z_step_size)
-        z_step_layout.addStretch()
-        z_step_widget = QWidget()
-        z_step_widget.setLayout(z_step_layout)
-        stages_grid.addWidget(z_step_widget, 5, 1)
-        
-        # Row 6: Separators
-        xy_separator = QFrame()
-        xy_separator.setFrameShape(QFrame.HLine)
-        xy_separator.setFrameShadow(QFrame.Sunken)
-        stages_grid.addWidget(xy_separator, 6, 0)
-        
-        z_separator = QFrame()
-        z_separator.setFrameShape(QFrame.HLine)
-        z_separator.setFrameShadow(QFrame.Sunken)
-        stages_grid.addWidget(z_separator, 6, 1)
-        
-        # Row 7: Go to labels
-        xy_goto_label = QLabel("Go to")
-        xy_goto_label.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(xy_goto_label, 7, 0)
-        
-        z_goto_label = QLabel("Go to")
-        z_goto_label.setStyleSheet("font-weight: bold; color: #666;")
-        stages_grid.addWidget(z_goto_label, 7, 1)
-        
-        # Row 8: Absolute position inputs
-        xy_abs_widget = QWidget()
-        xy_abs_layout = QVBoxLayout(xy_abs_widget)
-        xy_abs_layout.setContentsMargins(0, 0, 0, 0)
-        xy_abs_layout.setSpacing(4)
-        
-        x_abs_layout = QHBoxLayout()
-        x_abs_label = QLabel("X")
-        x_abs_label.setStyleSheet("color: #666;")
-        x_abs_label.setMinimumWidth(35)
-        self.x_abs = QLineEdit()
-        self.x_abs.setFixedWidth(70)
-        self.x_abs.setText("0.000")
-        self.x_abs.setPlaceholderText("mm")
-        x_abs_layout.addWidget(x_abs_label)
-        x_abs_layout.addWidget(self.x_abs)
-        x_abs_layout.addStretch()
-        
-        y_abs_layout = QHBoxLayout()
-        y_abs_label = QLabel("Y")
-        y_abs_label.setStyleSheet("color: #666;")
-        y_abs_label.setMinimumWidth(35)
-        self.y_abs = QLineEdit()
-        self.y_abs.setFixedWidth(70)
-        self.y_abs.setText("0.000")
-        self.y_abs.setPlaceholderText("mm")
-        y_abs_layout.addWidget(y_abs_label)
-        y_abs_layout.addWidget(self.y_abs)
-        y_abs_layout.addStretch()
-        
-        xy_abs_layout.addLayout(x_abs_layout)
-        xy_abs_layout.addLayout(y_abs_layout)
-        stages_grid.addWidget(xy_abs_widget, 8, 0)
-        
-        z_input_layout = QHBoxLayout()
-        z_abs_label_field = QLabel("Z")
-        z_abs_label_field.setStyleSheet("color: #666;")
-        z_abs_label_field.setMinimumWidth(35)
-        self.z_abs = QLineEdit()
-        self.z_abs.setFixedWidth(70)
-        self.z_abs.setText("0.000")
-        self.z_abs.setPlaceholderText("µm")
-        z_input_layout.addWidget(z_abs_label_field)
-        z_input_layout.addWidget(self.z_abs)
-        z_input_layout.addStretch()
-        z_input_widget = QWidget()
-        z_input_widget.setLayout(z_input_layout)
-        stages_grid.addWidget(z_input_widget, 8, 1)
-        
-        # Row 9: Go buttons
+        # Row 9: Go button
         self.go_btn = QPushButton("Go")
         self.go_btn.clicked.connect(self.go_to_position)
-        self.go_btn.setFixedHeight(30)
-        stages_grid.addWidget(self.go_btn, 9, 0)
+        xy_grid.addWidget(self.go_btn, 9, 0, 1, 3)
         
+        xy_group.setLayout(xy_grid)
+        
+        # === Z Stage Group ===
+        z_group = QGroupBox("Z Stage")
+        z_grid = QGridLayout()
+        z_grid.setSpacing(8)
+        z_grid.setContentsMargins(15, 15, 15, 15)
+        
+        # Row 0: Z position (aligned with X position)
+        self.z_pos_label = QLabel("Z: 0.000 µm")
+        self.z_pos_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        z_grid.addWidget(self.z_pos_label, 0, 0, 1, 2)
+        
+        # Row 1: Empty - skip (no Y equivalent in Z)
+        
+        # Row 2: Z Up button (aligned with XY Up button)
+        self.z_up_btn = QPushButton("↑")
+        self.z_up_btn.clicked.connect(self.move_z_up)
+        self.z_up_btn.setFixedSize(40, 40)
+        self.z_up_btn.setToolTip("Ctrl+U")
+        z_grid.addWidget(self.z_up_btn, 2, 0, 1, 2, Qt.AlignCenter)
+        
+        # Row 3: Empty (aligned with Left/Right buttons row height)
+        empty_row3 = QLabel("")
+        empty_row3.setFixedHeight(40)  # Match button height
+        z_grid.addWidget(empty_row3, 3, 0, 1, 2)
+        
+        # Row 4: Z Down button (aligned with XY Down button)
+        self.z_down_btn = QPushButton("↓")
+        self.z_down_btn.clicked.connect(self.move_z_down)
+        self.z_down_btn.setFixedSize(40, 40)
+        self.z_down_btn.setToolTip("Ctrl+D")
+        z_grid.addWidget(self.z_down_btn, 4, 0, 1, 2, Qt.AlignCenter)
+        
+        # Row 5: Step (aligned with XY Step)
+        z_step_label = QLabel("Step:")
+        z_step_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        z_grid.addWidget(z_step_label, 5, 0)
+        self.z_step_size = QDoubleSpinBox()
+        self.z_step_size.setRange(0.1, 100.0)
+        self.z_step_size.setValue(self.manager.default_z_step_size)
+        self.z_step_size.setSuffix(" µm")
+        self.z_step_size.setDecimals(1)
+        self.z_step_size.setFixedWidth(spinbox_width)
+        self.z_step_size.setAlignment(Qt.AlignRight)
+        self.z_step_size.valueChanged.connect(self._on_z_step_changed_spinbox)
+        z_grid.addWidget(self.z_step_size, 5, 1, Qt.AlignRight)
+        
+        # Row 6: Empty spacer
+        z_grid.setRowMinimumHeight(6, 10)
+        
+        # Row 7: Go to Z (aligned with Go to X)
+        z_abs_label = QLabel("Go to Z:")
+        z_abs_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        z_grid.addWidget(z_abs_label, 7, 0)
+        self.z_abs = QDoubleSpinBox()
+        self.z_abs.setRange(0.0, 100.0)
+        self.z_abs.setValue(0.0)
+        self.z_abs.setSuffix(" µm")
+        self.z_abs.setDecimals(3)
+        self.z_abs.setFixedWidth(spinbox_width)
+        self.z_abs.setAlignment(Qt.AlignRight)
+        z_grid.addWidget(self.z_abs, 7, 1, Qt.AlignRight)
+        
+        # Row 8: Empty (aligned with Go to Y)
+        empty_row8 = QLabel("")
+        z_grid.addWidget(empty_row8, 8, 0, 1, 2)
+        
+        # Row 9: Go button (aligned with XY Go button)
         self.z_go_btn = QPushButton("Go")
         self.z_go_btn.clicked.connect(self.go_to_z_position)
-        self.z_go_btn.setFixedHeight(30)
-        stages_grid.addWidget(self.z_go_btn, 9, 1)
+        z_grid.addWidget(self.z_go_btn, 9, 0, 1, 2)
         
-        # Add grid to main layout
-        main.addLayout(stages_grid)
+        z_group.setLayout(z_grid)
+        
+        # Make both group boxes the same size
+        group_width = 200
+        xy_group.setMinimumWidth(group_width)
+        z_group.setMinimumWidth(group_width)
+        
+        # Add both groups to stages layout
+        stages_layout.addWidget(xy_group)
+        stages_layout.addWidget(z_group)
+        
+        # Add stages layout to main
+        main.addLayout(stages_layout)
         
         # Enter-to-move behavior
         self.x_abs.editingFinished.connect(self.go_to_position)
@@ -444,14 +372,14 @@ class StagesWidget(QDialog):
         if self.is_connected:
             x, y = self.manager.get_position()
             if x is not None and y is not None:
-                self.x_pos_label.setText(f"{x:.3f} mm")
-                self.y_pos_label.setText(f"{y:.3f} mm")
+                self.x_pos_label.setText(f"X: {x:.3f} mm")
+                self.y_pos_label.setText(f"Y: {y:.3f} mm")
         
         # Update Z position
         if self.z_is_connected:
             z = self.manager.get_z_position()
             if z is not None:
-                self.z_pos_label.setText(f"{z:.3f} µm")
+                self.z_pos_label.setText(f"Z: {z:.3f} µm")
 
     def _move_relative(self, dx: float = 0.0, dy: float = 0.0):
         if not self.is_connected:
@@ -481,31 +409,38 @@ class StagesWidget(QDialog):
     # differently from the actual hardware directions
     
     def _get_step_size(self):
-        """Get current step size from text field, fallback to manager default."""
-        try:
-            return float(self.step_size.text())
-        except ValueError:
-            return self.manager.default_step_size
+        """Get current step size from spinbox."""
+        return self.step_size.value()
+
+    def _on_step_changed_spinbox(self, value):
+        """Handle step size change from spinbox."""
+        # Keep global shortcuts (Ctrl+Arrows) in sync with widget step
+        self.manager.default_step_size = value
+    
+    def _on_z_step_changed_spinbox(self, value):
+        """Handle Z step size change from spinbox."""
+        # Keep global shortcuts (Ctrl+U/D) in sync with widget step
+        self.manager.default_z_step_size = value
 
     def move_up(self):
-        # UP arrow button pressed - need to move LEFT relative to camera view
-        logger.debug("UP button pressed -> Moving LEFT relative to camera view")
-        self._move_relative(dx=-self._get_step_size())  # Move LEFT (negative X)
+        # UP arrow button pressed -> Y increases
+        logger.debug("UP button pressed -> Y+")
+        self._move_relative(dy=self._get_step_size())
 
     def move_down(self):
-        # DOWN arrow button pressed - need to move RIGHT relative to camera view
-        logger.debug("DOWN button pressed -> Moving RIGHT relative to camera view")
-        self._move_relative(dx=self._get_step_size())  # Move RIGHT (positive X)
+        # DOWN arrow button pressed -> Y decreases
+        logger.debug("DOWN button pressed -> Y-")
+        self._move_relative(dy=-self._get_step_size())
 
     def move_left(self):
-        # LEFT arrow button pressed - need to move UP relative to camera view
-        logger.debug("LEFT button pressed -> Moving UP relative to camera view")
-        self._move_relative(dy=self._get_step_size())  # Move UP (positive Y)
+        # LEFT arrow button pressed -> X decreases
+        logger.debug("LEFT button pressed -> X-")
+        self._move_relative(dx=-self._get_step_size())
 
     def move_right(self):
-        # RIGHT arrow button pressed - need to move DOWN relative to camera view
-        logger.debug("RIGHT button pressed -> Moving DOWN relative to camera view")
-        self._move_relative(dy=-self._get_step_size())  # Move DOWN (negative Y)
+        # RIGHT arrow button pressed -> X increases
+        logger.debug("RIGHT button pressed -> X+")
+        self._move_relative(dx=self._get_step_size())
 
     def go_to_position(self):
         if not self.is_connected:
@@ -516,20 +451,8 @@ class StagesWidget(QDialog):
         # Ensure normal cursor during movement
         QApplication.restoreOverrideCursor()
         
-        try:
-            x_text = self.x_abs.text().strip()
-            y_text = self.y_abs.text().strip()
-            
-            if not x_text or not y_text:
-                logger.warning("Empty position values")
-                return
-                
-            target_x = float(x_text)
-            target_y = float(y_text)
-        except ValueError as e:
-            logger.warning(f"Invalid position values entered: {e}")
-            self._update_status("Invalid position values")
-            return
+        target_x = self.x_abs.value()
+        target_y = self.y_abs.value()
         
         logger.info(f"Moving to position: X={target_x:.3f} mm, Y={target_y:.3f} mm")
         self._update_status(f"Moving to X={target_x:.3f}, Y={target_y:.3f}...")
@@ -544,32 +467,12 @@ class StagesWidget(QDialog):
             self._update_status("Move failed")
 
     def _on_step_changed(self):
-        """Handle step size change."""
-        try:
-            value = float(self.step_size.text())
-            if 0.001 <= value <= 10.0:
-                # Keep global shortcuts (Ctrl+Arrows) in sync with widget step
-                self.manager.default_step_size = value
-            else:
-                # Reset to previous valid value
-                self.step_size.setText(f"{self.manager.default_step_size:.3f}")
-        except ValueError:
-            # Reset to previous valid value
-            self.step_size.setText(f"{self.manager.default_step_size:.3f}")
+        """Deprecated - kept for compatibility."""
+        pass
     
     def _on_z_step_changed(self):
-        """Handle Z step size change."""
-        try:
-            value = float(self.z_step_size.text())
-            if 0.1 <= value <= 100.0:
-                # Keep global shortcuts (Ctrl+U/D) in sync with widget step
-                self.manager.default_z_step_size = value
-            else:
-                # Reset to previous valid value
-                self.z_step_size.setText(f"{self.manager.default_z_step_size:.1f}")
-        except ValueError:
-            # Reset to previous valid value
-            self.z_step_size.setText(f"{self.manager.default_z_step_size:.1f}")
+        """Deprecated - kept for compatibility."""
+        pass
     
     # --- Z-stage movement methods ---
     def move_z_up(self):
@@ -606,18 +509,7 @@ class StagesWidget(QDialog):
         # Ensure normal cursor during movement
         QApplication.restoreOverrideCursor()
         
-        try:
-            z_text = self.z_abs.text().strip()
-            
-            if not z_text:
-                logger.warning("Empty Z position value")
-                return
-                
-            target_z = float(z_text)
-        except ValueError as e:
-            logger.warning(f"Invalid Z position value entered: {e}")
-            self._update_status("Invalid Z position")
-            return
+        target_z = self.z_abs.value()
         
         logger.info(f"Moving Z to position: {target_z:.3f} µm")
         self._update_status(f"Moving Z to {target_z:.3f} µm...")
