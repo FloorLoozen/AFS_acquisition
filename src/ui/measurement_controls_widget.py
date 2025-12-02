@@ -5,7 +5,7 @@ Provides controls for function generator and other measurement hardware.
 
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QLineEdit, QFrame, QWidget, QCheckBox, QDoubleSpinBox
+    QFrame, QWidget, QCheckBox, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
@@ -120,21 +120,26 @@ class FrequencyControlsWidget(QGroupBox):
         """Add frequency control row."""
         row_layout = QHBoxLayout()
         
-        label = QLabel("Frequency (MHz):")
+        label = QLabel("Frequency:")
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         label.setMinimumWidth(150)
         
-        self.frequency_edit = QLineEdit()
-        self.frequency_edit.setText(str(self.default_frequency))
-        self.frequency_edit.setFixedWidth(80)
-        self.frequency_edit.setPlaceholderText("0.1-30.0")
-        self.frequency_edit.setToolTip("Enter frequency in MHz (0.1 to 30.0)\nChanges apply automatically with 300ms debouncing")
-        self.frequency_edit.textChanged.connect(self._on_frequency_changed)
-        self.frequency_edit.editingFinished.connect(self._on_frequency_enter)
+        self.frequency_spinbox = QDoubleSpinBox()
+        self.frequency_spinbox.setRange(0.1, 30.0)
+        self.frequency_spinbox.setSingleStep(0.1)
+        self.frequency_spinbox.setDecimals(3)
+        self.frequency_spinbox.setValue(self.default_frequency)
+        self.frequency_spinbox.setSuffix(" MHz")
+        self.frequency_spinbox.setFixedWidth(110)
+        self.frequency_spinbox.setAlignment(Qt.AlignRight)
+        self.frequency_spinbox.setToolTip("Frequency in MHz (0.1 to 30.0)\nChanges apply automatically with 300ms debouncing")
+        self.frequency_spinbox.valueChanged.connect(self._on_frequency_changed)
+        self.frequency_spinbox.editingFinished.connect(self._on_frequency_enter)
         
         spacer = QLabel("")
         
         row_layout.addWidget(label)
-        row_layout.addWidget(self.frequency_edit)
+        row_layout.addWidget(self.frequency_spinbox)
         row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
@@ -143,21 +148,26 @@ class FrequencyControlsWidget(QGroupBox):
         """Add amplitude control row."""
         row_layout = QHBoxLayout()
         
-        label = QLabel("Amplitude (Vpp):")
+        label = QLabel("Amplitude:")
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         label.setMinimumWidth(150)
         
-        self.amplitude_edit = QLineEdit()
-        self.amplitude_edit.setText(str(self.default_amplitude))
-        self.amplitude_edit.setFixedWidth(80)
-        self.amplitude_edit.setPlaceholderText("0.1-20.0")
-        self.amplitude_edit.setToolTip("Enter amplitude in Vpp (0.1 to 20.0)\nChanges apply automatically with 300ms debouncing")
-        self.amplitude_edit.textChanged.connect(self._on_amplitude_changed)
-        self.amplitude_edit.editingFinished.connect(self._on_amplitude_enter)
+        self.amplitude_spinbox = QDoubleSpinBox()
+        self.amplitude_spinbox.setRange(0.1, 20.0)
+        self.amplitude_spinbox.setSingleStep(0.1)
+        self.amplitude_spinbox.setDecimals(2)
+        self.amplitude_spinbox.setValue(self.default_amplitude)
+        self.amplitude_spinbox.setSuffix(" Vpp")
+        self.amplitude_spinbox.setFixedWidth(110)
+        self.amplitude_spinbox.setAlignment(Qt.AlignRight)
+        self.amplitude_spinbox.setToolTip("Amplitude in Vpp (0.1 to 20.0)\nChanges apply automatically with 300ms debouncing")
+        self.amplitude_spinbox.valueChanged.connect(self._on_amplitude_changed)
+        self.amplitude_spinbox.editingFinished.connect(self._on_amplitude_enter)
         
         spacer = QLabel("")
         
         row_layout.addWidget(label)
-        row_layout.addWidget(self.amplitude_edit)
+        row_layout.addWidget(self.amplitude_spinbox)
         row_layout.addWidget(spacer, 1)
         
         layout.addLayout(row_layout)
@@ -228,10 +238,10 @@ class FrequencyControlsWidget(QGroupBox):
         elif self.fg_toggle_button.isChecked():
             # Output is on - show frequency info
             try:
-                frequency = float(self.frequency_edit.text())
+                frequency = self.frequency_spinbox.value()
                 self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
-            except (ValueError, AttributeError):
-                # Invalid or missing frequency value
+            except AttributeError:
+                # Spinbox not available yet
                 self.fg_status_display.set_status("ON")
         else:
             # Connected but output off
@@ -248,12 +258,8 @@ class FrequencyControlsWidget(QGroupBox):
                 return
             
             # Turn on with current settings
-            try:
-                frequency = float(self.frequency_edit.text())
-                amplitude = float(self.amplitude_edit.text())
-            except ValueError:
-                frequency = self.default_frequency
-                amplitude = self.default_amplitude
+            frequency = self.frequency_spinbox.value()
+            amplitude = self.amplitude_spinbox.value()
             
             try:
                 success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
@@ -302,15 +308,11 @@ class FrequencyControlsWidget(QGroupBox):
     
     def _on_settings_changed(self):
         """Handle frequency or amplitude changes."""
+        frequency = self.frequency_spinbox.value()
+        amplitude = self.amplitude_spinbox.value()
+        
         # If output is enabled, update immediately
         if self.fg_toggle_button.isChecked() and self._ensure_connection():
-            try:
-                frequency = float(self.frequency_edit.text())
-                amplitude = float(self.amplitude_edit.text())
-            except ValueError:
-                frequency = self.default_frequency
-                amplitude = self.default_amplitude
-            
             try:
                 success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
                 if success:
@@ -326,12 +328,6 @@ class FrequencyControlsWidget(QGroupBox):
                 self.fg_status_display.set_status("Error")
         
         # Emit signal
-        try:
-            frequency = float(self.frequency_edit.text())
-            amplitude = float(self.amplitude_edit.text())
-        except ValueError:
-            frequency = self.default_frequency
-            amplitude = self.default_amplitude
         self.function_generator_settings_changed.emit(frequency, amplitude)
     
     def _apply_settings_debounced(self):
@@ -340,13 +336,9 @@ class FrequencyControlsWidget(QGroupBox):
             return
             
         try:
-            frequency = float(self.frequency_edit.text())
-            amplitude = float(self.amplitude_edit.text())
-            
-            # Validate ranges but don't auto-correct user input
-            # Just ensure hardware safety limits
-            frequency = max(0.1, min(30.0, frequency))  # Full range 0.1-30 MHz
-            amplitude = max(0.1, min(20.0, amplitude))
+            # Spinbox already handles range validation
+            frequency = self.frequency_spinbox.value()
+            amplitude = self.amplitude_spinbox.value()
             
             # Only update hardware if values actually changed
             if (abs(frequency - self._cached_frequency) > 0.001 or 
@@ -376,64 +368,29 @@ class FrequencyControlsWidget(QGroupBox):
     
     def _reset_to_defaults(self):
         """Reset input fields to default values."""
-        self.frequency_edit.setText(str(self.default_frequency))
-        self.amplitude_edit.setText(str(self.default_amplitude))
-    
-    def _set_input_valid(self, input_field, is_valid=True):
-        """Set visual feedback for input field validation."""
-        if is_valid:
-            input_field.setStyleSheet("")  # Default style
-        else:
-            input_field.setStyleSheet("QLineEdit { border: 2px solid red; }")
-    
-    def _validate_frequency_input(self, text):
-        """Validate frequency input and provide visual feedback."""
-        try:
-            freq = float(text)
-            is_valid = 0.1 <= freq <= 30.0  # Full hardware range 0.1-30 MHz
-            self._set_input_valid(self.frequency_edit, is_valid)
-            return is_valid
-        except ValueError:
-            self._set_input_valid(self.frequency_edit, False)
-            return False
-    
-    def _validate_amplitude_input(self, text):
-        """Validate amplitude input and provide visual feedback."""
-        try:
-            amp = float(text)
-            is_valid = 0.1 <= amp <= 20.0
-            self._set_input_valid(self.amplitude_edit, is_valid)
-            return is_valid
-        except ValueError:
-            self._set_input_valid(self.amplitude_edit, False)
-            return False
+        self.frequency_spinbox.setValue(self.default_frequency)
+        self.amplitude_spinbox.setValue(self.default_amplitude)
     
     def _on_frequency_changed(self):
-        """Handle real-time text changes in frequency field with debouncing."""
-        text = self.frequency_edit.text()
-        self._validate_frequency_input(text)
-        
+        """Handle value changes in frequency spinbox with debouncing."""
         if self._output_enabled:
             self._pending_update = True
             self._update_timer.start(self._debounce_delay)
     
     def _on_frequency_enter(self):
-        """Handle Enter key press in frequency field for immediate update."""
+        """Handle editing finished in frequency spinbox for immediate update."""
         self._update_timer.stop()  # Cancel any pending debounced update
         self._pending_update = True
         self._apply_settings_debounced()  # Apply immediately
     
     def _on_amplitude_changed(self):
-        """Handle real-time text changes in amplitude field with debouncing."""
-        text = self.amplitude_edit.text()
-        self._validate_amplitude_input(text)
-        
+        """Handle value changes in amplitude spinbox with debouncing."""
         if self._output_enabled:
             self._pending_update = True
             self._update_timer.start(self._debounce_delay)
     
     def _on_amplitude_enter(self):
-        """Handle Enter key press in amplitude field for immediate update."""
+        """Handle editing finished in amplitude spinbox for immediate update."""
         self._update_timer.stop()  # Cancel any pending debounced update
         self._pending_update = True
         self._apply_settings_debounced()  # Apply immediately
@@ -450,17 +407,11 @@ class FrequencyControlsWidget(QGroupBox):
     
     def get_frequency(self) -> float:
         """Get current frequency setting in MHz."""
-        try:
-            return float(self.frequency_edit.text())
-        except ValueError:
-            return self.default_frequency
+        return self.frequency_spinbox.value()
     
     def get_amplitude(self) -> float:
         """Get current amplitude setting in Vpp."""
-        try:
-            return float(self.amplitude_edit.text())
-        except ValueError:
-            return self.default_amplitude
+        return self.amplitude_spinbox.value()
     
     def set_frequency(self, frequency_mhz: float):
         """Set frequency in MHz."""
