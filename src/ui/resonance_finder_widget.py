@@ -665,6 +665,11 @@ class ResonanceFinderWidget(QWidget):
         self.start_button.setEnabled(False)
         self.loading_label.show()
         
+        # Store sweep parameters for frequency axis conversion
+        self.start_freq = freq_start
+        self.stop_freq = freq_stop
+        self.sweep_time = sweep_time
+        
         # Start sweep worker (single fixed 5s sweep; sweep_time UI is disabled)
         self.sweep_worker = SweepWorker(
             self.funcgen, self.oscilloscope,
@@ -731,19 +736,23 @@ class ResonanceFinderWidget(QWidget):
         
         # Clear and setup plot
         self.ax.clear()
-        self.ax.set_xlabel('Time (s)')
+        self.ax.set_xlabel('Frequency (MHz)')
         self.ax.set_ylabel('Voltage (V)')
         
         # Plot data
         times = np.array(times)
         voltages = np.array(voltages)
         
+        # Convert time axis to frequency axis
+        # Linear frequency sweep: freq = start_freq + (stop_freq - start_freq) * (time / sweep_time)
+        frequencies = self.start_freq + (self.stop_freq - self.start_freq) * (times / self.sweep_time)
+        
         logger.info(f"Plot function received: voltages min={voltages.min()*1000:.1f}mV, max={voltages.max()*1000:.1f}mV")
         
-        self.ax.plot(times, voltages, 'b-', linewidth=1.0)
+        self.ax.plot(frequencies, voltages, 'b-', linewidth=1.0)
         
-        # X-axis: 0 to full captured time
-        self.ax.set_xlim(0, times.max())
+        # X-axis: frequency range
+        self.ax.set_xlim(self.start_freq, self.stop_freq)
         
         # Y-axis: use scope_limits calculated by worker thread if available
         if scope_limits:
@@ -763,7 +772,7 @@ class ResonanceFinderWidget(QWidget):
         self.ax.set_ylim(y_min, y_max)
         
         # Store data for click detection
-        self.current_frequencies = times  # Store times as x-axis data
+        self.current_frequencies = frequencies  # Store frequencies as x-axis data
         self.current_voltages = voltages
         self.data_loaded = True
         
@@ -782,15 +791,15 @@ class ResonanceFinderWidget(QWidget):
         if click_x is None or click_y is None:
             return
         
-        # Round to reasonable precision
-        click_x = round(click_x, 6)
+        # Round to reasonable precision (3 decimal places for MHz)
+        click_x = round(click_x, 3)
         
         # Calculate tolerance based on data range (1% of visible range)
         if self.current_frequencies is not None and len(self.current_frequencies) > 1:
             data_range = np.max(self.current_frequencies) - np.min(self.current_frequencies)
             tolerance = data_range * 0.01
         else:
-            tolerance = 0.00001  # Default for small time values
+            tolerance = 0.01  # Default tolerance in MHz
         
         # Check if clicking near existing point (remove it)
         for i, freq in enumerate(self.clicked_frequencies):
@@ -814,32 +823,16 @@ class ResonanceFinderWidget(QWidget):
         self._update_frequency_display()
     
     def _update_frequency_display(self):
-        """Update the time/position display label."""
+        """Update the frequency display label."""
         if not self.clicked_frequencies and not self.previous_frequency_lists:
             self.freq_display_label.setText("No points selected")
             return
         
-        display_text = ""
-        
-        # Current selected points (times)
+        # Current selected points (frequencies in MHz) - just list them
         if self.clicked_frequencies:
             sorted_current = sorted(self.clicked_frequencies)
-            current_text = "Selected points (time in s):\n" + ", ".join(f"{t:.6f}" for t in sorted_current)
-            display_text += current_text
-        
-        # Previous points
-        if self.previous_frequency_lists:
-            if display_text:
-                display_text += "\n\n"
-            
-            prev_text = "Previous selections:\n"
-            for i, prev_list in enumerate(reversed(self.previous_frequency_lists[-3:])):  # Show last 3
-                if prev_list:
-                    sorted_prev = sorted(prev_list)
-                    prev_text += f"• {', '.join(f'{t:.6f}' for t in sorted_prev)}\n"
-            display_text += prev_text.rstrip()
-        
-        if not display_text:
+            display_text = ", ".join(f"{f:.3f} MHz" for f in sorted_current)
+        else:
             display_text = "No points selected"
         
         self.freq_display_label.setText(display_text)
