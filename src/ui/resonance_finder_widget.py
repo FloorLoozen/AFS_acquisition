@@ -166,10 +166,29 @@ class SweepWorker(QThread):
                         actual_sample_rate = 50e6  # Default fallback
                         logger.warning("Could not query sample rate, using 50 MSa/s default")
                     
-                    # Calculate screen time and expected screen samples
+                    # Query memory depth to get ALL available samples (not just screen)
+                    try:
+                        mdepth_response = scope.query("ACQuire:MDEPth?").strip()
+                        # Parse memory depth (e.g., "ACQUIRE_MDEPTH 10M" or just "10000000")
+                        import re
+                        match = re.search(r'([0-9.]+)\s*([KMG])?', mdepth_response, re.IGNORECASE)
+                        if match:
+                            value = float(match.group(1))
+                            unit = match.group(2).upper() if match.group(2) else ''
+                            multiplier = {'K': 1e3, 'M': 1e6, 'G': 1e9}.get(unit, 1)
+                            total_memory_samples = int(value * multiplier)
+                        else:
+                            total_memory_samples = 10000000  # Default 10M
+                        logger.info(f"Memory depth: {total_memory_samples} samples")
+                    except Exception as mdepth_e:
+                        logger.warning(f"Could not query memory depth: {mdepth_e}, using 10M default")
+                        total_memory_samples = 10000000
+                    
+                    # Calculate screen time for reference
                     screen_time = 10.0 * tdiv_seconds  # 10 divisions
                     screen_samples = int(screen_time * actual_sample_rate)
                     logger.info(f"Screen: {screen_time*1000:.1f}ms = {screen_samples} samples at {actual_sample_rate/1e6:.1f} MSa/s")
+                    logger.info(f"Will capture ALL memory: {total_memory_samples} samples")
                     
                     # Now stop to freeze the display for reading
                     scope.write(":STOP")
@@ -187,10 +206,10 @@ class SweepWorker(QThread):
                     all_samples = []
                     
                     try:
-                        # Read data in 5M chunks using native Siglent WFSU command
+                        # Read ALL memory data in 5M chunks using native Siglent WFSU command
                         samples_read = 0
-                        while samples_read < screen_samples:
-                            remaining = screen_samples - samples_read
+                        while samples_read < total_memory_samples:
+                            remaining = total_memory_samples - samples_read
                             points_to_read = min(chunk_size, remaining)
                             
                             # Set up chunk read: SP=sparsing(1=all), NP=num points, FP=first point
@@ -239,6 +258,13 @@ class SweepWorker(QThread):
                     if samples.size > 0:
                         logger.info(f"Got {samples.size} total samples, raw range: {samples.min()} to {samples.max()}")
                         
+                        # Check for ADC clipping (signal hitting the rails)
+                        clipped_high = np.sum(samples == 255)
+                        clipped_low = np.sum(samples == 0)
+                        if clipped_high > 0 or clipped_low > 0:
+                            logger.warning(f"ADC CLIPPING DETECTED: {clipped_high} samples at max (255), {clipped_low} samples at min (0)")
+                            logger.warning(f"Signal is being CLIPPED by oscilloscope! Adjust VDIV or OFFSET!")
+                        
                         # Store original sample min/max BEFORE downsampling
                         original_sample_min = samples.min()
                         original_sample_max = samples.max()
@@ -249,39 +275,49 @@ class SweepWorker(QThread):
                         # Calculate total time of captured data based on sample rate
                         total_captured_time = samples.size / actual_sample_rate
                         logger.info(f"Captured {samples.size} samples = {total_captured_time*1000:.1f}ms at {actual_sample_rate/1e6:.1f} MSa/s")
-                        logger.info(f"Screen time: {screen_time*1000:.1f}ms")
+                        logger.info(f"Screen time: {screen_time*1000:.1f}ms (reference only - showing ALL memory)")
+                        logger.info(f"Using ALL {samples.size} samples for {total_captured_time*1000:.1f}ms")
                         
-                        # If we captured more than screen time, trim to screen time
-                        if total_captured_time > screen_time:
-                            # Calculate how many samples correspond to screen time
-                            samples_for_screen = int(screen_time * actual_sample_rate)
-                            logger.info(f"Trimming {samples.size} samples to {samples_for_screen} for screen time")
-                            samples = samples[:samples_for_screen]
-                            total_captured_time = screen_time
+                        # Filter out samples below offset BEFORE downsampling to avoid distortion
+                        # ADC value 128 corresponds to the offset
+                        above_offset_mask = samples >= 128
+                        samples_above = samples[above_offset_mask]
+                        indices_above = np.where(above_offset_mask)[0]
+                        logger.info(f"Filtered to {samples_above.size} samples above offset (from {samples.size} total)")
                         
-                        logger.info(f"Using {samples.size} samples for {total_captured_time*1000:.1f}ms")
+                        # Use the filtered samples for downsampling
+                        samples_to_process = samples_above
+                        indices_to_process = indices_above
                         
                         # Downsample for display using min-max decimation to preserve peaks
                         max_display = 10000
-                        if samples.size > max_display:
+                        if samples_to_process.size > max_display:
                             # Use min-max decimation: for each segment, keep both min and max
                             # This preserves peak amplitude information
                             n_segments = max_display // 2  # Each segment produces 2 points (min, max)
-                            segment_size = samples.size // n_segments
+                            segment_size = samples_to_process.size // n_segments
                             
                             display_samples = []
+                            display_indices = []
                             for i in range(n_segments):
                                 start_idx = i * segment_size
                                 end_idx = start_idx + segment_size
-                                segment = samples[start_idx:end_idx]
+                                segment = samples_to_process[start_idx:end_idx]
+                                segment_orig_indices = indices_to_process[start_idx:end_idx]
                                 if len(segment) > 0:
-                                    display_samples.append(segment.min())
-                                    display_samples.append(segment.max())
+                                    min_pos = segment.argmin()
+                                    max_pos = segment.argmax()
+                                    display_samples.append(segment[min_pos])
+                                    display_samples.append(segment[max_pos])
+                                    display_indices.append(segment_orig_indices[min_pos])
+                                    display_indices.append(segment_orig_indices[max_pos])
                             
                             display_samples = np.array(display_samples, dtype=np.uint8)
+                            display_indices = np.array(display_indices, dtype=np.int64)
                             logger.info(f"Downsampled to {display_samples.size} points using min-max decimation")
                         else:
-                            display_samples = samples
+                            display_samples = samples_to_process
+                            display_indices = indices_to_process
                         
                         # Convert to voltages using Siglent SDS800X HD formula
                         # Sample 128 = offset (center of screen)
@@ -294,9 +330,8 @@ class SweepWorker(QThread):
                         voltage_min = (original_sample_min - 128.0) * volts_per_adc + voffset_volts
                         voltage_max = (original_sample_max - 128.0) * volts_per_adc + voffset_volts
                         
-                        # Generate time axis based on ACTUAL captured time (not screen time)
-                        # This ensures data is plotted at correct time positions
-                        times = np.linspace(0, total_captured_time, len(voltages))
+                        # Generate time axis using original indices so points map to their true times
+                        times = display_indices.astype(np.float64) / actual_sample_rate
                         
                         # Y-axis limits: offset at bottom (fixed), data above offset shown with margin
                         # Data below offset will be clipped
@@ -707,18 +742,25 @@ class ResonanceFinderWidget(QWidget):
         
         self.ax.plot(times, voltages, 'b-', linewidth=1.0)
         
-        # X-axis: 0 to 100ms (full screen time)
+        # X-axis: 0 to full captured time
         self.ax.set_xlim(0, times.max())
         
-        # Y-axis: offset at bottom (fixed), auto-scale max to show ALL data
-        y_min = scope_limits['y_min'] if scope_limits else voltages.min()  # offset
-        y_max = voltages.max()  # actual data max
-        y_range = y_max - y_min
-        y_max_with_margin = y_max + y_range * 0.15  # 15% margin above data
+        # Y-axis: use scope_limits calculated by worker thread if available
+        if scope_limits:
+            # Use pre-calculated limits from oscilloscope settings
+            y_min = scope_limits['y_min']
+            y_max = scope_limits['y_max']
+            logger.info(f"Plot Y-axis: Using scope limits: {y_min*1000:.1f}mV to {y_max*1000:.1f}mV")
+        else:
+            # Fallback: auto-scale from data with margins
+            offset = voltages.min()
+            data_max = voltages.max()
+            data_range = data_max - offset
+            y_min = offset
+            y_max = data_max + data_range * 0.5
+            logger.info(f"Plot Y-axis: Auto-scaled: offset={y_min*1000:.1f}mV, data_max={data_max*1000:.1f}mV, y_max={y_max*1000:.1f}mV")
         
-        self.ax.set_ylim(y_min, y_max_with_margin)
-        
-        logger.info(f"Plot Y-axis: y_min(offset)={y_min*1000:.1f}mV, data_max={y_max*1000:.1f}mV, y_max(axis)={y_max_with_margin*1000:.1f}mV")
+        self.ax.set_ylim(y_min, y_max)
         
         # Store data for click detection
         self.current_frequencies = times  # Store times as x-axis data
