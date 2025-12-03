@@ -298,28 +298,41 @@ class OscilloscopeController:
         """Return the oscilloscope to a sensible normal display mode.
 
         Used by UI cleanup code to disable persistence and set trigger/display
-        back to normal viewing.
+        back to normal viewing. Also exits remote mode so the front panel
+        controls are responsive again.
         """
         if not self.scope:
+            logger.debug("reset_to_normal_mode: No scope connection")
             return
+        
+        logger.info("Resetting oscilloscope to normal mode...")
         try:
             try:
                 # Normal trigger/display modes
                 self.scope.write("TRMD NORM")
-            except Exception:
-                logger.debug("Failed to set TRMD NORM")
+                logger.debug("Set TRMD NORM")
+            except Exception as e:
+                logger.debug(f"Failed to set TRMD NORM: {e}")
             try:
                 # Disable persistence and other transient modes
                 self.scope.write("PESU OFF")
-            except Exception:
-                logger.debug("Failed to disable persistence")
+                logger.debug("Set PESU OFF")
+            except Exception as e:
+                logger.debug(f"Failed to disable persistence: {e}")
             try:
                 # Ensure acquisition is in RUN mode
                 self.scope.write(":RUN")
-            except Exception:
-                logger.debug("Failed to set RUN mode")
-        except Exception:  # noqa: BLE001 - best effort only
-            logger.debug("Failed to reset oscilloscope to normal mode")
+                logger.debug("Set RUN mode")
+            except Exception as e:
+                logger.debug(f"Failed to set RUN mode: {e}")
+            try:
+                # Exit remote mode - returns front panel control to user
+                self.scope.write(":SYSTem:LOCal")
+                logger.info("Exited remote mode (SYSTem:LOCal)")
+            except Exception as e:
+                logger.warning(f"Failed to exit remote mode: {e}")
+        except Exception as e:  # noqa: BLE001 - best effort only
+            logger.warning(f"Failed to reset oscilloscope to normal mode: {e}")
 
     def take_screenshot(
         self,

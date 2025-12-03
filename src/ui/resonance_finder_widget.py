@@ -4,6 +4,7 @@ PyQt5-based resonance frequency analysis tool with frequency sweep and plotting.
 """
 
 import numpy as np
+import re
 import threading
 import time
 from typing import Optional, Tuple, List
@@ -31,7 +32,8 @@ logger = get_logger("resonance_finder")
 class SweepWorker(QThread):
     """Worker thread for performing frequency sweeps."""
 
-    sweep_completed = pyqtSignal(object, object)  # frequencies, voltages
+    # Signal: times, voltages, scope_limits dict with keys: y_min, y_max, screen_time
+    sweep_completed = pyqtSignal(object, object, object)
     sweep_error = pyqtSignal(str)
     
     def __init__(self, funcgen, oscilloscope, amplitude, freq_start, freq_stop, sweep_time):
@@ -42,136 +44,334 @@ class SweepWorker(QThread):
         self.freq_start = freq_start
         self.freq_stop = freq_stop
         self.sweep_time = sweep_time
-        # sweep_time parameter is present for compatibility but a fixed
-        # sweep duration of 5.0 s will be used during execution.
+    
+    def _parse_siglent_value(self, response: str) -> float:
+        """Parse a Siglent value response like 'TDIV 1.00E-02S' or 'C1:VDIV 3.20E-02V'."""
+        import re
+        # Remove any prefix like "C1:VDIV " or "TDIV " to get just the value
+        # Look for scientific notation: digits, optional decimal, E, optional sign, digits
+        # Followed by optional unit (V, S, Sa/s, etc.)
+        match = re.search(r'([+-]?\d+\.?\d*[Ee][+-]?\d+)\s*([A-Za-z/]*)', response)
+        if not match:
+            # Try simple decimal number
+            match = re.search(r'([+-]?\d+\.?\d*)\s*([A-Za-z/]*)', response)
+            if not match:
+                logger.warning(f"Could not parse value from: {response}")
+                return 1.0
+        
+        value_str = match.group(1)
+        unit = match.group(2).upper() if match.group(2) else ''
+        
+        try:
+            value = float(value_str)
+        except ValueError:
+            logger.warning(f"Could not convert to float: {value_str}")
+            return 1.0
+        
+        # The scientific notation already includes the scale (e.g., 3.20E-02 = 0.032)
+        # Units like V, S are base units - no additional multiplier needed
+        # Only apply multiplier for explicit unit prefixes like mV, uV, etc.
+        # But Siglent uses scientific notation with base units, so usually no multiplier needed
+        
+        logger.debug(f"Parsed '{response}' -> value={value}, unit='{unit}'")
+        return value
     
     def run(self):
-        """Execute the frequency sweep in the background thread."""
+        """Execute the frequency sweep in the background thread.
+        
+        Sequence:
+        1. Start function generator sweep (runs continuously)
+        2. Wait 1.5 seconds for sweep to run
+        3. Read waveform data from oscilloscope (while it's still running)
+        4. Stop function generator
+        """
         try:
-            # Do NOT change oscilloscope settings here per user request.
-            # We will only query measurements from the scope during sweeps.
-            
-            # Single-run behavior: start the generator sweep using the user
-            # selectable sweep_time (default 0.1 s), but keep the generator
-            # output ON for a fixed 5.0 seconds while we sample the
-            # oscilloscope. DO NOT modify oscilloscope settings.
-            sweep_cmd_duration = float(self.sweep_time)
-            keep_on_duration = 5.0
-            num_points = 100
-            frequencies = np.linspace(self.freq_start, self.freq_stop, num_points)
-
-            # Start the hardware sweep (duration = sweep_cmd_duration)
             generator_started = False
-            try:
-                if self.funcgen and self.funcgen.is_connected:
-                    try:
-                        success = self.funcgen.sine_frequency_sweep(
-                            amplitude=self.amplitude,
-                            freq_start=self.freq_start,
-                            freq_end=self.freq_stop,
-                            sweep_time=sweep_cmd_duration,
-                            channel=1,
-                        )
-                        if not success:
-                            self.sweep_error.emit("Failed to start hardware sweep")
-                            return
-                        generator_started = True
-                    except Exception as e:
-                        logger.error(f"Hardware sweep failed to start: {e}")
-                        self.sweep_error.emit(f"Hardware sweep error: {e}")
-                        return
-                else:
-                    logger.warning("Function generator not connected - using demo data")
-
-                # Sample the oscilloscope once per second for 5 seconds while
-                # the generator is performing short 0.1s sweeps. We'll collect
-                # one 'screen' per second (5 samples total) and emit a time
-                # series (seconds) and the measured amplitude (pk-pk).
-                samples = []
-                sample_times = []
-                sample_count = 5
-                for sec in range(sample_count):
-                    # wait one second between captures (first capture immediate)
-                    if sec > 0:
-                        time.sleep(1.0)
-
-                    if self.oscilloscope and self.oscilloscope.is_connected:
-                        try:
-                            # Prefer acquiring the full waveform and compute pk-pk
-                            wf = self.oscilloscope.acquire_waveform(channel=1, require_trigger=False)
-                            if wf is not None:
-                                pkpk = float(np.max(wf.voltages) - np.min(wf.voltages))
-                                samples.append(pkpk)
-                            else:
-                                samples.append(0.0)
-                        except Exception as e:
-                            logger.debug(f"Waveform capture error at second {sec}: {e}")
-                            samples.append(0.0)
-                    else:
-                        # Demo sample
-                        center_freq = (self.freq_start + self.freq_stop) / 2
-                        peak_width = (self.freq_stop - self.freq_start) * 0.1
-                        base_voltage = 0.1 + 0.05 * np.random.random()
-                        peak_voltage = 2.0 + 0.3 * np.random.random()
-                        resonance = peak_voltage * np.exp(-((center_freq - center_freq) / peak_width) ** 2)
-                        samples.append(base_voltage + resonance)
-
-                    sample_times.append(float(sec))
-
-                voltages = np.array(samples)
-                times = np.array(sample_times)
-
-                # Validate values: discard non-finite or absurd values
-                bad_mask = ~np.isfinite(voltages) | (np.abs(voltages) > 1e6)
-                if np.any(bad_mask):
-                    logger.warning(
-                        "Detected invalid amplitude samples; replacing with 0.0 for plotting"
-                    )
-                    voltages = voltages.copy()
-                    voltages[bad_mask] = 0.0
-
-                logger.info(
-                    f"Sweep sampling completed: {len(times)} samples acquired, values={voltages.tolist()}"
-                )
-                # Emit seconds array and measured amplitudes
-                self.sweep_completed.emit(times, voltages)
-            finally:
-                # Ensure generator output is turned off if we started it
-                if generator_started and self.funcgen and self.funcgen.is_connected:
-                    try:
-                        self.funcgen.stop_all_outputs()
-                    except Exception as e:
-                        logger.debug(f"Failed to stop function generator outputs: {e}")
-                # Try to return oscilloscope to normal/local mode after sweep
+            scope = None
+            
+            if self.oscilloscope and self.oscilloscope.is_connected:
+                scope = self.oscilloscope.scope
+            
+            # Step 1: Start the hardware sweep on the function generator
+            if self.funcgen and self.funcgen.is_connected:
                 try:
-                    if self.oscilloscope and self.oscilloscope.is_connected:
-                        try:
-                            # Best-effort restore of display/remote state
-                            self.oscilloscope.reset_to_normal_mode()
-                            # Also attempt to return the instrument to local
-                            try:
-                                self.oscilloscope._send_command(":SYSTem:LOCal")
-                            except Exception:
-                                # Some instruments accept SYST:LOC or SYSTem:LOCal
-                                try:
-                                    self.oscilloscope._send_command("SYSTem:LOCal")
-                                except Exception:
-                                    logger.debug("Could not send local command to oscilloscope")
-                        except Exception as e:
-                            logger.debug(f"Failed to reset oscilloscope after sweep: {e}")
-                except Exception:
-                    pass
+                    success = self.funcgen.sine_frequency_sweep(
+                        amplitude=self.amplitude,
+                        freq_start=self.freq_start,
+                        freq_end=self.freq_stop,
+                        sweep_time=self.sweep_time,
+                        channel=1,
+                    )
+                    if not success:
+                        self.sweep_error.emit("Failed to start hardware sweep")
+                        return
+                    generator_started = True
+                    logger.info(f"Sweep started: {self.freq_start:.3f} - {self.freq_stop:.3f} MHz, "
+                               f"amplitude={self.amplitude:.2f} Vpp, time={self.sweep_time:.2f}s")
+                except Exception as e:
+                    logger.error(f"Hardware sweep failed to start: {e}")
+                    self.sweep_error.emit(f"Hardware sweep error: {e}")
+                    return
+            else:
+                logger.warning("Function generator not connected - using demo data")
             
-                # (No additional emissions here; we already emitted the sampled
-                # time-series above. Clean up and continue.)
+            # Step 2: Wait 1.5 seconds for sweep to run
+            wait_time = 1.5
+            logger.info(f"Waiting {wait_time:.1f}s for sweep...")
+            time.sleep(wait_time)
+            
+            # Step 3: Capture waveform data from oscilloscope (don't stop it, just read)
+            times = None
+            voltages = None
+            scope_limits = None
+            
+            if scope is not None:
+                try:
+                    # Ensure scope is in remote mode
+                    scope.write(":SYSTem:REMote")
+                    
+                    # Set trigger mode to AUTO so scope continuously triggers
+                    scope.write("TRMD AUTO")
+                    time.sleep(0.1)
+                    
+                    # Start acquisition and wait for memory to fill
+                    scope.write(":RUN")
+                    time.sleep(1.0)  # Wait for scope to start acquiring
+                    
+                    # Force trigger to ensure we capture data
+                    scope.write("FRTR")
+                    time.sleep(1.0)  # Wait for acquisition memory to fill
+                    
+                    # Check trigger status
+                    status = scope.query(":TRIGger:STATus?").strip()
+                    logger.info(f"Trigger status after RUN+FRTR: {status}")
+                    
+                    # Query scope settings
+                    vdiv_response = scope.query("C1:VDIV?").strip()
+                    vdiv_volts = self._parse_siglent_value(vdiv_response)
+                    ofst_response = scope.query("C1:OFST?").strip()
+                    voffset_volts = self._parse_siglent_value(ofst_response)
+                    tdiv_response = scope.query("TDIV?").strip()
+                    tdiv_seconds = self._parse_siglent_value(tdiv_response)
+                    
+                    logger.info(f"Scope settings: VDIV={vdiv_volts*1000:.1f}mV, OFST={voffset_volts*1000:.1f}mV, TDIV={tdiv_seconds*1000:.2f}ms")
+                    
+                    # Query sample rate to calculate screen samples
+                    try:
+                        sara_response = scope.query("SARA?").strip()
+                        # Parse "SARA 5.00E+07Sa/s" format
+                        actual_sample_rate = self._parse_siglent_value(sara_response)
+                        logger.info(f"Sample rate: {actual_sample_rate/1e6:.2f} MSa/s")
+                    except Exception:
+                        actual_sample_rate = 50e6  # Default fallback
+                        logger.warning("Could not query sample rate, using 50 MSa/s default")
+                    
+                    # Calculate screen time and expected screen samples
+                    screen_time = 10.0 * tdiv_seconds  # 10 divisions
+                    screen_samples = int(screen_time * actual_sample_rate)
+                    logger.info(f"Screen: {screen_time*1000:.1f}ms = {screen_samples} samples at {actual_sample_rate/1e6:.1f} MSa/s")
+                    
+                    # Now stop to freeze the display for reading
+                    scope.write(":STOP")
+                    time.sleep(0.5)
+                    
+                    # Increase timeout for large data transfer
+                    old_timeout = scope.timeout
+                    scope.timeout = 60000  # 60 seconds for large transfers
+                    old_chunk = scope.chunk_size
+                    scope.chunk_size = 1024 * 1024  # 1MB chunks
+                    
+                    # Siglent SDS800X HD has a 5M sample transfer limit per request
+                    # Read in chunks of 5M to get all screen data
+                    chunk_size = 5000000  # 5M samples per transfer
+                    all_samples = []
+                    
+                    try:
+                        # Read data in 5M chunks using native Siglent WFSU command
+                        samples_read = 0
+                        while samples_read < screen_samples:
+                            remaining = screen_samples - samples_read
+                            points_to_read = min(chunk_size, remaining)
+                            
+                            # Set up chunk read: SP=sparsing(1=all), NP=num points, FP=first point
+                            scope.write(f"WFSU SP,1,NP,{points_to_read},FP,{samples_read}")
+                            time.sleep(0.2)
+                            
+                            logger.info(f"Reading chunk: FP={samples_read}, NP={points_to_read}")
+                            
+                            # Read this chunk using query_binary_values for reliable transfer
+                            chunk_samples = scope.query_binary_values(
+                                "C1:WF? DAT2",
+                                datatype='B',
+                                is_big_endian=False,
+                                container=np.array,
+                                header_fmt='ieee'
+                            )
+                            chunk_samples = np.array(chunk_samples, dtype=np.uint8)
+                            
+                            if len(chunk_samples) > 0:
+                                all_samples.append(chunk_samples)
+                                samples_read += len(chunk_samples)
+                                logger.info(f"Got {len(chunk_samples)} samples in chunk, total: {samples_read}")
+                            else:
+                                logger.warning("No data received in chunk")
+                                break
+                            
+                            # Safety check - if we got less than requested, we've reached the end
+                            if len(chunk_samples) < points_to_read:
+                                logger.info(f"Received less than requested ({len(chunk_samples)} < {points_to_read}), done")
+                                break
+                        
+                        # Combine all chunks
+                        if all_samples:
+                            samples = np.concatenate(all_samples)
+                            logger.info(f"Captured {len(samples)} total samples via chunked read")
+                        else:
+                            samples = np.array([])
+                            
+                    except Exception as chunk_err:
+                        logger.error(f"Chunked read failed: {chunk_err}")
+                        samples = np.array([])
+                    finally:
+                        scope.timeout = old_timeout
+                        scope.chunk_size = old_chunk
+                    
+                    if samples.size > 0:
+                        logger.info(f"Got {samples.size} total samples, raw range: {samples.min()} to {samples.max()}")
+                        
+                        # Store original sample min/max BEFORE downsampling
+                        original_sample_min = samples.min()
+                        original_sample_max = samples.max()
+                        
+                        # Screen time = 10 divisions × TDIV (what you see on scope screen)
+                        screen_time = 10.0 * tdiv_seconds
+                        
+                        # Calculate total time of captured data based on sample rate
+                        total_captured_time = samples.size / actual_sample_rate
+                        logger.info(f"Captured {samples.size} samples = {total_captured_time*1000:.1f}ms at {actual_sample_rate/1e6:.1f} MSa/s")
+                        logger.info(f"Screen time: {screen_time*1000:.1f}ms")
+                        
+                        # If we captured more than screen time, trim to screen time
+                        if total_captured_time > screen_time:
+                            # Calculate how many samples correspond to screen time
+                            samples_for_screen = int(screen_time * actual_sample_rate)
+                            logger.info(f"Trimming {samples.size} samples to {samples_for_screen} for screen time")
+                            samples = samples[:samples_for_screen]
+                            total_captured_time = screen_time
+                        
+                        logger.info(f"Using {samples.size} samples for {total_captured_time*1000:.1f}ms")
+                        
+                        # Downsample for display using min-max decimation to preserve peaks
+                        max_display = 10000
+                        if samples.size > max_display:
+                            # Use min-max decimation: for each segment, keep both min and max
+                            # This preserves peak amplitude information
+                            n_segments = max_display // 2  # Each segment produces 2 points (min, max)
+                            segment_size = samples.size // n_segments
+                            
+                            display_samples = []
+                            for i in range(n_segments):
+                                start_idx = i * segment_size
+                                end_idx = start_idx + segment_size
+                                segment = samples[start_idx:end_idx]
+                                if len(segment) > 0:
+                                    display_samples.append(segment.min())
+                                    display_samples.append(segment.max())
+                            
+                            display_samples = np.array(display_samples, dtype=np.uint8)
+                            logger.info(f"Downsampled to {display_samples.size} points using min-max decimation")
+                        else:
+                            display_samples = samples
+                        
+                        # Convert to voltages using Siglent SDS800X HD formula
+                        # Sample 128 = offset (center of screen)
+                        # Sample 0 = offset - 4*VDIV, Sample 255 = offset + 4*VDIV
+                        # 8 divisions total, 256 ADC values
+                        volts_per_adc = (8.0 * vdiv_volts) / 256.0
+                        voltages = (display_samples.astype(np.float64) - 128.0) * volts_per_adc + voffset_volts
+                        
+                        # Calculate voltage range from ORIGINAL samples for accurate Y-limits
+                        voltage_min = (original_sample_min - 128.0) * volts_per_adc + voffset_volts
+                        voltage_max = (original_sample_max - 128.0) * volts_per_adc + voffset_volts
+                        
+                        # Generate time axis based on ACTUAL captured time (not screen time)
+                        # This ensures data is plotted at correct time positions
+                        times = np.linspace(0, total_captured_time, len(voltages))
+                        
+                        # Y-axis limits: offset at bottom (fixed), data above offset shown with margin
+                        # Data below offset will be clipped
+                        actual_voltage_max = voltages.max()
+                        
+                        scope_y_min = voffset_volts  # Fixed at offset
+                        data_above = actual_voltage_max - voffset_volts
+                        scope_y_max = actual_voltage_max + data_above * 0.25  # 25% margin above data max
+                        
+                        logger.info(f"Y-axis: offset={voffset_volts*1000:.1f}mV, data_max={actual_voltage_max*1000:.1f}mV, y_max={scope_y_max*1000:.1f}mV")
+                        
+                        # X-axis should match screen time (even if data doesn't fill it all)
+                        scope_limits = {
+                            'y_min': scope_y_min,
+                            'y_max': scope_y_max,
+                            'time_start': 0,
+                            'time_end': total_captured_time,  # Use actual data time, not screen time
+                        }
+                        
+                        logger.info(f"Displaying {len(voltages)} points")
+                        logger.info(f"Data time: {times[0]*1000:.3f}ms to {times[-1]*1000:.3f}ms")
+                        logger.info(f"Voltage: {voltages.min()*1000:.2f}mV to {voltages.max()*1000:.2f}mV")
+                        logger.info(f"Y-axis limits: {scope_y_min*1000:.1f}mV to {scope_y_max*1000:.1f}mV")
+                    else:
+                        logger.warning("Oscilloscope returned no samples")
+                    
+                    # Restore normal trigger mode and return to local control
+                    try:
+                        scope.write("TRMD NORM")
+                        scope.write(":RUN")
+                        scope.write(":SYSTem:LOCal")
+                    except Exception:
+                        pass
+                        
+                except Exception as e:
+                    logger.error(f"Failed to capture waveform: {e}")
+            
+            # If no real data, generate demo data
+            if times is None or voltages is None:
+                logger.info("Using demo data for plotting")
+                # Generate synthetic resonance response
+                num_points = 1000
+                times = np.linspace(0, self.sweep_time, num_points)
+                # Simulate a resonance peak somewhere in the middle
+                center_time = self.sweep_time / 2
+                peak_width = self.sweep_time * 0.1
+                base_voltage = 0.1 + 0.05 * np.random.random()
+                peak_voltage = 2.0 + 0.3 * np.random.random()
+                voltages = base_voltage + peak_voltage * np.exp(-((times - center_time) / peak_width) ** 2)
+                # Add some noise
+                voltages += np.random.normal(0, 0.02, len(voltages))
+                # Demo scope limits - auto scale to data
+                scope_limits = None
+            
+            # Validate values
+            bad_mask = ~np.isfinite(voltages) | (np.abs(voltages) > 1e6)
+            if np.any(bad_mask):
+                logger.warning("Detected invalid voltage values; replacing with 0.0")
+                voltages = voltages.copy()
+                voltages[bad_mask] = 0.0
+            
+            # Emit the captured data along with scope display limits
+            self.sweep_completed.emit(times, voltages, scope_limits)
             
         except Exception as e:
             logger.error(f"Sweep failed: {e}")
             self.sweep_error.emit(str(e))
-            
-        except Exception as e:
-            logger.error(f"Sweep failed: {e}")
-            self.sweep_error.emit(str(e))
+        finally:
+            # Stop function generator output after sweep
+            if generator_started and self.funcgen and self.funcgen.is_connected:
+                try:
+                    self.funcgen.stop_all_outputs()
+                    logger.info("Function generator outputs stopped")
+                except Exception as e:
+                    logger.debug(f"Failed to stop function generator outputs: {e}")
 
 
 class ResonanceFinderWidget(QWidget):
@@ -272,51 +472,78 @@ class ResonanceFinderWidget(QWidget):
         
         # Left panel for controls
         left_panel = QWidget()
-        left_panel.setFixedWidth(350)
+        left_panel.setFixedWidth(300)
         left_layout = QVBoxLayout(left_panel)
         
         # Sweep parameters
         sweep_group = QGroupBox("Sweep Parameters")
         sweep_layout = QGridLayout(sweep_group)
+        sweep_layout.setHorizontalSpacing(10)
+        sweep_layout.setVerticalSpacing(8)
+        sweep_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Amplitude
-        sweep_layout.addWidget(QLabel("Amplitude (Vₚₚ):"), 0, 0)
+        # Set fixed widths for consistent layout
+        spinbox_width = 110
+        
+        # Amplitude - label LEFT aligned, spinbox with suffix
+        amp_label = QLabel("Amplitude:")
+        amp_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sweep_layout.addWidget(amp_label, 0, 0)
         self.sweep_amp_spinbox = QDoubleSpinBox()
         self.sweep_amp_spinbox.setRange(0.1, 10.0)
         self.sweep_amp_spinbox.setSingleStep(0.1)
         self.sweep_amp_spinbox.setDecimals(1)
         self.sweep_amp_spinbox.setValue(4.0)
+        self.sweep_amp_spinbox.setSuffix(" Vpp")
+        self.sweep_amp_spinbox.setFixedWidth(spinbox_width)
+        self.sweep_amp_spinbox.setAlignment(Qt.AlignRight)
         sweep_layout.addWidget(self.sweep_amp_spinbox, 0, 1)
         
-        # Start frequency
-        sweep_layout.addWidget(QLabel("Start Frequency (MHz):"), 1, 0)
+        # Start frequency - label LEFT aligned, spinbox with suffix
+        start_label = QLabel("Start Freq:")
+        start_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sweep_layout.addWidget(start_label, 1, 0)
         self.freq_start_spinbox = QDoubleSpinBox()
         self.freq_start_spinbox.setRange(1.0, 100.0)
         self.freq_start_spinbox.setSingleStep(0.1)
         self.freq_start_spinbox.setDecimals(1)
         self.freq_start_spinbox.setValue(13.0)
+        self.freq_start_spinbox.setSuffix(" MHz")
+        self.freq_start_spinbox.setFixedWidth(spinbox_width)
+        self.freq_start_spinbox.setAlignment(Qt.AlignRight)
         sweep_layout.addWidget(self.freq_start_spinbox, 1, 1)
         
-        # Stop frequency
-        sweep_layout.addWidget(QLabel("Stop Frequency (MHz):"), 2, 0)
+        # Stop frequency - label LEFT aligned, spinbox with suffix
+        stop_label = QLabel("Stop Freq:")
+        stop_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sweep_layout.addWidget(stop_label, 2, 0)
         self.freq_stop_spinbox = QDoubleSpinBox()
         self.freq_stop_spinbox.setRange(1.0, 100.0)
         self.freq_stop_spinbox.setSingleStep(0.1)
         self.freq_stop_spinbox.setDecimals(1)
         self.freq_stop_spinbox.setValue(15.0)
+        self.freq_stop_spinbox.setSuffix(" MHz")
+        self.freq_stop_spinbox.setFixedWidth(spinbox_width)
+        self.freq_stop_spinbox.setAlignment(Qt.AlignRight)
         sweep_layout.addWidget(self.freq_stop_spinbox, 2, 1)
         
-        # Sweep time
-        sweep_layout.addWidget(QLabel("Sweep Time (s):"), 3, 0)
+        # Sweep time - label LEFT aligned, spinbox with suffix
+        time_label = QLabel("Sweep Time:")
+        time_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        sweep_layout.addWidget(time_label, 3, 0)
         self.sweep_time_spinbox = QDoubleSpinBox()
         self.sweep_time_spinbox.setRange(0.1, 10.0)
         self.sweep_time_spinbox.setSingleStep(0.1)
         self.sweep_time_spinbox.setDecimals(1)
         self.sweep_time_spinbox.setValue(0.1)
-        # Sweep time (used for generator sweep duration) is user-changeable
+        self.sweep_time_spinbox.setSuffix(" s")
+        self.sweep_time_spinbox.setFixedWidth(spinbox_width)
+        self.sweep_time_spinbox.setAlignment(Qt.AlignRight)
         self.sweep_time_spinbox.setEnabled(True)
         sweep_layout.addWidget(self.sweep_time_spinbox, 3, 1)
         
+        # Add stretch to push spinboxes to right
+        sweep_layout.setColumnStretch(1, 1)
         
         left_layout.addWidget(sweep_group)
         
@@ -334,10 +561,10 @@ class ResonanceFinderWidget(QWidget):
         left_layout.addWidget(self.loading_label)
         
         # Selected frequencies display
-        freq_group = QGroupBox("Selected Frequencies")
+        freq_group = QGroupBox("Selected Points")
         freq_layout = QVBoxLayout(freq_group)
         
-        self.freq_display_label = QLabel("No frequencies selected")
+        self.freq_display_label = QLabel("No points selected")
         self.freq_display_label.setWordWrap(True)
         self.freq_display_label.setStyleSheet("padding: 5px;")
         freq_layout.addWidget(self.freq_display_label)
@@ -349,7 +576,7 @@ class ResonanceFinderWidget(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         
-        plot_group = QGroupBox("Sweep Response")
+        plot_group = QGroupBox("Oscilloscope Capture")
         plot_layout = QVBoxLayout(plot_group)
         
         # Create matplotlib figure
@@ -358,7 +585,7 @@ class ResonanceFinderWidget(QWidget):
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         self.ax = self.figure.add_subplot(111)
-        self.ax.set_xlabel('Frequency (MHz)')
+        self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Voltage (V)')
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
@@ -412,8 +639,14 @@ class ResonanceFinderWidget(QWidget):
         self.sweep_worker.sweep_error.connect(self._on_sweep_error)
         self.sweep_worker.start()
     
-    def _on_sweep_completed(self, frequencies, voltages):
-        """Handle completed frequency sweep."""
+    def _on_sweep_completed(self, times, voltages, scope_limits):
+        """Handle completed frequency sweep and oscilloscope capture.
+        
+        Args:
+            times: Time values from oscilloscope (seconds)
+            voltages: Voltage values from oscilloscope (volts)
+            scope_limits: Dict with y_min, y_max, screen_time from scope settings, or None for auto
+        """
         try:
             # Store sweep parameters for saving
             self.sweep_parameters = {
@@ -423,9 +656,9 @@ class ResonanceFinderWidget(QWidget):
                 'sweep_time_s': self.sweep_time_spinbox.value(),
                 'timestamp': datetime.now().isoformat()
             }
-            # Single-run: just plot the returned voltages
-            self._plot_sweep_data(frequencies, voltages)
-            logger.info(f"Sweep completed: {len(frequencies)} points")
+            # Plot the captured oscilloscope data with scope limits
+            self._plot_sweep_data(times, voltages, scope_limits)
+            logger.info(f"Oscilloscope capture completed: {len(times)} points")
         except Exception as e:
             logger.error(f"Plot update failed: {e}")
         finally:
@@ -443,8 +676,14 @@ class ResonanceFinderWidget(QWidget):
         self.start_button.setEnabled(True)
         self.loading_label.hide()
     
-    def _plot_sweep_data(self, frequencies, voltages):
-        """Plot the frequency sweep data."""
+    def _plot_sweep_data(self, times, voltages, scope_limits=None):
+        """Plot the oscilloscope screen capture data.
+        
+        Args:
+            times: Time values from oscilloscope (seconds)
+            voltages: Voltage values from oscilloscope (volts)
+            scope_limits: Optional dict with y_min, y_max, time_start, time_end to match scope display
+        """
         # Save previous frequencies if any exist
         if self.clicked_frequencies:
             self.previous_frequency_lists.append(self.clicked_frequencies.copy())
@@ -457,33 +696,32 @@ class ResonanceFinderWidget(QWidget):
         
         # Clear and setup plot
         self.ax.clear()
-        # Auto-label axis: if x-values look like small seconds (0..10) use Time
-        try:
-            if np.nanmax(frequencies) <= 10 and np.nanmin(frequencies) >= 0:
-                self.ax.set_xlabel('Time (s)')
-            else:
-                self.ax.set_xlabel('Frequency (MHz)')
-        except Exception:
-            self.ax.set_xlabel('Frequency (MHz)')
+        self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Voltage (V)')
         
         # Plot data
-        frequencies = np.array(frequencies)
+        times = np.array(times)
         voltages = np.array(voltages)
         
-        self.ax.plot(frequencies, voltages, 'b-', linewidth=1.0)
+        logger.info(f"Plot function received: voltages min={voltages.min()*1000:.1f}mV, max={voltages.max()*1000:.1f}mV")
         
-        # Set reasonable limits
-        freq_margin = (frequencies.max() - frequencies.min()) * 0.05
-        self.ax.set_xlim(frequencies.min() - freq_margin, frequencies.max() + freq_margin)
+        self.ax.plot(times, voltages, 'b-', linewidth=1.0)
         
-        volt_margin = (voltages.max() - voltages.min()) * 0.1
-        if volt_margin == 0:
-            volt_margin = 0.1
-        self.ax.set_ylim(voltages.min() - volt_margin, voltages.max() + volt_margin)
+        # X-axis: 0 to 100ms (full screen time)
+        self.ax.set_xlim(0, times.max())
+        
+        # Y-axis: offset at bottom (fixed), auto-scale max to show ALL data
+        y_min = scope_limits['y_min'] if scope_limits else voltages.min()  # offset
+        y_max = voltages.max()  # actual data max
+        y_range = y_max - y_min
+        y_max_with_margin = y_max + y_range * 0.15  # 15% margin above data
+        
+        self.ax.set_ylim(y_min, y_max_with_margin)
+        
+        logger.info(f"Plot Y-axis: y_min(offset)={y_min*1000:.1f}mV, data_max={y_max*1000:.1f}mV, y_max(axis)={y_max_with_margin*1000:.1f}mV")
         
         # Store data for click detection
-        self.current_frequencies = frequencies
+        self.current_frequencies = times  # Store times as x-axis data
         self.current_voltages = voltages
         self.data_loaded = True
         
@@ -503,11 +741,18 @@ class ResonanceFinderWidget(QWidget):
             return
         
         # Round to reasonable precision
-        click_x = round(click_x, 3)
+        click_x = round(click_x, 6)
+        
+        # Calculate tolerance based on data range (1% of visible range)
+        if self.current_frequencies is not None and len(self.current_frequencies) > 1:
+            data_range = np.max(self.current_frequencies) - np.min(self.current_frequencies)
+            tolerance = data_range * 0.01
+        else:
+            tolerance = 0.00001  # Default for small time values
         
         # Check if clicking near existing point (remove it)
         for i, freq in enumerate(self.clicked_frequencies):
-            if abs(freq - click_x) < 0.05:  # 50 kHz tolerance
+            if abs(freq - click_x) < tolerance:
                 self.point_markers[i].remove()
                 del self.clicked_frequencies[i]
                 del self.point_markers[i]
@@ -527,33 +772,33 @@ class ResonanceFinderWidget(QWidget):
         self._update_frequency_display()
     
     def _update_frequency_display(self):
-        """Update the frequency display label."""
+        """Update the time/position display label."""
         if not self.clicked_frequencies and not self.previous_frequency_lists:
-            self.freq_display_label.setText("No frequencies selected")
+            self.freq_display_label.setText("No points selected")
             return
         
         display_text = ""
         
-        # Current frequencies
+        # Current selected points (times)
         if self.clicked_frequencies:
             sorted_current = sorted(self.clicked_frequencies)
-            current_text = "Selected frequencies (MHz):\n" + ", ".join(f"{f:.3f}" for f in sorted_current)
+            current_text = "Selected points (time in s):\n" + ", ".join(f"{t:.6f}" for t in sorted_current)
             display_text += current_text
         
-        # Previous frequencies
+        # Previous points
         if self.previous_frequency_lists:
             if display_text:
                 display_text += "\n\n"
             
-            prev_text = "Previous frequencies (MHz):\n"
+            prev_text = "Previous selections:\n"
             for i, prev_list in enumerate(reversed(self.previous_frequency_lists[-3:])):  # Show last 3
                 if prev_list:
                     sorted_prev = sorted(prev_list)
-                    prev_text += f"• {', '.join(f'{f:.3f}' for f in sorted_prev)}\n"
+                    prev_text += f"• {', '.join(f'{t:.6f}' for t in sorted_prev)}\n"
             display_text += prev_text.rstrip()
         
         if not display_text:
-            display_text = "No frequencies selected"
+            display_text = "No points selected"
         
         self.freq_display_label.setText(display_text)
     
