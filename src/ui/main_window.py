@@ -512,6 +512,26 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Function generator cleanup error: {e}")
             
+            # Reset oscilloscope to normal mode and exit remote mode
+            osc_reset = False
+            if hasattr(self, 'oscilloscope_controller') and self.oscilloscope_controller:
+                try:
+                    self.oscilloscope_controller.reset_to_normal_mode()
+                    logger.info("Oscilloscope reset to normal mode")
+                    osc_reset = True
+                except Exception as e:
+                    logger.debug(f"Oscilloscope reset error: {e}")
+            
+            # Also try via device manager if direct reference didn't work
+            if not osc_reset and hasattr(self, 'device_manager') and self.device_manager:
+                try:
+                    osc = self.device_manager.get_oscilloscope()
+                    if osc and osc.is_connected:
+                        osc.reset_to_normal_mode()
+                        logger.info("Oscilloscope reset via DeviceManager")
+                except Exception as e:
+                    logger.debug(f"Oscilloscope reset via DeviceManager error: {e}")
+            
             # Cleanup camera
             if hasattr(self, 'camera_widget') and self.camera_widget:
                 try:
