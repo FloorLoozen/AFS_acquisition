@@ -1,7 +1,9 @@
 """Main application window for the AFS Acquisition."""
 
 import time
+import os
 import threading
+import h5py
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
@@ -549,6 +551,26 @@ class MainWindow(QMainWindow):
             
             logger.info("Cleanup completed")
             
+            # Save last HDF5 file path to config if any data was recorded
+            try:
+                last_hdf5_path = None
+                
+                # Check camera widget for active or last recording
+                if hasattr(self, 'camera_widget') and self.camera_widget:
+                    if hasattr(self.camera_widget, 'hdf5_recorder') and self.camera_widget.hdf5_recorder:
+                        if hasattr(self.camera_widget.hdf5_recorder, 'file_path'):
+                            last_hdf5_path = str(self.camera_widget.hdf5_recorder.file_path)
+                
+                # Save to config if we have a path
+                if last_hdf5_path:
+                    from src.utils.config_manager import ConfigManager
+                    config = ConfigManager()
+                    config.files.last_hdf5_file = last_hdf5_path
+                    config.save_config()
+                    logger.info(f"Saved last HDF5 file path: {last_hdf5_path}")
+            except Exception as e:
+                logger.debug(f"Could not save last HDF5 file path: {e}")
+            
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
         
@@ -828,16 +850,18 @@ class MainWindow(QMainWindow):
         
         # Each recording gets its own new file
         # LUT data is stored separately and referenced if needed
-        import os
-        import h5py
-        import time
+        # os, h5py, and time already imported at module level
         
         file_has_lut = False
         
-        logger.info(f"Checking for LUT data in: {file_path}")
+        # Check for LUT in the saved LUT file first (if LUT was acquired previously)
+        lut_check_file = self._lut_file_path if hasattr(self, '_lut_file_path') and self._lut_file_path else file_path
+        logger.info(f"Checking for LUT data in: {lut_check_file}")
+        if self._lut_file_path and self._lut_file_path != file_path:
+            logger.info(f"  (LUT acquired in separate file: {self._lut_file_path})")
         
         # Always check the actual file - don't rely on flags
-        if os.path.exists(file_path):
+        if os.path.exists(lut_check_file):
             logger.info(f"File exists, checking HDF5 structure...")
             
             # Try multiple times in case file is still being closed
@@ -845,7 +869,7 @@ class MainWindow(QMainWindow):
             for attempt in range(max_attempts):
                 try:
                     # Try to open file and check for LUT
-                    with h5py.File(file_path, 'r') as f:
+                    with h5py.File(lut_check_file, 'r') as f:
                         logger.info(f"Opened file (attempt {attempt + 1}), checking for /raw_data/LUT...")
                         if 'raw_data' in f:
                             logger.info(f"Found /raw_data group")
@@ -880,7 +904,7 @@ class MainWindow(QMainWindow):
                         # If we can't read the file, assume no LUT to be safe
                         file_has_lut = False
         else:
-            logger.info(f"File does not exist yet: {file_path}")
+            logger.info(f"File does not exist yet: {lut_check_file}")
         
         # Only ask about LUT if file doesn't already have it
         if not file_has_lut:

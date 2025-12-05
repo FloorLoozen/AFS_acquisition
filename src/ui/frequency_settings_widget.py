@@ -32,6 +32,10 @@ class MeasurementSettingsWidget(QGroupBox):
         # Use simple date format for filename: YYYYMMDD
         self.default_filename = datetime.now().strftime("%Y%m%d")
         
+        # Session filename - set once and reused for all operations in this session
+        # This ensures LUT, recording, and resonance sweeps use the SAME file
+        self._session_filename = None
+        
         # Create default directory if it doesn't exist
         self._create_default_directory()
         
@@ -235,8 +239,17 @@ class MeasurementSettingsWidget(QGroupBox):
         return self.notes_edit.text().strip()
 
     def get_filename(self):
-        """Get the current HDF5 filename with .hdf5 extension and automatic numbering."""
+        """Get the current HDF5 filename with .hdf5 extension and automatic numbering.
+        
+        Once a filename is determined for the session, it is cached and reused
+        to ensure all operations (LUT, recording, resonance sweeps) use the SAME file.
+        """
         import os
+        
+        # If we already have a session filename, reuse it
+        if self._session_filename:
+            return self._session_filename
+        
         base_filename = self.filename_edit.text().strip() or self.default_filename
         
         # Check if file already exists and add numbering
@@ -246,6 +259,8 @@ class MeasurementSettingsWidget(QGroupBox):
             full_path = os.path.join(self.save_path, filename)
             
             if not os.path.exists(full_path):
+                # Cache this filename for the session
+                self._session_filename = filename
                 return filename
             
             # If base filename exists, start numbering from 1
@@ -254,10 +269,14 @@ class MeasurementSettingsWidget(QGroupBox):
                 filename = f"{base_filename}_{counter}.hdf5"
                 full_path = os.path.join(self.save_path, filename)
                 if not os.path.exists(full_path):
+                    # Cache this filename for the session
+                    self._session_filename = filename
                     return filename
                 counter += 1
         else:
-            return f"{base_filename}.hdf5"
+            filename = f"{base_filename}.hdf5"
+            self._session_filename = filename
+            return filename
 
     def get_full_file_path(self):
         """Get the complete path for the HDF5 file."""
@@ -315,6 +334,15 @@ class MeasurementSettingsWidget(QGroupBox):
     def is_configured(self):
         """Check if save path is configured."""
         return bool(self.save_path)
+    
+    def reset_session_filename(self):
+        """Reset the cached session filename.
+        
+        Call this when starting a completely new measurement session to allow
+        automatic filename generation to find the next available number.
+        """
+        self._session_filename = None
+        logger.info("Session filename reset - next call to get_filename() will generate new filename")
 
 
 # Example usage if this file is run directly

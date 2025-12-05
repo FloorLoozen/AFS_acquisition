@@ -52,6 +52,7 @@ import cv2
 import os
 from pathlib import Path
 import numpy as np
+import h5py
 from datetime import datetime
 from typing import Optional
 import threading
@@ -317,8 +318,7 @@ class CameraWidget(QGroupBox):
         )
         # Additionally probe dataset-level storage to report actual on-disk compression
         try:
-            import h5py
-            import numpy as np
+            # h5py and numpy already imported at module level
             ds_info_lines = []
             with h5py.File(path, 'r') as f:
                 # Prefer main_video dataset under /raw_data
@@ -798,6 +798,103 @@ class CameraWidget(QGroupBox):
                 file_path = file_path + '.hdf5'
             
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Check if file exists and has a recording session WITH ACTUAL VIDEO DATA
+            if os.path.exists(file_path):
+                # h5py already imported at module level
+                try:
+                    with h5py.File(file_path, 'r') as hf:
+                        # Check if there's already a recording session with video frames
+                        has_video_recording = False
+                        if 'raw_data' in hf and 'recordings' in hf['raw_data']:
+                            recordings_group = hf['raw_data']['recordings']
+                            # Check each recording session for actual video data
+                            for session_name in recordings_group.keys():
+                                session = recordings_group[session_name]
+                                # Check if 'frames' dataset exists AND has 'total_frames' attribute > 0
+                                # (LUT creates empty frames dataset but doesn't set total_frames)
+                                if 'frames' in session:
+                                    # Check total_frames attribute (only set after real recording)
+                                    total_frames = session['frames'].attrs.get('total_frames', 0)
+                                    if total_frames > 0:
+                                        has_video_recording = True
+                                        logger.info(f"Found existing video recording: {session_name} with {total_frames} frames")
+                                        break
+                        
+                        if has_video_recording:
+                            # File already has a VIDEO recording (not just LUT), prompt user
+                            from PyQt5.QtWidgets import QMessageBox
+                            reply = QMessageBox.warning(
+                                self,
+                                "Recording Exists",
+                                f"This file already contains a video recording.\\n\\n"
+                                f"Starting a new recording will create a NEW file.\\n\\n"
+                                f"Do you want to create a new file for this recording?",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No
+                            )
+                            
+                            if reply == QMessageBox.No:
+                                logger.info("User cancelled second recording")
+                                return False
+                            
+                            # Ask if user wants to copy LUT and resonance data
+                            copy_reply = QMessageBox.question(
+                                self,
+                                "Copy Data",
+                                f"Do you want to copy LUT and resonance sweep data\\n"
+                                f"to the new recording file?",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes
+                            )
+                            
+                            copy_data = (copy_reply == QMessageBox.Yes)
+                            
+                            # Generate new filename with timestamp
+                            # Use module-level imports (datetime and Path already imported at top)
+                            original_path = Path(file_path)
+                            old_file_path = file_path
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            new_filename = f"{original_path.stem}_{timestamp}{original_path.suffix}"
+                            file_path = str(original_path.parent / new_filename)
+                            logger.info(f"Creating new file for second recording: {file_path}")
+                            
+                            # Copy LUT and resonance data if requested
+                            if copy_data:
+                                try:
+                                    with h5py.File(old_file_path, 'r') as src:
+                                        with h5py.File(file_path, 'w') as dst:
+                                            # Copy LUT data if exists
+                                            if 'raw_data' in src and 'LUT' in src['raw_data']:
+                                                dst.create_group('raw_data')
+                                                src.copy('raw_data/LUT', dst['raw_data'])
+                                                logger.info("Copied LUT data to new file")
+                                            
+                                            # Copy execution log (resonance sweeps) if exists
+                                            if 'execution_log' in src:
+                                                src.copy('execution_log', dst)
+                                                logger.info("Copied resonance sweep data to new file")
+                                    
+                                    QMessageBox.information(
+                                        self,
+                                        "Data Copied",
+                                        f"New recording file created with LUT and resonance data:\\n{file_path}"
+                                    )
+                                except Exception as copy_error:
+                                    logger.error(f"Failed to copy data: {copy_error}")
+                                    QMessageBox.warning(
+                                        self,
+                                        "Copy Failed",
+                                        f"Could not copy data to new file.\\nNew file: {file_path}\\nError: {copy_error}"
+                                    )
+                            else:
+                                QMessageBox.information(
+                                    self,
+                                    "New File Created",
+                                    f"New recording file (without previous data):\\n{file_path}"
+                                )
+                except Exception as e:
+                    logger.warning(f"Could not check existing file: {e}")
             
             # Get frame shape from camera (MONO8 = 1 channel, not 3!)
             if self.camera:

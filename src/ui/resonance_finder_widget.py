@@ -7,13 +7,16 @@ import numpy as np
 import re
 import threading
 import time
+import h5py
+import io
+from pathlib import Path
 from typing import Optional, Tuple, List
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QDoubleSpinBox,
-    QFrame, QSizePolicy, QMessageBox, QApplication
+    QFrame, QSizePolicy, QMessageBox, QApplication, QFileDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
@@ -620,10 +623,10 @@ class ResonanceFinderWidget(QWidget):
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         self.ax = self.figure.add_subplot(111)
-        self.ax.set_xlabel('Time (s)')
+        self.ax.set_xlabel('Frequency (MHz)')
         self.ax.set_ylabel('Voltage (V)')
-        self.ax.set_xlim(0, 1)
-        self.ax.set_ylim(0, 1)
+        self.ax.set_xlim(0, 20)
+        self.ax.set_ylim(-2, 0)
         
         # Connect click events
         self.canvas.mpl_connect('button_press_event', self._on_plot_click)
@@ -699,6 +702,9 @@ class ResonanceFinderWidget(QWidget):
             # Plot the captured oscilloscope data with scope limits
             self._plot_sweep_data(times, voltages, scope_limits)
             logger.info(f"Oscilloscope capture completed: {len(times)} points")
+            
+            # Auto-save to HDF5 file
+            self._save_sweep_to_hdf5(times, voltages)
         except Exception as e:
             logger.error(f"Plot update failed: {e}")
         finally:
@@ -836,6 +842,128 @@ class ResonanceFinderWidget(QWidget):
             display_text = "No points selected"
         
         self.freq_display_label.setText(display_text)
+    
+    def _save_sweep_to_hdf5(self, times, voltages):
+        """Save sweep data and plot to HDF5 file from measurement settings.
+        
+        Args:
+            times: Time values from oscilloscope
+            voltages: Voltage values from oscilloscope
+        """
+        try:
+            # Try to get HDF5 file path from measurement settings first
+            hdf5_file_path = None
+            app = QApplication.instance()
+            main_windows = [widget for widget in app.topLevelWidgets() 
+                          if hasattr(widget, 'frequency_settings_widget')]
+            
+            if main_windows:
+                main_window = main_windows[0]
+                
+                # Get file path from frequency settings widget
+                if hasattr(main_window, 'frequency_settings_widget') and main_window.frequency_settings_widget:
+                    try:
+                        save_path = main_window.frequency_settings_widget.get_save_path()
+                        filename = main_window.frequency_settings_widget.get_filename()
+                        if save_path and filename:
+                            import os
+                            hdf5_file_path = os.path.join(save_path, filename)
+                            if not hdf5_file_path.lower().endswith('.hdf5'):
+                                hdf5_file_path += '.hdf5'
+                            logger.info(f"Using HDF5 file from measurement settings: {hdf5_file_path}")
+                    except Exception as e:
+                        logger.debug(f"Could not get file from measurement settings: {e}")
+                
+                # Fallback: check if recording is active
+                if not hdf5_file_path and hasattr(main_window, 'camera_widget') and main_window.camera_widget:
+                    if hasattr(main_window.camera_widget, 'hdf5_recorder') and main_window.camera_widget.hdf5_recorder:
+                        if hasattr(main_window.camera_widget.hdf5_recorder, 'file_path'):
+                            hdf5_file_path = str(main_window.camera_widget.hdf5_recorder.file_path)
+                            logger.info(f"Using active recording HDF5 file: {hdf5_file_path}")
+            
+            # If no file from settings or recording, try config
+            if not hdf5_file_path:
+                try:
+                    from src.utils.config_manager import ConfigManager
+                    config = ConfigManager()
+                    if config.files.last_hdf5_file:
+                        hdf5_file_path = config.files.last_hdf5_file
+                        logger.info(f"Using last HDF5 file from config: {hdf5_file_path}")
+                except Exception as e:
+                    logger.debug(f"Could not get last HDF5 file from config: {e}")
+            
+            # If still no file, create a new one
+            if not hdf5_file_path:
+                # datetime and Path already imported at module level
+                default_dir = Path("C:/Users/AFS/Documents/Floor/Software/AFS_acquisition/data")
+                default_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                hdf5_file_path = str(default_dir / f"resonance_data_{timestamp}.hdf5")
+                logger.info(f"Creating new HDF5 file: {hdf5_file_path}")
+            
+            # Convert times to frequencies
+            frequencies = self.start_freq + (self.stop_freq - self.start_freq) * (times / self.sweep_time)
+            
+            # Save plot as PNG in memory buffer
+            buf = io.BytesIO()
+            self.figure.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+            buf.seek(0)
+            plot_image = np.frombuffer(buf.read(), dtype=np.uint8)
+            buf.close()
+            
+            # Save to HDF5 file directly
+            with h5py.File(hdf5_file_path, 'a') as hf:
+                # Create execution_log group if it doesn't exist
+                if 'execution_log' not in hf:
+                    exec_group = hf.create_group('execution_log')
+                else:
+                    exec_group = hf['execution_log']
+                
+                # Find next resonance sweep number
+                existing_sweeps = [k for k in exec_group.keys() if k.startswith('resonance_sweep_')]
+                sweep_num = len(existing_sweeps) + 1
+                sweep_name = f"resonance_sweep_{sweep_num:03d}"
+                
+                # Create sweep group
+                sweep_group = exec_group.create_group(sweep_name)
+                
+                # Save sweep parameters as attributes
+                sweep_group.attrs['amplitude_vpp'] = self.sweep_parameters.get('amplitude_vpp', 0)
+                sweep_group.attrs['start_frequency_mhz'] = self.sweep_parameters.get('start_frequency_mhz', 0)
+                sweep_group.attrs['stop_frequency_mhz'] = self.sweep_parameters.get('stop_frequency_mhz', 0)
+                sweep_group.attrs['sweep_time_s'] = self.sweep_parameters.get('sweep_time_s', 0)
+                sweep_group.attrs['timestamp'] = self.sweep_parameters.get('timestamp', '')
+                
+                # Save waveform data
+                sweep_group.create_dataset('frequencies_mhz', data=frequencies, compression='gzip')
+                sweep_group.create_dataset('voltages_v', data=voltages, compression='gzip')
+                sweep_group.create_dataset('times_s', data=times, compression='gzip')
+                
+                # Save plot image
+                sweep_group.create_dataset('plot_image_png', data=plot_image, compression='gzip')
+                
+                # Save selected frequencies if any
+                if self.clicked_frequencies:
+                    sweep_group.create_dataset('selected_frequencies_mhz', 
+                                             data=np.array(self.clicked_frequencies), 
+                                             compression='gzip')
+                
+                logger.info(f"Saved resonance sweep to HDF5: {sweep_name} in {hdf5_file_path}")
+                logger.info(f"  Data points: {len(frequencies)}, Selected frequencies: {len(self.clicked_frequencies)}")
+            
+            # Update config with this file path
+            try:
+                from src.utils.config_manager import ConfigManager
+                config = ConfigManager()
+                config.files.last_hdf5_file = hdf5_file_path
+                config.save_config()
+            except Exception as e:
+                logger.debug(f"Could not save HDF5 file to config: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error saving sweep to HDF5: {e}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Save Error", f"Failed to save resonance data:\\n{e}")
     
     def _save_resonance_data_to_hdf5(self):
         """Save resonance data to the current HDF5 recording file."""

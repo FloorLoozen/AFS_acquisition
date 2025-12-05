@@ -141,14 +141,26 @@ class AcquisitionControlsWidget(QGroupBox):
         
         # Get the full file path for the measurement
         if not self.frequency_settings_widget.get_save_path():
-            QMessageBox.warning(self, "Invalid Path", 
-                              "Could not determine save file path. Please check your settings.")
-            return
-        
-        # Generate the full path for recording
-        filename = self.frequency_settings_widget.get_filename()
-        save_path = self.frequency_settings_widget.get_save_path()
-        full_path = os.path.join(save_path, filename)
+            # Try to use last HDF5 file from config
+            try:
+                from src.utils.config_manager import ConfigManager
+                config = ConfigManager()
+                if config.files.last_hdf5_file and os.path.exists(config.files.last_hdf5_file):
+                    full_path = config.files.last_hdf5_file
+                    logger.info(f"Using last HDF5 file from config: {full_path}")
+                else:
+                    QMessageBox.warning(self, "Invalid Path", 
+                                      "Could not determine save file path. Please check your settings.")
+                    return
+            except Exception:
+                QMessageBox.warning(self, "Invalid Path", 
+                                  "Could not determine save file path. Please check your settings.")
+                return
+        else:
+            # Generate the full path for recording
+            filename = self.frequency_settings_widget.get_filename()
+            save_path = self.frequency_settings_widget.get_save_path()
+            full_path = os.path.join(save_path, filename)
         
         try:
             # Emit signal to start recording - main_window will handle LUT check

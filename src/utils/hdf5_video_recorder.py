@@ -450,28 +450,30 @@ class HDF5VideoRecorder:
             return False
     
     def _create_video_dataset(self):
-        """Create the main video dataset with configurable compression under /raw_data/main_video."""
-        # Create /raw_data group if it doesn't exist (RENAMED from 'data' to 'raw_data')
+        """Create the main video dataset with timestamp for multiple recording sessions under /raw_data/recordings/."""
+        # Create /raw_data group if it doesn't exist
         if 'raw_data' not in self.h5_file:
             data_group = self.h5_file.create_group('raw_data')
             data_group.attrs['description'] = b'All raw measurement data including video and timelines'
         else:
             data_group = self.h5_file['raw_data']
         
-        # Check if main_video dataset already exists (e.g., from LUT-only recording)
-        if 'main_video' in data_group:
-            old_dataset = data_group['main_video']
-            old_compression = old_dataset.compression
-            old_level = old_dataset.compression_opts if hasattr(old_dataset, 'compression_opts') else None
-            
-            # If dataset exists but has different compression settings, delete and recreate
-            if old_compression != self.compression_type or old_level != self.compression_level:
-                logger.info(f"Deleting old video dataset (compression: {old_compression} level {old_level}) to create new one with {self.compression_type} level {self.compression_level}")
-                del data_group['main_video']
-            else:
-                logger.info("Video dataset already exists with matching compression, using existing dataset")
-                self.video_dataset = data_group['main_video']
-                return
+        # Create /raw_data/recordings group if it doesn't exist
+        if 'recordings' not in data_group:
+            recordings_group = data_group.create_group('recordings')
+            recordings_group.attrs['description'] = b'Video recording sessions with timestamps'
+        else:
+            recordings_group = data_group['recordings']
+        
+        # Create timestamped group for this recording session
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_name = f"recording_{timestamp}"
+        session_group = recordings_group.create_group(session_name)
+        session_group.attrs['start_time'] = timestamp
+        logger.info(f"Created new recording session: {session_name}")
+        
+        # Store session group reference
+        self.current_session_group = session_group
         
         # USER SPEC: Dataset shape (time, height, width) - NO channel dimension for grayscale
         # Frame shape is (height, width, channels) but dataset should be (time, height, width)
@@ -510,8 +512,8 @@ class HDF5VideoRecorder:
         if self.compression_type == 'gzip' and self.compression_level is not None:
             dataset_kwargs['compression_opts'] = self.compression_level
         
-        self.video_dataset = data_group.create_dataset('main_video', **dataset_kwargs)
-        self.video_dataset.attrs['description'] = b'Main camera video with efficient compression'
+        self.video_dataset = session_group.create_dataset('frames', **dataset_kwargs)
+        self.video_dataset.attrs['description'] = b'Video frames with efficient compression'
     
     def _initialize_recording_state(self):
         """Initialize recording state and start async processing."""
@@ -1650,9 +1652,9 @@ class HDF5VideoRecorder:
                 for i, frame in enumerate(frames):
                     lut_stack[i] = frame
 
-            # Create or replace LUT frames dataset
-            if 'lut_frames' in self.lut_group:
-                del self.lut_group['lut_frames']
+            # Create LUT frames dataset (no need to delete since each LUT has its own timestamped group)
+            # if 'lut_frames' in self.lut_group:
+            #     del self.lut_group['lut_frames']
 
             # Choose compression and chunking strategy based on optimize_for hint
             optimize_for_mode = (optimize_for or 'fast_write').lower()

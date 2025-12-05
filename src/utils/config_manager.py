@@ -86,6 +86,7 @@ class FilesConfig:
     max_file_age_days: int = 30
     background_compression: bool = True
     wait_for_compression: bool = False
+    last_hdf5_file: str = ""  # Last used HDF5 file path
 
 
 class ConfigManager:
