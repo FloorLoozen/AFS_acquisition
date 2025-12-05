@@ -3,11 +3,20 @@ __pycache__/
 *.py[codz]
 *$py.class
 *.so
+*.pyd
+*.pyo
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
+.eggs/
+*.egg
+
+# Installer files
+*.msi
+*.exe
+*.spec
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -18,6 +27,7 @@ dist/
 env/
 venv/
 ENV/
+.python-version
 
 # Logs
 logs/
@@ -27,11 +37,29 @@ logs/
 tests/
 *_test.py
 test_*.py
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
 
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# IDEs
 # VS Code
 .vscode/
 vscode/*
 .history/
+# PyCharm
+.idea/
+*.iml
+# Spyder
+.spyderproject
+.spyproject
 
 # GitHub Copilot
 .copilot/
@@ -41,3 +69,20 @@ vscode/*
 # Zencoder
 zencoder_temp/
 *.zencoder.*
+
+# Application-specific
+# Configuration backups
+*.json.bak
+*.yaml.bak
+# Temporary data files
+tmp/
+temp/
+*.tmp
+*.temp
+# HDF5 backup/temp files
+*.hdf5.bak
+*.h5.bak
+# Windows thumbnails
+Thumbs.db
+ehthumbs.db
+Desktop.ini

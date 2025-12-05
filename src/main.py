@@ -1,4 +1,18 @@
-"""AFS Acquisition - Main application entry point."""
+"""AFS Acquisition - Main application entry point.
+
+This module serves as the entry point for the AFS Acquisition application.
+It handles application initialization, configuration, and the main event loop.
+
+Usage:
+    python src/main.py
+
+The application will:
+    1. Setup the Python path for imports
+    2. Initialize logging and configuration
+    3. Create and display the main window
+    4. Run the Qt event loop
+    5. Save configuration on exit
+"""
 
 import sys
 import os
@@ -10,7 +24,19 @@ __version__ = "1.0.0"
 
 
 def main():
-    """Initialize and run the AFS Acquisition application."""
+    """Initialize and run the AFS Acquisition application.
+    
+    This function:
+    - Sets up the Python path for package imports
+    - Configures PyQt5 for high DPI displays
+    - Initializes logging and configuration
+    - Creates and shows the main application window
+    - Runs the Qt event loop
+    - Handles graceful shutdown and config saving
+    
+    Returns:
+        System exit code (0 for success, non-zero for errors)
+    """
     # Setup Python path
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, project_root)
@@ -23,7 +49,7 @@ def main():
     logger = get_logger("main")
     logger.info(f"Starting AFS Acquisition v{__version__}")
     
-    # Configure PyQt5 for high DPI
+    # Configure PyQt5 for high DPI displays (Windows 11)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
@@ -38,16 +64,26 @@ def main():
     config = get_config()
     
     # Create and show main window
-    from src.ui.main_window import MainWindow
-    window = MainWindow()
-    window.showMaximized()
+    try:
+        from src.ui.main_window import MainWindow
+        window = MainWindow()
+        window.showMaximized()
+    except Exception as e:
+        logger.critical(f"Failed to create main window: {e}")
+        import traceback
+        logger.critical(traceback.format_exc())
+        return 1
     
-    # Run application
+    # Run application event loop
     exit_code = app.exec_()
     
     # Save config on exit
-    config.save_config()
-    logger.info(f"Exiting (code {exit_code})")
+    try:
+        config.save_config()
+        logger.info(f"Exiting (code {exit_code})")
+    except Exception as e:
+        logger.error(f"Error saving configuration on exit: {e}")
+    
     sys.exit(exit_code)
 
 

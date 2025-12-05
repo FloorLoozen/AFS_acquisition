@@ -362,7 +362,6 @@ class CameraWidget(QGroupBox):
     
     def _update_compression_progress(self, current: int, total: int, status_text: str):
         """Update compression progress dialog (slot for compression_progress_signal)."""
-        logger.debug(f"_update_compression_progress called: {current}/{total} - {status_text}")
         if not self.compression_progress_dialog:
             # Create progress dialog
             self.compression_progress_dialog = QProgressDialog(

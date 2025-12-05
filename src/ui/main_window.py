@@ -385,9 +385,14 @@ class MainWindow(QMainWindow):
     def _open_about(self):
         """Show about dialog."""
         QMessageBox.information(self, "About", 
-            "AFS Acquisition v3\n\n"
-            "Automated acquisition system for AFS using IDS cameras "
-            "and MCL MicroDrive XY stage hardware.")
+            "AFS Acquisition v1.0.0\n\n"
+            "Scientific instrument control and data acquisition system.\n\n"
+            "Hardware Support:\n"
+            "• IDS uEye UI-3080CP Camera\n"
+            "• Mad City Labs XY & Z Stages\n"
+            "• Siglent SDG1032X Function Generator\n"
+            "• Siglent SDS804X HD Oscilloscope\n\n"
+            "© 2025 Floor Loozen")
     
     def start_measurement_session(self):
         """Start measurement session (lightweight)."""

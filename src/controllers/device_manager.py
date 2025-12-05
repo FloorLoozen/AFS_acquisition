@@ -66,14 +66,18 @@ class DeviceManager:
         try:
             if self._fg.is_connected:
                 self._fg.disconnect()
-        except Exception as e:
+        except (OSError, ConnectionError, TimeoutError) as e:
             logger.error(f"Error disconnecting function generator: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error disconnecting function generator: {e}")
         
         try:
             if self._osc.is_connected:
                 self._osc.disconnect()
-        except Exception as e:
+        except (OSError, ConnectionError, TimeoutError) as e:
             logger.error(f"Error disconnecting oscilloscope: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error disconnecting oscilloscope: {e}")
 
     def start_health_monitor(self, interval: float = 5.0):
         """Start background health monitor thread."""
@@ -97,15 +101,19 @@ class DeviceManager:
                 if not self._fg.is_connected:
                     try:
                         self._fg.connect(fast_fail=True)
-                    except Exception:
-                        pass
+                    except (OSError, ConnectionError, TimeoutError):
+                        pass  # Expected during fast_fail reconnect attempts
+                    except Exception as e:
+                        logger.debug(f"Unexpected error reconnecting function generator: {e}")
                 
                 if not self._osc.is_connected:
                     try:
                         self._osc.connect(fast_fail=True)
-                    except Exception:
-                        pass
+                    except (OSError, ConnectionError, TimeoutError):
+                        pass  # Expected during fast_fail reconnect attempts
+                    except Exception as e:
+                        logger.debug(f"Unexpected error reconnecting oscilloscope: {e}")
             except Exception as e:
-                logger.error(f"Error in health monitor: {e}")
+                logger.error(f"Critical error in health monitor loop: {e}")
 
             self._monitor_stop.wait(5.0)

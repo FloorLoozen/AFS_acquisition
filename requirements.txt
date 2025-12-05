@@ -1,19 +1,42 @@
 # AFS Acquisition Dependencies - Optimized for Windows 11 / i7-14700
 # Install with: pip install -r requirements.txt
+#
+# Version pinning strategy:
+# - Major.Minor pinned (e.g., >=1.24,<2.0) for stability
+# - Patch versions flexible for bug fixes
+# - Critical: Test before upgrading major versions
 
 # Core scientific computing
-numpy>=1.24.0
-h5py>=3.8.0
-opencv-python>=4.7.0
-matplotlib>=3.6.0
+numpy>=1.24.0,<2.0.0          # Array operations and numerical computing
+h5py>=3.8.0,<4.0.0            # HDF5 file format for data storage
+opencv-python>=4.7.0,<5.0.0   # Computer vision and image processing (includes OpenCL support)
+matplotlib>=3.6.0,<4.0.0      # Plotting and visualization
 
 # User interface
-PyQt5>=5.15.0
+PyQt5>=5.15.0,<6.0.0          # Qt-based GUI framework
 
 # Hardware communication
-pyvisa>=1.13.0
-pyueye>=4.1.0
+pyvisa>=1.13.0,<2.0.0         # VISA instrument control (Siglent devices)
+pyueye>=4.1.0,<5.0.0          # IDS uEye camera SDK
 
-# Terminal colors
-colorama>=0.4.0
+# System utilities
+colorama>=0.4.0,<1.0.0        # Colored terminal output
+psutil>=5.9.0,<6.0.0          # System and process monitoring
+
+# ============================================================================
+# OPTIONAL DEVELOPMENT TOOLS (uncomment to install)
+# ============================================================================
+# Code quality and type checking:
+# mypy>=1.0.0                 # Static type checker
+# black>=23.0.0               # Code formatter
+# flake8>=6.0.0               # Linter
+# isort>=5.12.0               # Import sorter
+#
+# Testing (for future use):
+# pytest>=7.0.0               # Testing framework
+# pytest-cov>=4.0.0           # Coverage reporting
+#
+# Performance profiling:
+# memory-profiler>=0.60.0     # Memory usage profiling
+# line-profiler>=4.0.0        # Line-by-line profiling
   

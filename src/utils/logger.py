@@ -16,6 +16,7 @@ class SmartFilter(logging.Filter):
         super().__init__()
         self.last_messages = {}
         self.max_repeats = 2
+        self.max_cache_size = 1000  # Prevent unbounded growth
         self.suppress_patterns = [
             'Loaded camera settings', 'Camera settings updated', 'Moving:', 
             'button pressed', 'Connection failed on attempt', 'DeviceManager: attempting',
@@ -42,6 +43,14 @@ class SmartFilter(logging.Filter):
         key = f"{record.name}:{msg}"
         count = self.last_messages.get(key, 0) + 1
         self.last_messages[key] = count
+        
+        # Prevent unbounded growth - clear oldest entries when cache is full
+        if len(self.last_messages) > self.max_cache_size:
+            # Remove oldest half of entries (simple LRU approximation)
+            keys_to_remove = list(self.last_messages.keys())[:self.max_cache_size // 2]
+            for k in keys_to_remove:
+                del self.last_messages[k]
+        
         return count <= self.max_repeats
 
 

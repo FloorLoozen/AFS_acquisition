@@ -1,0 +1,106 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afs-acquisition"
+version = "1.0.0"
+description = "Scientific instrument control and data acquisition system for high-speed camera recording"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Floor Loozen", email = "FloorLoozen@users.noreply.github.com"}
+]
+keywords = ["scientific", "acquisition", "camera", "microscopy", "data-acquisition"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "h5py>=3.8.0",
+    "opencv-python>=4.7.0",
+    "matplotlib>=3.6.0",
+    "PyQt5>=5.15.0",
+    "pyvisa>=1.13.0",
+    "pyueye>=4.1.0",
+    "colorama>=0.4.0",
+    "psutil>=5.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/FloorLoozen/AFS_acquisition"
+Repository = "https://github.com/FloorLoozen/AFS_acquisition"
+Issues = "https://github.com/FloorLoozen/AFS_acquisition/issues"
+
+[project.scripts]
+afs-acquisition = "src.main:main"
+
+[tool.setuptools]
+packages = ["src", "src.controllers", "src.ui", "src.utils"]
+
+[tool.setuptools.package-data]
+src = ["*.json", "*.yaml"]
+
+[tool.black]
+line-length = 120
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+multi_line_output = 3
+include_trailing_comma = true
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_optional = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyueye.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyvisa.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cv2.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short"
