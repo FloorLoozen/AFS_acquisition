@@ -538,7 +538,7 @@ class ResonanceFinderWidget(QWidget):
         sweep_layout.addWidget(self.sweep_amp_spinbox, 0, 1)
         
         # Start frequency - label LEFT aligned, spinbox with suffix
-        start_label = QLabel("Start Freq:")
+        start_label = QLabel("Start Frequency:")
         start_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sweep_layout.addWidget(start_label, 1, 0)
         self.freq_start_spinbox = QDoubleSpinBox()
@@ -552,7 +552,7 @@ class ResonanceFinderWidget(QWidget):
         sweep_layout.addWidget(self.freq_start_spinbox, 1, 1)
         
         # Stop frequency - label LEFT aligned, spinbox with suffix
-        stop_label = QLabel("Stop Freq:")
+        stop_label = QLabel("Stop Frequency:")
         stop_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sweep_layout.addWidget(stop_label, 2, 0)
         self.freq_stop_spinbox = QDoubleSpinBox()
