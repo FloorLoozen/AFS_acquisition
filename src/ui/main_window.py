@@ -375,39 +375,12 @@ class MainWindow(QMainWindow):
     
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
-        try:
-            from src.ui.force_path_designer_widget import ForcePathDesignerWindow
-            
-            # Create or show force path designer window
-            if not hasattr(self, '_force_path_designer_window') or not self._force_path_designer_window:
-                self._force_path_designer_window = ForcePathDesignerWindow()
-                
-                # Set the main window reference for measurement-driven logging
-                self._force_path_designer_window.designer_widget.set_main_window(self)
-                
-                # Connect function generator controller if available
-                if (hasattr(self, 'measurement_controls_widget') and 
-                    self.measurement_controls_widget and 
-                    hasattr(self.measurement_controls_widget, 'fg_controller') and
-                    self.measurement_controls_widget.fg_controller):
-                    self._force_path_designer_window.set_function_generator_controller(
-                        self.measurement_controls_widget.fg_controller
-                    )
-                
-            # Show and bring to front
-            self._force_path_designer_window.show()
-            self._force_path_designer_window.activateWindow()
-            self._force_path_designer_window.raise_()
-            
-            logger.info("Opened Force Path Designer window")
-            
-        except Exception as e:
-            logger.error(f"Failed to open Force Path Designer: {e}")
-            import traceback
-            error_details = traceback.format_exc()
-            QMessageBox.critical(self, "Error", 
-                f"Failed to open Force Path Designer:\n{e}\n\nCheck the log for details.")
-            logger.error(f"Force Path Designer error details:\n{error_details}")
+        QMessageBox.information(
+            self,
+            "Coming Soon",
+            "Force Path Designer will be implemented in a future version.",
+            QMessageBox.Ok
+        )
     
     def _open_about(self):
         """Show about dialog."""

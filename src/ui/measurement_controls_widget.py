@@ -155,7 +155,7 @@ class FrequencyControlsWidget(QGroupBox):
         self.amplitude_spinbox = QDoubleSpinBox()
         self.amplitude_spinbox.setRange(0.1, 20.0)
         self.amplitude_spinbox.setSingleStep(0.1)
-        self.amplitude_spinbox.setDecimals(2)
+        self.amplitude_spinbox.setDecimals(3)
         self.amplitude_spinbox.setValue(self.default_amplitude)
         self.amplitude_spinbox.setSuffix(" Vpp")
         self.amplitude_spinbox.setFixedWidth(110)
