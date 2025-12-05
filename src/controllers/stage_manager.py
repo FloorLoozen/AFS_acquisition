@@ -279,32 +279,32 @@ class StageManager:
     # RIGHT key = DOWN on stage (negative Y)
     
     def move_up(self) -> bool:
-        # UP key should move LEFT (negative X)
+        # UP key should move UP (negative Y, camera rotated)
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move up: XY stage not connected")
             return False
-        return self.move_relative(dx=-self._default_step_size)
+        return self.move_relative(dy=-self._default_step_size)
 
     def move_down(self) -> bool:
-        # DOWN key should move RIGHT (positive X)
+        # DOWN key should move DOWN (positive Y, camera rotated)
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move down: XY stage not connected")
             return False
-        return self.move_relative(dx=self._default_step_size)
+        return self.move_relative(dy=self._default_step_size)
 
     def move_left(self) -> bool:
-        # LEFT key should move UP (positive Y)
+        # LEFT key should move LEFT (negative X)
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move left: XY stage not connected")
             return False
-        return self.move_relative(dy=self._default_step_size)
+        return self.move_relative(dx=-self._default_step_size)
 
     def move_right(self) -> bool:
-        # RIGHT key should move DOWN (negative Y)
+        # RIGHT key should move RIGHT (positive X)
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move right: XY stage not connected")
             return False
-        return self.move_relative(dy=-self._default_step_size)
+        return self.move_relative(dx=self._default_step_size)
     
     # --- Z-stage movement helpers ---
     def move_z_up(self) -> bool:

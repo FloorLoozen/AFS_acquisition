@@ -30,6 +30,17 @@ class StagesWidget(QDialog):
         self.manager = StageManager.get_instance()
         self.is_connected = False
         self.z_is_connected = False
+        self._is_moving = False  # Track movement status for status indicator
+        self._last_error_time = 0  # Track when last error occurred
+        
+        # Timers for status transitions
+        self._moving_timer = QTimer(self)
+        self._moving_timer.setSingleShot(True)
+        self._moving_timer.timeout.connect(self._on_moving_complete)
+        
+        self._error_timer = QTimer(self)
+        self._error_timer.setSingleShot(True)
+        self._error_timer.timeout.connect(self._on_error_timeout)
 
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._build_ui()
@@ -322,12 +333,16 @@ class StagesWidget(QDialog):
     
     def _update_connection_status(self):
         """Update status display based on connection states."""
+        # Only update if not currently showing Moving or Out of Range
+        if self._is_moving or self._error_timer.isActive():
+            return
+            
         if self.is_connected and self.z_is_connected:
-            self._update_status("Connected")
+            self._update_status("Ready")
         elif self.is_connected:
-            self._update_status("XY Connected")
+            self._update_status("XY Ready")
         elif self.z_is_connected:
-            self._update_status("Z Connected")
+            self._update_status("Z Ready")
         else:
             self._update_status("Disconnected")
             
@@ -364,6 +379,48 @@ class StagesWidget(QDialog):
     def _update_status(self, text: str):
         """Update status display with circle indicator."""
         self.status_display.set_status(text)
+    
+    def _on_moving_complete(self):
+        """Called 1 second after movement starts to transition to Ready."""
+        self._is_moving = False
+        self._update_status("Ready")
+    
+    def _on_error_timeout(self):
+        """Called 2 seconds after error to transition back to Connected/Ready."""
+        if self.is_connected and self.z_is_connected:
+            self._update_status("Ready")
+        elif self.is_connected:
+            self._update_status("XY Ready")
+        elif self.z_is_connected:
+            self._update_status("Z Ready")
+    
+    def _start_move(self):
+        """Start a movement - show Moving status for 1 second, then Ready."""
+        # Clear any pending error timeout
+        if self._error_timer.isActive():
+            self._error_timer.stop()
+        
+        # Set moving status
+        self._is_moving = True
+        self._update_status("Moving")
+        
+        # Schedule transition to Ready after 1 second
+        self._moving_timer.start(1000)
+    
+    def _handle_error(self):
+        """Handle movement error - show Out of Range for 2 seconds."""
+        import time
+        self._last_error_time = time.time()
+        
+        # Stop any active timers
+        if self._moving_timer.isActive():
+            self._moving_timer.stop()
+        
+        self._is_moving = False
+        self._update_status("Out of Range")
+        
+        # Schedule transition back to Ready after 2 seconds
+        self._error_timer.start(2000)
 
     # --- Position and movement ---
     def update_position_display(self):
@@ -388,6 +445,9 @@ class StagesWidget(QDialog):
         # Ensure normal cursor during movement
         QApplication.restoreOverrideCursor()
         
+        # Start move (shows Moving status for 1 second)
+        self._start_move()
+        
         # Log the movement for debugging
         move_info = []
         if dx:
@@ -401,7 +461,12 @@ class StagesWidget(QDialog):
             logger.debug(f"Moving: {', '.join(move_info)}")
             
         # Execute the move
-        self.manager.move_relative(dx=dx if dx else None, dy=dy if dy else None)
+        success = self.manager.move_relative(dx=dx if dx else None, dy=dy if dy else None)
+        
+        # Handle error if move failed
+        if not success:
+            self._handle_error()
+        
         self.update_position_display()
 
     # These UI methods map button clicks to hardware directions
@@ -423,14 +488,14 @@ class StagesWidget(QDialog):
         self.manager.default_z_step_size = value
 
     def move_up(self):
-        # UP arrow button pressed -> Y increases
-        logger.debug("UP button pressed -> Y+")
-        self._move_relative(dy=self._get_step_size())
+        # UP arrow button pressed -> Y decreases (camera rotated)
+        logger.debug("UP button pressed -> Y-")
+        self._move_relative(dy=-self._get_step_size())
 
     def move_down(self):
-        # DOWN arrow button pressed -> Y decreases
-        logger.debug("DOWN button pressed -> Y-")
-        self._move_relative(dy=-self._get_step_size())
+        # DOWN arrow button pressed -> Y increases (camera rotated)
+        logger.debug("DOWN button pressed -> Y+")
+        self._move_relative(dy=self._get_step_size())
 
     def move_left(self):
         # LEFT arrow button pressed -> X decreases
@@ -454,17 +519,25 @@ class StagesWidget(QDialog):
         target_x = self.x_abs.value()
         target_y = self.y_abs.value()
         
+        # Check if target is out of range
+        xy_limit = 12.5
+        if abs(target_x) > xy_limit or abs(target_y) > xy_limit:
+            logger.error(f"Target position out of range: X={target_x:.3f}, Y={target_y:.3f}")
+            self._handle_error()
+            return
+        
         logger.info(f"Moving to position: X={target_x:.3f} mm, Y={target_y:.3f} mm")
-        self._update_status(f"Moving to X={target_x:.3f}, Y={target_y:.3f}...")
+        self._start_move()
         
         success = self.manager.move_to(x=target_x, y=target_y)
         
-        if success:
-            logger.info("Move completed successfully")
-            self._update_status("Move completed")
-        else:
+        if not success:
             logger.error("Move failed")
-            self._update_status("Move failed")
+            self._handle_error()
+        else:
+            logger.info("Move completed successfully")
+        
+        self.update_position_display()
 
     def _on_step_changed(self):
         """Deprecated - kept for compatibility."""
@@ -484,7 +557,14 @@ class StagesWidget(QDialog):
         QApplication.restoreOverrideCursor()
         
         logger.debug("Z UP button pressed")
-        self.manager.move_z_up()
+        self._start_move()
+        
+        success = self.manager.move_z_up()
+        
+        if not success:
+            logger.warning("Z UP move rejected - likely out of range")
+            self._handle_error()
+        
         self.update_position_display()
     
     def move_z_down(self):
@@ -496,7 +576,14 @@ class StagesWidget(QDialog):
         QApplication.restoreOverrideCursor()
         
         logger.debug("Z DOWN button pressed")
-        self.manager.move_z_down()
+        self._start_move()
+        
+        success = self.manager.move_z_down()
+        
+        if not success:
+            logger.warning("Z DOWN move rejected - likely out of range")
+            self._handle_error()
+        
         self.update_position_display()
     
     def go_to_z_position(self):
@@ -511,17 +598,26 @@ class StagesWidget(QDialog):
         
         target_z = self.z_abs.value()
         
+        # Check if target is out of range
+        z_min = 0.0
+        z_max = 200.0
+        if target_z < z_min or target_z > z_max:
+            logger.error(f"Target Z position out of range: {target_z:.3f} µm")
+            self._handle_error()
+            return
+        
         logger.info(f"Moving Z to position: {target_z:.3f} µm")
-        self._update_status(f"Moving Z to {target_z:.3f} µm...")
+        self._start_move()
         
         success = self.manager.move_z_to(target_z)
         
-        if success:
-            logger.info("Z move completed successfully")
-            self._update_status("Z move completed")
+        if not success:
+            logger.error("Z move failed - likely out of range")
+            self._handle_error()
         else:
-            logger.error("Z move failed")
-            self._update_status("Z move failed")
+            logger.info("Z move completed successfully")
+        
+        self.update_position_display()
         
     def showEvent(self, event):
         """Override showEvent to ensure proper display and auto-connect when shown"""
