@@ -16,7 +16,7 @@ class VISAHelper:
     def get_resource_manager(cls):
         if cls._resource_manager is None:
             cls._resource_manager = pyvisa.ResourceManager()
-            logger.debug("Created VISA ResourceManager")
+            # VISA ResourceManager created successfully
         return cls._resource_manager
     
     @classmethod

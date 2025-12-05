@@ -494,7 +494,7 @@ class HDF5VideoRecorder:
         calculated_chunk_size = (optimal_frames_per_chunk, *dataset_frame_shape)
         
         logger.info(f"Creating HDF5 dataset: shape={self.frame_shape}, downscale={self.downscale_factor}x, compression={self.compression_type}")
-        logger.info(f"Optimal chunk: {calculated_chunk_size} (~{optimal_frames_per_chunk * frame_size_bytes / 1024 / 1024:.1f} MB)")
+        logger.debug(f"Optimal chunk: {calculated_chunk_size} (~{optimal_frames_per_chunk * frame_size_bytes / 1024 / 1024:.1f} MB)")
         
         # OPTIMIZED dataset parameters: LZF compression, shuffle filter, calculated chunks
         dataset_kwargs = {
@@ -540,7 +540,7 @@ class HDF5VideoRecorder:
         # Initialize GPU resources if available and requested
         if self._use_gpu and self.downscale_factor > 1:
             self._initialize_gpu_buffers()
-            logger.info(f"GPU batch processing enabled: {self._gpu_buffer_size} buffer pool for efficient downscaling")
+            logger.debug(f"GPU batch processing enabled: {self._gpu_buffer_size} buffer pool for efficient downscaling")
         
         # Start async write thread for better performance
         self._start_async_writer()
@@ -798,7 +798,7 @@ class HDF5VideoRecorder:
             original_shape = frame.shape
             frame = self._downscale_frame(frame)
             if self.frame_count == 0:  # Log once at start
-                logger.info(f"Downscaling enabled: {original_shape} -> {frame.shape} (factor={self.downscale_factor}x)")
+                logger.debug(f"Downscaling enabled: {original_shape} -> {frame.shape} (factor={self.downscale_factor}x)")
 
         
         # Fast async path for high performance
@@ -941,7 +941,7 @@ class HDF5VideoRecorder:
                     self._gpu_buffer_pool.append(gpu_buffer)
                 
                 self._gpu_buffers_initialized = True
-                logger.info(f"Pre-allocated {self._gpu_buffer_size} GPU buffers ({h}x{w}x{c})")
+                logger.debug(f"Pre-allocated {self._gpu_buffer_size} GPU buffers ({h}x{w}x{c})")
         except Exception as e:
             logger.warning(f"GPU buffer pre-allocation failed: {e}, will create on-demand")
             # Fall back to creating buffers on-demand
