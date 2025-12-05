@@ -8,7 +8,7 @@ STATUS_COLORS = {
     'live': QColor(0, 255, 0),
     'connected': QColor(0, 255, 0),
     'saved': QColor(0, 255, 0),
-    'on': QColor(0, 255, 0),
+    'on': QColor(0, 120, 255),  # Blue - device is actively working
     'completed': QColor(0, 255, 0),
     'executing': QColor(0, 120, 255),
     'starting': QColor(0, 120, 255),
@@ -17,6 +17,10 @@ STATUS_COLORS = {
     'moving': QColor(0, 120, 255),
     'sweeping': QColor(0, 120, 255),
     'retrieving_data': QColor(0, 120, 255),
+    'capturing': QColor(0, 120, 255),
+    'captured': QColor(0, 120, 255),
+    'saving': QColor(0, 120, 255),
+    'stopping': QColor(255, 165, 0),
     'error': QColor(255, 0, 0),
     'disconnected': QColor(255, 0, 0),
     'partially_connected': QColor(255, 0, 0),
@@ -31,9 +35,9 @@ STATUS_COLORS = {
     'connecting': QColor(255, 165, 0),
     'reconnecting': QColor(255, 165, 0),
     'off': QColor(128, 128, 128),
-    'ready': QColor(0, 255, 0),
+    'ready': QColor(128, 128, 128),
     'paused': QColor(255, 255, 0),
-    'test_pattern': QColor(100, 149, 237),
+    'test_pattern': QColor(147, 112, 219),  # Medium purple
 }
 
 

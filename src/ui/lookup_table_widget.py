@@ -25,6 +25,7 @@ from PyQt5.QtGui import QFont
 from src.controllers.stage_manager import StageManager
 from src.controllers.camera_controller import CameraController
 from src.utils.logger import get_logger
+from src.utils.status_display import StatusDisplay
 from src.utils.hdf5_video_recorder import HDF5VideoRecorder
 
 logger = get_logger("lut_generator")
@@ -443,6 +444,12 @@ class LookupTableWidget(QDialog):
         layout.setSpacing(5)
         layout.setContentsMargins(10, 10, 10, 10)
         
+        # Status display at the top
+        self.status_display = StatusDisplay()
+        self.status_display.set_status("Ready")
+        self.status_display.setContentsMargins(0, 0, 0, 10)  # Add 10px bottom margin
+        layout.addWidget(self.status_display)
+        
         # Parameters group
         params_group = QGroupBox("Acquisition Parameters")
         params_layout = QVBoxLayout()
@@ -535,10 +542,6 @@ class LookupTableWidget(QDialog):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         progress_layout.addWidget(self.progress_bar)
-        
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #666;")
-        progress_layout.addWidget(self.status_label)
         
         progress_group.setLayout(progress_layout)
         layout.addWidget(progress_group)
@@ -644,7 +647,7 @@ class LookupTableWidget(QDialog):
         if total > 0:
             progress = int((current / total) * 100)
             self.progress_bar.setValue(progress)
-        self.status_label.setText(message)
+        self.status_display.set_status(message)
         
     def _on_frame_captured(self, frame_num: int, z_pos: float):
         """Handle frame captured event."""
