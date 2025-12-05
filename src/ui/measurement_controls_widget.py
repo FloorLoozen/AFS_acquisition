@@ -236,10 +236,11 @@ class FrequencyControlsWidget(QGroupBox):
         elif not self.fg_controller.is_connected:
             self.fg_status_display.set_status("Disconnected")
         elif self.fg_toggle_button.isChecked():
-            # Output is on - show frequency info
+            # Output is on - show frequency and amplitude info
             try:
                 frequency = self.frequency_spinbox.value()
-                self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                amplitude = self.amplitude_spinbox.value()
+                self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz, {amplitude:.1f} Vpp")
             except AttributeError:
                 # Spinbox not available yet
                 self.fg_status_display.set_status("ON")
@@ -271,7 +272,7 @@ class FrequencyControlsWidget(QGroupBox):
                     self._output_enabled = False
                 else:
                     self.fg_toggle_button.setText("ON")
-                    self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                    self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz, {amplitude:.1f} Vpp")
                     self._output_enabled = True
                     self._cached_frequency = frequency
                     self._cached_amplitude = amplitude
@@ -317,9 +318,9 @@ class FrequencyControlsWidget(QGroupBox):
                 success = self.fg_controller.output_sine_wave(amplitude, frequency, channel=1)
                 if success:
                     logger.info(f"Settings: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
-                    # Update status display with new frequency immediately
+                    # Update status display with new frequency and amplitude immediately
                     if self._output_enabled:
-                        self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                        self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz, {amplitude:.1f} Vpp")
                     # Update cached values
                     self._cached_frequency = frequency
                     self._cached_amplitude = amplitude
@@ -351,9 +352,9 @@ class FrequencyControlsWidget(QGroupBox):
                         self._cached_amplitude = amplitude
                         logger.info(f"Settings applied: {frequency:.3f} MHz, {amplitude:.2f} Vpp")
                         
-                        # Update status display with actual applied frequency
+                        # Update status display with actual applied frequency and amplitude
                         if self._output_enabled:
-                            self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz")
+                            self.fg_status_display.set_status(f"ON @ {frequency:.1f} MHz, {amplitude:.1f} Vpp")
                         
                         # Emit signal for timeline logging
                         self.function_generator_settings_changed.emit(frequency, amplitude)

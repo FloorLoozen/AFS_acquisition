@@ -18,7 +18,7 @@ def main():
     from src.utils.logger import get_logger
     from src.utils.config_manager import get_config
     from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtCore import Qt
+    from PyQt5.QtCore import Qt, QLocale
     
     logger = get_logger("main")
     logger.info(f"Starting AFS Acquisition v{__version__}")
@@ -28,6 +28,9 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
     app = QApplication(sys.argv)
+    
+    # Set locale to use dot as decimal separator (not comma)
+    QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
     app.setApplicationName("AFS Acquisition")
     app.setApplicationVersion(__version__)
     
