@@ -28,10 +28,9 @@ class CameraSettingsWidget(QDialog):
     DEFAULT_SETTINGS = {
         'exposure_ms': 15.0,  # 15ms for stable 30 FPS operation (33ms frame time)
         'gain_master': 2,     # Moderate gain for good image quality
-        'frame_rate_fps': 30.0,  # 30 FPS baseline (display at 15 FPS, record at 30 FPS)
-        'brightness': 50,
-        'contrast': 50,
-        'saturation': 50
+        'live_fps': 12,       # Live display frame rate
+        'recording_fps': 30,  # Recording frame rate
+        'frame_rate_fps': 30.0,  # Camera hardware frame rate (kept for compatibility)
     }
     
     def __init__(self, camera_controller=None, parent=None):
@@ -39,7 +38,7 @@ class CameraSettingsWidget(QDialog):
         self.camera = camera_controller
         
         self.setWindowTitle("Camera Settings")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(400)
         self.setModal(True)
         
         # Use class constant for defaults
@@ -60,19 +59,19 @@ class CameraSettingsWidget(QDialog):
         settings_layout.setSpacing(10)
         settings_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Use grid layout for proper alignment
+        # Use grid layout for proper alignment (single column)
         grid = QGridLayout()
         grid.setHorizontalSpacing(15)
         grid.setVerticalSpacing(10)
         
         # Set fixed widths for labels and spinboxes
-        label_width = 100
-        spinbox_width = 100
+        label_width = 150
+        spinbox_width = 120
         
         # Store input widgets for easy access
         self.inputs = {}
         
-        # Row 0: Exposure and Gain
+        # Row 0: Exposure
         exposure_label = QLabel("Exposure:")
         exposure_label.setMinimumWidth(label_width)
         exposure_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -87,102 +86,96 @@ class CameraSettingsWidget(QDialog):
         self.inputs['exposure'].setAlignment(Qt.AlignRight)
         grid.addWidget(self.inputs['exposure'], 0, 1)
         
+        # Row 1: Gain
         gain_label = QLabel("Gain:")
         gain_label.setMinimumWidth(label_width)
         gain_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(gain_label, 0, 2)
+        grid.addWidget(gain_label, 1, 0)
         
         self.inputs['gain'] = QSpinBox()
         self.inputs['gain'].setRange(0, 100)
         self.inputs['gain'].setValue(2)
         self.inputs['gain'].setFixedWidth(spinbox_width)
         self.inputs['gain'].setAlignment(Qt.AlignRight)
-        grid.addWidget(self.inputs['gain'], 0, 3)
+        grid.addWidget(self.inputs['gain'], 1, 1)
         
-        # Row 1: Frame Rate and Brightness
-        fps_label = QLabel("Frame Rate:")
-        fps_label.setMinimumWidth(label_width)
-        fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(fps_label, 1, 0)
+        # Row 2: Live FPS
+        live_fps_label = QLabel("Live Frame Rate:")
+        live_fps_label.setMinimumWidth(label_width)
+        live_fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(live_fps_label, 2, 0)
         
-        self.inputs['fps'] = QDoubleSpinBox()
-        self.inputs['fps'].setRange(1.0, 120.0)
-        self.inputs['fps'].setValue(30.0)
-        self.inputs['fps'].setSuffix(" fps")
-        self.inputs['fps'].setDecimals(2)
-        self.inputs['fps'].setFixedWidth(spinbox_width)
-        self.inputs['fps'].setAlignment(Qt.AlignRight)
-        grid.addWidget(self.inputs['fps'], 1, 1)
+        self.inputs['live_fps'] = QSpinBox()
+        self.inputs['live_fps'].setRange(1, 60)
+        self.inputs['live_fps'].setValue(12)  # Display shows 12, applies as 14
+        self.inputs['live_fps'].setSuffix(" fps")
+        self.inputs['live_fps'].setFixedWidth(spinbox_width)
+        self.inputs['live_fps'].setAlignment(Qt.AlignRight)
+        grid.addWidget(self.inputs['live_fps'], 2, 1)
         
-        brightness_label = QLabel("Brightness:")
-        brightness_label.setMinimumWidth(label_width)
-        brightness_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(brightness_label, 1, 2)
+        # Row 3: Recording FPS
+        recording_fps_label = QLabel("Recording Frame Rate:")
+        recording_fps_label.setMinimumWidth(label_width)
+        recording_fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(recording_fps_label, 3, 0)
         
-        self.inputs['brightness'] = QSpinBox()
-        self.inputs['brightness'].setRange(0, 100)
-        self.inputs['brightness'].setValue(50)
-        self.inputs['brightness'].setFixedWidth(spinbox_width)
-        self.inputs['brightness'].setAlignment(Qt.AlignRight)
-        grid.addWidget(self.inputs['brightness'], 1, 3)
-        
-        # Row 2: Contrast and Saturation
-        contrast_label = QLabel("Contrast:")
-        contrast_label.setMinimumWidth(label_width)
-        contrast_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(contrast_label, 2, 0)
-        
-        self.inputs['contrast'] = QSpinBox()
-        self.inputs['contrast'].setRange(0, 100)
-        self.inputs['contrast'].setValue(50)
-        self.inputs['contrast'].setFixedWidth(spinbox_width)
-        self.inputs['contrast'].setAlignment(Qt.AlignRight)
-        grid.addWidget(self.inputs['contrast'], 2, 1)
-        
-        saturation_label = QLabel("Saturation:")
-        saturation_label.setMinimumWidth(label_width)
-        saturation_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        grid.addWidget(saturation_label, 2, 2)
-        
-        self.inputs['saturation'] = QSpinBox()
-        self.inputs['saturation'].setRange(0, 100)
-        self.inputs['saturation'].setValue(50)
-        self.inputs['saturation'].setFixedWidth(spinbox_width)
-        self.inputs['saturation'].setAlignment(Qt.AlignRight)
-        grid.addWidget(self.inputs['saturation'], 2, 3)
+        self.inputs['recording_fps'] = QSpinBox()
+        self.inputs['recording_fps'].setRange(1, 120)
+        self.inputs['recording_fps'].setValue(30)
+        self.inputs['recording_fps'].setSuffix(" fps")
+        self.inputs['recording_fps'].setFixedWidth(spinbox_width)
+        self.inputs['recording_fps'].setAlignment(Qt.AlignRight)
+        grid.addWidget(self.inputs['recording_fps'], 3, 1)
         
         # Add stretch to right side
-        grid.setColumnStretch(4, 1)
+        grid.setColumnStretch(2, 1)
         
         settings_layout.addLayout(grid)
         settings_group.setLayout(settings_layout)
         main_layout.addWidget(settings_group)
         
-        # Button row - create using helper method
-        button_layout = self._create_button_row()
+        # Button grid - create using helper method
+        button_layout = self._create_button_grid()
         main_layout.addLayout(button_layout)
     
-    def _create_button_row(self) -> QHBoxLayout:
-        """Create the button row with consistent styling."""
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(8)
+    def _create_button_grid(self) -> QGridLayout:
+        """Create the button grid (2x2) with consistent styling."""
+        button_layout = QGridLayout()
+        button_layout.setHorizontalSpacing(5)
+        button_layout.setVerticalSpacing(5)
+        button_layout.setContentsMargins(0, 10, 0, 0)
         
-        # Button configurations
-        button_configs = [
-            ("Apply", self.apply_settings),
-            ("Reset", self.reset_to_defaults),
-            ("Reconnect", self.reconnect_camera),
-            ("Save", self.save_and_close)
-        ]
+        # Set button dimensions
+        button_width = 120
+        button_height = 28
         
-        button_layout.addStretch()
+        # Create buttons
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.apply_settings)
+        apply_btn.setFixedSize(button_width, button_height)
         
-        for text, callback in button_configs:
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            button_layout.addWidget(button)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_and_close)
+        save_btn.setFixedSize(button_width, button_height)
         
-        button_layout.addStretch()
+        reconnect_btn = QPushButton("Reconnect")
+        reconnect_btn.clicked.connect(self.reconnect_camera)
+        reconnect_btn.setFixedSize(button_width, button_height)
+        
+        reset_btn = QPushButton("Reset")
+        reset_btn.clicked.connect(self.reset_to_defaults)
+        reset_btn.setFixedSize(button_width, button_height)
+        
+        # 2x2 grid layout: Apply/Save on top, Reconnect/Reset on bottom
+        button_layout.addWidget(apply_btn, 0, 0)
+        button_layout.addWidget(save_btn, 0, 1)
+        button_layout.addWidget(reconnect_btn, 1, 0)
+        button_layout.addWidget(reset_btn, 1, 1)
+        
+        # Center the grid
+        button_layout.setColumnStretch(0, 0)
+        button_layout.setColumnStretch(1, 0)
+        
         return button_layout
     
     def load_current_settings(self) -> None:
@@ -212,10 +205,8 @@ class CameraSettingsWidget(QDialog):
         settings_mapping = [
             ('exposure', 'exposure_ms'),
             ('gain', 'gain_master'),
-            ('fps', 'frame_rate_fps'),
-            ('brightness', 'brightness'),
-            ('contrast', 'contrast'),
-            ('saturation', 'saturation')
+            ('live_fps', 'live_fps'),
+            ('recording_fps', 'recording_fps')
         ]
         
         for input_key, setting_key in settings_mapping:
@@ -229,10 +220,8 @@ class CameraSettingsWidget(QDialog):
         settings_mapping = [
             ('exposure', 'exposure_ms'),
             ('gain', 'gain_master'),
-            ('fps', 'frame_rate_fps'),
-            ('brightness', 'brightness'),
-            ('contrast', 'contrast'),
-            ('saturation', 'saturation')
+            ('live_fps', 'live_fps'),
+            ('recording_fps', 'recording_fps')
         ]
         
         settings = {}
@@ -244,6 +233,9 @@ class CameraSettingsWidget(QDialog):
                 default_value = self.DEFAULT_SETTINGS[setting_key]
                 settings[setting_key] = default_value
                 logger.warning(f"Using default value for {setting_key}: {default_value}")
+        
+        # Also set frame_rate_fps to recording_fps for camera hardware compatibility
+        settings['frame_rate_fps'] = float(settings['recording_fps'])
         
         return settings
     

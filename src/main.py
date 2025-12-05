@@ -6,7 +6,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pyueye")
 
-__version__ = "3.0.0"
+__version__ = "1.0.0"
 
 
 def main():

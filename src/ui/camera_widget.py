@@ -147,22 +147,14 @@ class CameraWidget(QGroupBox):
         self.recording_queue = queue.Queue(maxsize=100)  # Buffer for recording (compatibility)
         self.processing_lock = threading.RLock()
         
-        # Image processing settings for live view (start with standard values)
-        self.image_settings = {
-            'brightness': 50,  # Standard brightness
-            'contrast': 50,    # Standard contrast
-            'saturation': 50   # Standard saturation
-        }
-        
-        # Recording compression and resolution settings
-        # MAXIMUM OPTIMIZATION: Half resolution + no real-time compression
+        # Recording settings: FPS, compression, and resolution
         # compression_level: 0=none (FASTEST for real-time recording), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
-        # NOTE: NO compression during recording for maximum speed (60 FPS target)
-        #       Compression happens AFTER recording finishes (post-processing)
+        # NOTE: Compression happens during recording (real-time compatible with LZF)
         self.recording_settings = {
-            'compression_level': 3,  # Fast LZF compression during recording (real-time compatible)
-            'downscale_factor': 2    # HALF resolution = Good balance of speed & file size
+            'recording_fps': 30,      # Recording frame rate (configurable from settings)
+            'compression_level': 3,   # Fast LZF compression during recording (real-time compatible)
+            'downscale_factor': 2     # HALF resolution = Good balance of speed & file size
         }
         
         # UI components - optimized for fullscreen viewing
@@ -711,75 +703,10 @@ class CameraWidget(QGroupBox):
         self._process_display_frame(frame.copy())
     
     def _apply_image_processing(self, frame):
-        """Apply brightness, contrast, and saturation to frame (highly optimized)."""
-        # Skip processing if all settings are at default values
-        if (self.image_settings['brightness'] == 50 and 
-            self.image_settings['contrast'] == 50 and 
-            self.image_settings['saturation'] == 50):
-            return frame
-        
-        try:
-            # Only apply needed transformations to minimize operations
-            needs_brightness = self.image_settings['brightness'] != 50
-            needs_contrast = self.image_settings['contrast'] != 50
-            needs_saturation = (len(frame.shape) == 3 and self.image_settings['saturation'] != 50)
-            
-            # Apply brightness/contrast together if needed (GPU-accelerated if available)
-            if needs_brightness or needs_contrast:
-                brightness = (self.image_settings['brightness'] - 50) * 2.0
-                contrast = self.image_settings['contrast'] / 50.0
-                
-                if _GPU_AVAILABLE:
-                    try:
-                        gpu_frame = cv2.UMat(frame)
-                        gpu_result = cv2.convertScaleAbs(gpu_frame, alpha=contrast, beta=brightness)
-                        frame = gpu_result.get()
-                    except Exception:
-                        # Fallback to CPU
-                        frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
-                else:
-                    frame = cv2.convertScaleAbs(frame, alpha=contrast, beta=brightness)
-            
-            # Apply saturation only if needed (most expensive operation - GPU accelerated)
-            if needs_saturation:
-                if _GPU_AVAILABLE:
-                    try:
-                        gpu_frame = cv2.UMat(frame)
-                        gpu_hsv = cv2.cvtColor(gpu_frame, cv2.COLOR_RGB2HSV)
-                        hsv = gpu_hsv.get()
-                        saturation_factor = self.image_settings['saturation'] / 50.0
-                        hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
-                        gpu_hsv_adj = cv2.UMat(hsv)
-                        gpu_rgb = cv2.cvtColor(gpu_hsv_adj, cv2.COLOR_HSV2RGB)
-                        frame = gpu_rgb.get()
-                    except Exception:
-                        # Fallback to CPU
-                        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-                        saturation_factor = self.image_settings['saturation'] / 50.0
-                        hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
-                        frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-                else:
-                    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-                    saturation_factor = self.image_settings['saturation'] / 50.0
-                    hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], saturation_factor)
-                    frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-            
-            return frame
-            
-        except Exception as e:
-            logger.warning(f"Image processing error: {e}")
-            return frame
-    
-    def update_image_settings(self, settings):
-        """Update image processing settings."""
-        if 'brightness' in settings:
-            self.image_settings['brightness'] = settings['brightness']
-        if 'contrast' in settings:
-            self.image_settings['contrast'] = settings['contrast']
-        if 'saturation' in settings:
-            self.image_settings['saturation'] = settings['saturation']
-        
-        # Reduce logging frequency to prevent performance issues
+        """Apply image processing to frame (currently no processing - returns frame as-is)."""
+        # Image processing (brightness/contrast/saturation) has been removed
+        # This method is kept for potential future use
+        return frame
     
     # Recording methods (preserved from original)
     def start_recording(self, file_path: str, metadata=None) -> bool:
@@ -903,9 +830,9 @@ class CameraWidget(QGroupBox):
                 frame_shape = (480, 640, 1)  # Default to grayscale
             
             # Create recorder with compression and resolution settings
-            # Target 30 FPS MAXIMUM for recording (strict rate limiting)
-            TARGET_FPS = 30.0
-            MIN_FPS = 25.0  # Warning threshold for recording
+            # Use configurable recording FPS from settings
+            TARGET_FPS = float(self.recording_settings['recording_fps'])
+            MIN_FPS = TARGET_FPS * 0.83  # Warning threshold at 83% of target
             
             # Increase camera queue size during recording to prevent frame drops at high FPS
             if self.camera:
@@ -960,14 +887,6 @@ class CameraWidget(QGroupBox):
             if self.camera and hasattr(self.camera, 'get_camera_settings'):
                 try:
                     camera_settings = self.camera.get_camera_settings()
-                    
-                    # Add image processing settings to camera settings
-                    camera_settings.update({
-                        'image_brightness': self.image_settings['brightness'],
-                        'image_contrast': self.image_settings['contrast'],
-                        'image_saturation': self.image_settings['saturation']
-                    })
-                    
                     self.hdf5_recorder.add_camera_settings(camera_settings)
                 except Exception as e:
                     logger.warning(f"Failed to save camera settings: {e}")
@@ -1462,7 +1381,7 @@ class CameraWidget(QGroupBox):
                 else:
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             
-            # Apply image processing settings (brightness/contrast only, no saturation)
+            # Apply image processing settings (currently none - returns as-is)
             processed_frame = self._apply_image_processing(rgb_frame)
             
             # Create QImage and emit to GUI thread for display
@@ -1591,13 +1510,22 @@ class CameraWidget(QGroupBox):
     
     # Function generator logging methods (preserved)
     def update_image_settings(self, settings: dict):
-        """Update image processing settings from camera settings dialog."""
-        if 'brightness' in settings:
-            self.image_settings['brightness'] = settings['brightness']
-        if 'contrast' in settings:
-            self.image_settings['contrast'] = settings['contrast']
-        if 'saturation' in settings:
-            self.image_settings['saturation'] = settings['saturation']
+        """Update camera settings from camera settings dialog."""
+        # Update live display FPS if provided
+        if 'live_fps' in settings:
+            new_live_fps = int(settings['live_fps']) + 2  # Add 2 offset so 12 becomes 14 (actual 12)
+            if new_live_fps != self.live_display_fps:
+                self.live_display_fps = new_live_fps
+                self._min_display_interval = 1.0 / self.live_display_fps
+                self.fallback_timer.setInterval(int(1000.0 / self.live_display_fps))
+                logger.info(f"Live display FPS updated to: {self.live_display_fps} fps (from setting: {settings['live_fps']})")
+        
+        # Update recording FPS if provided
+        if 'recording_fps' in settings:
+            new_recording_fps = int(settings['recording_fps'])
+            if new_recording_fps != self.recording_settings['recording_fps']:
+                self.recording_settings['recording_fps'] = new_recording_fps
+                logger.info(f"Recording FPS updated to: {self.recording_settings['recording_fps']} fps")
     
     def set_recording_compression(self, compression_level: int):
         """Set compression level for HDF5 recording.
@@ -1668,18 +1596,12 @@ class CameraWidget(QGroupBox):
         default_settings = {
             'exposure_ms': 5.0,  # Minimum exposure for maximum FPS (5ms allows ~200 FPS)
             'gain_master': 2,
-            'fps': 60.0,  # Request 60 FPS for smooth high-speed recording
-            'brightness': 50,
-            'contrast': 50,
-            'saturation': 50
+            'fps': 60.0  # Request 60 FPS for smooth high-speed recording
         }
         
         try:
             result = self.camera.apply_settings(default_settings)
             logger.info(f"Applied default camera settings: {result}")
-            
-            # Update image processing settings for live view
-            self.update_image_settings(default_settings)
         except Exception as e:
             logger.warning(f"Failed to apply default camera settings: {e}")
     
