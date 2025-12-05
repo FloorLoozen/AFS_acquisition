@@ -15,8 +15,11 @@ STATUS_COLORS = {
     'running': QColor(0, 120, 255),
     'recording': QColor(0, 120, 255),
     'moving': QColor(0, 120, 255),
+    'sweeping': QColor(0, 120, 255),
+    'retrieving_data': QColor(0, 120, 255),
     'error': QColor(255, 0, 0),
     'disconnected': QColor(255, 0, 0),
+    'partially_connected': QColor(255, 0, 0),
     'connection_failed': QColor(255, 0, 0),
     'connection_error': QColor(255, 0, 0),
     'camera_error': QColor(255, 0, 0),
@@ -40,7 +43,7 @@ class StatusIndicator(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(16, 16)
-        self.status_color = STATUS_COLORS['ready']
+        self.status_color = STATUS_COLORS['off']  # Gray by default
         
     def set_status(self, status):
         """Set status by name or use default gray."""
@@ -51,7 +54,7 @@ class StatusIndicator(QLabel):
         else:
             self.status_color = next(
                 (color for k, color in STATUS_COLORS.items() if k in key),
-                STATUS_COLORS['ready']
+                STATUS_COLORS['off']  # Gray as fallback
             )
         self.update()
         
@@ -91,4 +94,4 @@ class StatusDisplay(QWidget):
     def clear(self):
         """Clear the status display."""
         self.text_label.setText("")
-        self.indicator.set_status("ready")
+        self.indicator.set_status("off")

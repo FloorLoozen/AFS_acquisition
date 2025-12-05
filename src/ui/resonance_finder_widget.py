@@ -26,6 +26,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from src.utils.logger import get_logger
+from src.utils.status_display import StatusDisplay
 from src.controllers.function_generator_controller import FunctionGeneratorController, get_function_generator_controller
 from src.controllers.oscilloscope_controller import OscilloscopeController, get_oscilloscope_controller
 
@@ -38,6 +39,7 @@ class SweepWorker(QThread):
     # Signal: times, voltages, scope_limits dict with keys: y_min, y_max, screen_time
     sweep_completed = pyqtSignal(object, object, object)
     sweep_error = pyqtSignal(str)
+    status_update = pyqtSignal(str)  # New signal for status updates
     
     def __init__(self, funcgen, oscilloscope, amplitude, freq_start, freq_stop, sweep_time):
         super().__init__()
@@ -122,6 +124,9 @@ class SweepWorker(QThread):
             wait_time = 1.5
             logger.info(f"Waiting {wait_time:.1f}s for sweep...")
             time.sleep(wait_time)
+            
+            # Emit status update: now retrieving data
+            self.status_update.emit("Retrieving Data")
             
             # Step 3: Capture waveform data from oscilloscope (don't stop it, just read)
             times = None
@@ -464,6 +469,9 @@ class ResonanceFinderWidget(QWidget):
     
     def _initialize_instruments(self):
         """Check hardware connection status and inform user."""
+        # Set initial status
+        self.status_display.set_status("Initializing")
+        
         funcgen_connected = False
         osc_connected = False
         
@@ -493,6 +501,14 @@ class ResonanceFinderWidget(QWidget):
         except Exception as e:
             logger.error(f"Oscilloscope check failed: {e}")
         
+        # Update status display based on connection
+        if funcgen_connected and osc_connected:
+            self.status_display.set_status("Ready")
+        elif funcgen_connected or osc_connected:
+            self.status_display.set_status("Partially Connected")
+        else:
+            self.status_display.set_status("Disconnected")
+        
         # Only show error if both devices fail
         if not funcgen_connected and not osc_connected:
             QMessageBox.warning(self, "Hardware Error", 
@@ -512,6 +528,11 @@ class ResonanceFinderWidget(QWidget):
         left_panel = QWidget()
         left_panel.setFixedWidth(300)
         left_layout = QVBoxLayout(left_panel)
+        
+        # Status display at the top
+        self.status_display = StatusDisplay()
+        self.status_display.setContentsMargins(0, 0, 0, 10)  # Add 10px bottom margin
+        left_layout.addWidget(self.status_display)
         
         # Sweep parameters
         sweep_group = QGroupBox("Sweep Parameters")
@@ -591,13 +612,6 @@ class ResonanceFinderWidget(QWidget):
         self.start_button.setStyleSheet("QPushButton { padding: 8px; font-size: 12px; }")
         left_layout.addWidget(self.start_button)
         
-        # Loading label
-        self.loading_label = QLabel("Loading...")
-        self.loading_label.setAlignment(Qt.AlignCenter)
-        self.loading_label.setStyleSheet("color: gray; font-style: italic;")
-        self.loading_label.hide()
-        left_layout.addWidget(self.loading_label)
-        
         # Selected frequencies display
         freq_group = QGroupBox("Selected Points")
         freq_layout = QVBoxLayout(freq_group)
@@ -664,9 +678,9 @@ class ResonanceFinderWidget(QWidget):
             QMessageBox.information(self, "Demo Mode", 
                                   "No hardware connected. Running in demo mode with simulated data.")
         
-        # Show loading state
+        # Show sweeping state
         self.start_button.setEnabled(False)
-        self.loading_label.show()
+        self.status_display.set_status("Sweeping")
         
         # Store sweep parameters for frequency axis conversion
         self.start_freq = freq_start
@@ -680,7 +694,12 @@ class ResonanceFinderWidget(QWidget):
         )
         self.sweep_worker.sweep_completed.connect(self._on_sweep_completed)
         self.sweep_worker.sweep_error.connect(self._on_sweep_error)
+        self.sweep_worker.status_update.connect(self._on_status_update)
         self.sweep_worker.start()
+    
+    def _on_status_update(self, status: str):
+        """Handle status updates from sweep worker."""
+        self.status_display.set_status(status)
     
     def _on_sweep_completed(self, times, voltages, scope_limits):
         """Handle completed frequency sweep and oscilloscope capture.
@@ -711,7 +730,7 @@ class ResonanceFinderWidget(QWidget):
             # Always re-enable the UI controls after the sweep finishes
             try:
                 self.start_button.setEnabled(True)
-                self.loading_label.hide()
+                self.status_display.set_status("Ready")
             except Exception:
                 pass
     
@@ -720,7 +739,7 @@ class ResonanceFinderWidget(QWidget):
         logger.error(f"Sweep error: {error_msg}")
         QMessageBox.critical(self, "Sweep Error", f"Frequency sweep failed: {error_msg}")
         self.start_button.setEnabled(True)
-        self.loading_label.hide()
+        self.status_display.set_status("Error")
     
     def _plot_sweep_data(self, times, voltages, scope_limits=None):
         """Plot the oscilloscope screen capture data.

@@ -98,6 +98,7 @@ class AcquisitionControlsWidget(QGroupBox):
         
         # Status display
         self.status_display = StatusDisplay()
+        self.status_display.set_status("Off")  # Gray until recording starts
         
         controls_layout.addWidget(self.start_btn)
         controls_layout.addWidget(self.stop_btn)
@@ -298,8 +299,8 @@ class AcquisitionControlsWidget(QGroupBox):
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)  # Keep stop disabled
             
-            # Clear status after 3 seconds
-            self.status_clear_timer.start(3000)
+            # Clear status after 3 seconds and set to Off
+            QTimer.singleShot(3000, lambda: self.status_display.set_status("Off"))
             
             logger.info(f"Saved: {os.path.basename(final_save_path)}")
             
