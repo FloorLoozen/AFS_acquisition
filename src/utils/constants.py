@@ -29,26 +29,26 @@ STATUS_UPDATE_INTERVAL = 0.5        # How often to update status bar (seconds)
 # RECORDING & DATA MANAGEMENT
 # ============================================================================
 # HDF5 recording pipeline configuration
-MAX_WRITE_QUEUE_SIZE = 800          # Maximum frames buffered for writing
-MAX_PROCESS_QUEUE_SIZE = 800        # Maximum frames buffered for processing
-BATCH_SIZE = 20                     # Frames written per batch (balance I/O efficiency)
-MAX_SUB_BATCH = 10                  # Sub-batch size for parallel processing
-TARGET_CHUNK_MB = 3                 # Target HDF5 chunk size in megabytes
-FLUSH_INTERVAL_SEC = 15.0           # How often to flush data to disk (seconds)
+MAX_WRITE_QUEUE_SIZE = 600          # Maximum frames buffered for writing (20s at 30 FPS)
+MAX_PROCESS_QUEUE_SIZE = 600        # Maximum frames buffered for processing (20s at 30 FPS)
+BATCH_SIZE = 15                     # Frames written per batch (0.5s at 30 FPS, 2 writes/sec)
+MAX_SUB_BATCH = 8                   # Sub-batch size for parallel processing (optimized for 30 FPS)
+TARGET_CHUNK_MB = 6                 # Target HDF5 chunk size (optimized for NVMe SSD)
+FLUSH_INTERVAL_SEC = 10.0           # How often to flush data to disk (NVMe optimized)
 WRITE_TIMEOUT_SEC = 10.0            # Timeout for write operations (seconds)
 FRAME_TIMEOUT_MS = 30               # Timeout waiting for frames (milliseconds)
 
 # Compression settings
-RECORDING_COMPRESSION_LEVEL = 0     # Compression during recording (0=none for speed)
+RECORDING_COMPRESSION_LEVEL = 1     # LZF compression during recording (optimized for 30 FPS)
 POST_COMPRESSION_LEVEL = 4          # Compression after recording (4=good balance)
-MIN_DISK_SPACE_MB = 50              # Minimum free disk space before warning (MB)
+MIN_DISK_SPACE_MB = 1000            # Minimum free disk space before warning (1GB for safety)
 
 
 # ============================================================================
-# GPU ACCELERATION (Optimized for i7-14700 with AMD Radeon Pro WX 3100)
+# GPU ACCELERATION (Optimized for i7-14700 20-core with AMD Radeon Pro WX 3100)
 # ============================================================================
-GPU_BUFFER_POOL_SIZE = 8            # Number of GPU buffers in pool
-GPU_BATCH_SIZE = 8                  # Frames processed per GPU batch
+GPU_BUFFER_POOL_SIZE = 12           # Number of GPU buffers in pool (64GB RAM available)
+GPU_BATCH_SIZE = 10                 # Frames processed per GPU batch (optimized for 30 FPS)
 
 
 # ============================================================================

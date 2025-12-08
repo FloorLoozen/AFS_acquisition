@@ -216,10 +216,7 @@ class CameraController:
             if ret == ueye.IS_SUCCESS:
                 settings.update({
                     'sensor_name': sensor_info.strSensorName.decode('utf-8').strip(),
-                    'sensor_id': sensor_info.SensorID,
-                    'sensor_max_width': sensor_info.nMaxWidth,
-                    'sensor_max_height': sensor_info.nMaxHeight,
-                    'sensor_color_mode': sensor_info.nColorMode,
+                    # sensor_id, sensor_max_*, sensor_color_mode removed - redundant or not scientifically relevant
                 })
         except Exception as e:
             pass  # Sensor info error
@@ -278,17 +275,19 @@ class CameraController:
         # Color mode (known value since we configure it)
         settings['color_mode'] = 'IS_CM_BGR8_PACKED'
         
-        # AOI (Area of Interest)
+        # AOI (Area of Interest) - only save if different from full sensor
         try:
             rect_aoi = ueye.IS_RECT()
             ret = ueye.is_AOI(self.h_cam, ueye.IS_AOI_IMAGE_GET_AOI, rect_aoi, ueye.sizeof(rect_aoi))
             if ret == ueye.IS_SUCCESS:
-                settings.update({
-                    'aoi_x': rect_aoi.s32X,
-                    'aoi_y': rect_aoi.s32Y,
-                    'aoi_width': rect_aoi.s32Width,
-                    'aoi_height': rect_aoi.s32Height,
-                })
+                # Only save AOI if it's actually cropped (not full sensor)
+                if rect_aoi.s32X != 0 or rect_aoi.s32Y != 0:
+                    settings.update({
+                        'aoi_x': rect_aoi.s32X,
+                        'aoi_y': rect_aoi.s32Y,
+                        'aoi_width': rect_aoi.s32Width,
+                        'aoi_height': rect_aoi.s32Height,
+                    })
         except Exception as e:
             pass  # AOI error
         
@@ -303,8 +302,7 @@ class CameraController:
             if ret == ueye.IS_SUCCESS:
                 settings.update({
                     'camera_serial': cam_info.SerNo.decode('utf-8').strip(),
-                    'camera_version': cam_info.Version.decode('utf-8').strip(),
-                    'camera_date': cam_info.Date.decode('utf-8').strip(),
+                    # camera_version and camera_date removed - not scientifically relevant
                 })
         except Exception as e:
             pass  # Camera info error
@@ -383,9 +381,9 @@ class CameraController:
         # Fall back to test pattern mode
         self.is_initialized = True
         
-        # Initialize frame pool for test pattern (standard resolution)
+        # Initialize frame pool for test pattern (grayscale MONO8 like hardware camera)
         if self.frame_pool is None:
-            self.frame_pool = FramePool((480, 640, 3), pool_size=3)
+            self.frame_pool = FramePool((480, 640, 1), pool_size=3)
         
         logger.info("Using test pattern mode")
         return True

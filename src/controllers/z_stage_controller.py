@@ -192,7 +192,7 @@ class ZStageController:
     def get_settings(self) -> dict:
         """Get Z stage settings for metadata storage."""
         settings = {
-            'dll_path': self.dll_path,
+            # dll_path removed - system-specific path not portable or scientifically relevant
             'z_range_um': [self.z_min, self.z_max],
         }
         

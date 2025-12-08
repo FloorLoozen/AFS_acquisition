@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release of AFS Acquisition system
 - High-speed camera control (IDS uEye UI-3080CP)
-- XY and Z stage control (Mad City Labs Nano-Drive)
+- XY and Z stage control (Mad City Labs Micro-Drive and Nano-Drive)
 - Function generator control (Siglent SDG1032X)
 - Oscilloscope control (Siglent SDS804X HD)
 - HDF5 video recording with GPU-accelerated downscaling

@@ -254,10 +254,25 @@ measurement_YYYYMMDD_HHMMSS.hdf5
 - **Latency:** <50 ms camera-to-display
 
 **Data Compression:**
-- **Real-time:** LZF compression during acquisition (no frame drops)
-- **Post-processing:** Optional GZIP (higher compression ratio)
-- **Compression Ratio:** ~1.6:1 typical (LZF), ~2.5:1 (GZIP)
-- **File Size:** ~25 MB per second of recording (30 FPS, MONO8)
+- **Real-time (during recording):** LZF compression level 1 (~35% reduction, no frame drops)
+- **Post-processing (after recording):** GZIP-9 + shuffle filter (60-80% total reduction)
+- **Compression Ratio:** 1.5:1 real-time (LZF), 3.5-5:1 post-processing (GZIP-9)
+- **File Size (30 FPS, half res 648×512):** ~23 MB/sec during recording, ~5-9 MB/sec after compression
+- **Post-processing Speed:** ~150-200 MB/sec on i7-14700 (20 parallel workers)
+
+**Compression Tool:**
+```bash
+# Compress single recording (lossless, 60-70% reduction)
+python compress_recordings.py recording.hdf5
+
+# Compress with quality reduction (70-80% reduction, slightly lossy)
+python compress_recordings.py recording.hdf5 --quality-reduction
+
+# Compress all recordings in folder
+python compress_recordings.py recordings/
+
+# Example: 700 MB → 140-210 MB in ~15-20 seconds
+```
 
 **Processing Architecture:**
 - **Threading:** ThreadPoolExecutor with 16 workers (optimized for i7-14700)

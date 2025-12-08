@@ -60,7 +60,7 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 from PyQt5.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QFrame, QSizePolicy, QMessageBox, QProgressDialog
+    QFrame, QSizePolicy, QMessageBox, QProgressDialog, QApplication
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, qRgb
@@ -136,13 +136,13 @@ class CameraWidget(QGroupBox):
         # Executors: separate executors for display and recording to avoid starvation
         # Display executor: low-latency single worker for consistent UI updates
         self.display_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="CameraDisplay"
+            max_workers=2, thread_name_prefix="CameraDisplay"  # i7-14700: 2 workers for smoother display
         )
         # Track whether a display task is currently inflight to avoid queue buildup
         self._display_task_inflight = False
-        # Recording executor: separate pool for any heavy tasks (kept small because recorder is async)
+        # Recording executor: optimized for i7-14700 (20 cores, 28 threads)
         self.recording_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="CameraRecorder"
+            max_workers=4, thread_name_prefix="CameraRecorder"  # i7-14700: 4 workers for parallel processing
         )
         self.recording_queue = queue.Queue(maxsize=100)  # Buffer for recording (compatibility)
         self.processing_lock = threading.RLock()
@@ -151,9 +151,10 @@ class CameraWidget(QGroupBox):
         # compression_level: 0=none (FASTEST for real-time recording), 1-3=fast/LZF, 4-9=best/GZIP (SLOWEST)
         # downscale_factor: 1=full res, 2=half, 4=quarter
         # NOTE: Compression happens during recording (real-time compatible with LZF)
+        # OPTIMIZED FOR 30 FPS: Level 1 (LZF fast) provides ~35% compression with minimal CPU overhead
         self.recording_settings = {
             'recording_fps': 30,      # Recording frame rate (configurable from settings)
-            'compression_level': 3,   # Fast LZF compression during recording (real-time compatible)
+            'compression_level': 1,   # LZF fast compression optimized for 30 FPS real-time recording
             'downscale_factor': 2     # HALF resolution = Good balance of speed & file size
         }
         
@@ -708,8 +709,18 @@ class CameraWidget(QGroupBox):
         return frame
     
     # Recording methods (preserved from original)
-    def start_recording(self, file_path: str, metadata=None) -> bool:
-        """Start HDF5 video recording."""
+    def start_recording(self, file_path: str = None, metadata=None) -> bool:
+        """Start HDF5 video recording.
+        
+        Uses session HDF5 file from main window if file_path not provided.
+        
+        Args:
+            file_path: Optional path to HDF5 file (uses session file if None)
+            metadata: Optional metadata dictionary
+            
+        Returns:
+            True if recording started successfully
+        """
         if self.is_recording:
             logger.warning("Recording already in progress")
             return False
@@ -719,6 +730,72 @@ class CameraWidget(QGroupBox):
             return False
         
         try:
+            # Get session file from main window if no path provided
+            main_window = None
+            if file_path is None:
+                try:
+                    app = QApplication.instance()
+                    main_windows = [w for w in app.topLevelWidgets() if hasattr(w, 'get_session_hdf5_file')]
+                    if main_windows:
+                        main_window = main_windows[0]
+                        file_path = main_window.get_session_hdf5_file()
+                        if file_path:
+                            logger.info(f"Using session HDF5 file: {file_path}")
+                        else:
+                            logger.warning("Session file is None - will create new file")
+                        
+                        # Check if recording already exists in session - ask user what to do
+                        if file_path and main_window.session_has_recording:
+                            from PyQt5.QtWidgets import QMessageBox
+                            msg_box = QMessageBox(None)
+                            msg_box.setIcon(QMessageBox.Question)
+                            msg_box.setWindowTitle("Recording Already Exists")
+                            msg_box.setText("The current session already contains a video recording.")
+                            msg_box.setInformativeText("What would you like to do?")
+                            
+                            overwrite_btn = msg_box.addButton("Overwrite", QMessageBox.AcceptRole)
+                            new_session_btn = msg_box.addButton("New Session", QMessageBox.DestructiveRole)
+                            cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+                            msg_box.setDefaultButton(cancel_btn)
+                            
+                            msg_box.exec_()
+                            clicked = msg_box.clickedButton()
+                            
+                            if clicked == cancel_btn:
+                                logger.info("Recording cancelled by user")
+                                return False
+                            elif clicked == new_session_btn:
+                                # Ask main window to create new session
+                                if hasattr(main_window, '_new_session_file'):
+                                    main_window._new_session_file()
+                                    # Get the new session file
+                                    file_path = main_window.get_session_hdf5_file()
+                                    logger.info(f"Using new session file: {file_path}")
+                            # else: overwrite_btn clicked = Overwrite (continue with current session)
+                        
+                        # Mark main window that session will have recording (only if we have a file_path)
+                        if file_path:
+                            main_window.mark_session_has_recording()
+                    else:
+                        logger.warning("No main window found with get_session_hdf5_file method")
+                except Exception as e:
+                    logger.error(f"Error getting session file: {e}", exc_info=True)
+            
+            # Fallback: create new file if still no path
+            if not file_path:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"recording_{timestamp}.hdf5"
+                from src.utils.config_manager import get_config
+                try:
+                    cfg = get_config()
+                    default_dir = Path(cfg.files.data_directory)
+                except Exception:
+                    default_dir = Path.home() / 'Documents' / 'AFS_Data'
+                
+                default_dir.mkdir(parents=True, exist_ok=True)
+                file_path = str(default_dir / filename)
+                logger.info(f"Created new recording file: {file_path}")
+            
             # Ensure .hdf5 extension
             if not file_path.lower().endswith('.hdf5'):
                 file_path = file_path + '.hdf5'
@@ -960,6 +1037,27 @@ class CameraWidget(QGroupBox):
             self.recording_path = file_path
             self.recording_start_time = datetime.now()
             self.recorded_frames = 0
+            
+            # Log initial function generator state to timeline
+            try:
+                # Get main window reference to access measurement controls
+                # QApplication already imported at top of file
+                main_window = None
+                for widget in QApplication.topLevelWidgets():
+                    if widget.__class__.__name__ == 'MainWindow':
+                        main_window = widget
+                        break
+                
+                if main_window and hasattr(main_window, 'measurement_controls_widget'):
+                    fg_status = main_window.measurement_controls_widget.get_function_generator_status()
+                    self.log_initial_function_generator_state(
+                        fg_status['frequency_mhz'],
+                        fg_status['amplitude_vpp'],
+                        fg_status['enabled']
+                    )
+                    logger.info(f"Logged initial FG state: {fg_status['frequency_mhz']:.1f} MHz, {fg_status['amplitude_vpp']:.1f} Vpp, enabled={fg_status['enabled']}")
+            except Exception as e:
+                logger.warning(f"Could not log initial function generator state: {e}")
             
             logger.info(f"Started HDF5 recording: {file_path}")
             return True

@@ -39,7 +39,7 @@ class LUTAcquisitionThread(QThread):
     frame_captured = pyqtSignal(int, float)  # frame_number, z_position
     
     def __init__(self, start_um: float, end_um: float, step_nm: float, 
-                 camera, hdf5_recorder, settle_time_ms: int, camera_widget=None):
+                 camera, hdf5_recorder, settle_time_ms: int, camera_widget=None, output_path=None):
         super().__init__()
         self.start_um = start_um
         self.end_um = end_um
@@ -49,6 +49,7 @@ class LUTAcquisitionThread(QThread):
         self.settle_time_s = settle_time_ms / 1000.0
         self._stop_requested = False
         self.camera_widget = camera_widget
+        self.output_path = output_path  # For standalone mode without recorder
         
     def request_stop(self):
         """Request the acquisition to stop."""
@@ -156,23 +157,86 @@ class LUTAcquisitionThread(QThread):
                 self.progress.emit(i + 1, num_positions, 
                                  f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
             
-            # Save LUT data to HDF5 file if we have a recorder
-            if self.hdf5_recorder and lut_frames:
-                metadata = {
-                    'start_position_um': self.start_um,
-                    'end_position_um': self.end_um,
-                    'step_size_nm': self.step_nm,
-                    'settle_time_ms': self.settle_time_s * 1000,
-                    'num_positions': len(lut_frames)
-                }
-                self.hdf5_recorder.add_lut_data(lut_frames, lut_z_positions, metadata)
-                logger.info(f"LUT data saved: {len(lut_frames)} frames")
-                # If acquisition ran against an active recorder, let camera_widget know the LUT file
-                try:
-                    if self.camera_widget and hasattr(self.hdf5_recorder, 'file_path'):
-                        setattr(self.camera_widget, 'last_lut_file', str(self.hdf5_recorder.file_path))
-                except Exception:
-                    pass
+            # Save LUT data to HDF5 file
+            if lut_frames:
+                # Create recorder if we don't have one (standalone mode)
+                recorder_to_use = self.hdf5_recorder
+                created_recorder = False
+                
+                if not recorder_to_use and self.output_path:
+                    # Get session file from main window if available
+                    session_file = self.output_path
+                    try:
+                        from PyQt5.QtWidgets import QApplication
+                        app = QApplication.instance()
+                        if app:
+                            main_windows = [w for w in app.topLevelWidgets() if hasattr(w, 'get_session_hdf5_file')]
+                            if main_windows:
+                                main_window = main_windows[0]
+                                session_file_from_main = main_window.get_session_hdf5_file()
+                                if session_file_from_main:
+                                    session_file = session_file_from_main
+                                    logger.info(f"Using session HDF5 file for LUT: {session_file}")
+                    except Exception as e:
+                        logger.debug(f"Could not get session file: {e}")
+                    
+                    # Create temporary recorder for LUT file
+                    from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+                    test_frame = lut_frames[0]
+                    recorder_to_use = HDF5VideoRecorder(
+                        session_file,
+                        frame_shape=test_frame.shape,
+                        compression_level=1
+                    )
+                    # Initialize file for LUT-only mode
+                    if recorder_to_use._create_hdf5_file():
+                        if 'raw_data' not in recorder_to_use.h5_file:
+                            recorder_to_use.h5_file.create_group('raw_data')
+                        recorder_to_use._create_execution_data_group()
+                        recorder_to_use.is_recording = True
+                        created_recorder = True
+                        logger.info(f"Opened HDF5 file for LUT: {session_file}")
+                    else:
+                        recorder_to_use = None
+                
+                if recorder_to_use:
+                    metadata = {
+                        'start_position_um': self.start_um,
+                        'end_position_um': self.end_um,
+                        'step_size_nm': self.step_nm,
+                        'settle_time_ms': self.settle_time_s * 1000,
+                        'num_positions': len(lut_frames)
+                    }
+                    recorder_to_use.add_lut_data(lut_frames, lut_z_positions, metadata, optimize_for='max_compression')
+                    logger.info(f"LUT data saved: {len(lut_frames)} frames")
+                    
+                    # Mark main window that LUT was saved
+                    if created_recorder:
+                        try:
+                            from PyQt5.QtWidgets import QApplication
+                            app = QApplication.instance()
+                            if app:
+                                main_windows = [w for w in app.topLevelWidgets() if hasattr(w, 'mark_session_has_lut')]
+                                if main_windows:
+                                    main_window = main_windows[0]
+                                    main_window.mark_session_has_lut()
+                                    logger.info("Marked session as containing LUT")
+                        except Exception as e:
+                            logger.debug(f"Could not mark session has LUT: {e}")
+                    
+                    # Close standalone recorder
+                    if created_recorder:
+                        recorder_to_use.h5_file.flush()
+                        recorder_to_use.h5_file.close()
+                        recorder_to_use.is_recording = False
+                        logger.info("Closed standalone LUT file")
+                    
+                    # If acquisition ran against an active recorder, let camera_widget know the LUT file
+                    try:
+                        if self.camera_widget and hasattr(recorder_to_use, 'file_path'):
+                            setattr(self.camera_widget, 'last_lut_file', str(recorder_to_use.file_path))
+                    except Exception:
+                        pass
             
             # Return Z-stage to 0 position after LUT acquisition
             try:
@@ -245,8 +309,20 @@ class LUTAcquisitionThreadStandalone(QThread):
                 self.finished.emit(False, "Failed to start camera capture")
                 return
             
-            # Wait for camera to stabilize
-            time.sleep(0.5)
+            # Configure camera for LUT acquisition (same settings as recording)
+            # Use full resolution MONO8 format to match recording data
+            self.progress.emit(0, 100, "Configuring camera for LUT acquisition...")
+            try:
+                lut_camera_settings = {
+                    'exposure_ms': 5.0,  # 5ms exposure (same as recording)
+                    'gain_master': 2,     # Gain 2 (same as recording)
+                    'fps': 30.0           # 30 FPS (same as recording)
+                }
+                camera.apply_settings(lut_camera_settings)
+                logger.info("Applied LUT camera settings: exposure=5ms, gain=2, fps=30 (matching recording format)")
+                time.sleep(0.3)  # Wait for camera to stabilize
+            except Exception as e:
+                logger.warning(f"Failed to apply LUT camera settings: {e}")
             
             # Get a test frame to determine dimensions
             test_frame = camera.get_frame(timeout=1.0)
@@ -277,17 +353,86 @@ class LUTAcquisitionThreadStandalone(QThread):
                 'frame_height': test_frame.shape[0]
             }
             
-            # Create HDF5 recorder for metadata storage. Use light/fast recording
-            # because LUT frames will be saved into a dedicated LUT dataset (fast LZF).
+            # Get session HDF5 file from main window
+            session_file = None
+            main_window = None
+            try:
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                main_windows = [w for w in app.topLevelWidgets() if hasattr(w, 'get_session_hdf5_file')]
+                if main_windows:
+                    main_window = main_windows[0]
+                    session_file = main_window.get_session_hdf5_file()
+                    if session_file:
+                        self.output_path = session_file
+                        logger.info(f"Using session HDF5 file for LUT: {session_file}")
+                        
+                        # Check if LUT already exists in session - ask user what to do
+                        if main_window.session_has_lut:
+                            from PyQt5.QtWidgets import QMessageBox
+                            msg_box = QMessageBox(None)
+                            msg_box.setIcon(QMessageBox.Question)
+                            msg_box.setWindowTitle("LUT Already Exists")
+                            msg_box.setText("The current session already contains LUT data.")
+                            msg_box.setInformativeText("What would you like to do?")
+                            
+                            overwrite_btn = msg_box.addButton("Overwrite", QMessageBox.AcceptRole)
+                            new_session_btn = msg_box.addButton("New Session", QMessageBox.DestructiveRole)
+                            cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+                            msg_box.setDefaultButton(cancel_btn)
+                            
+                            msg_box.exec_()
+                            clicked = msg_box.clickedButton()
+                            
+                            if clicked == cancel_btn:
+                                self.finished.emit(False, "LUT acquisition cancelled")
+                                return
+                            elif clicked == new_session_btn:
+                                # Ask main window to create new session
+                                if hasattr(main_window, '_new_session_file'):
+                                    main_window._new_session_file()
+                                    # Get the new session file
+                                    session_file = main_window.get_session_hdf5_file()
+                                    self.output_path = session_file
+                                    logger.info(f"Using new session file: {session_file}")
+                            # else: overwrite_btn clicked = Overwrite (continue with current session)
+                        
+                        # Mark main window that session will have LUT (tentatively)
+                        # We'll unmark it in finally block if acquisition was stopped
+                        main_window.mark_session_has_lut()
+                        # Store reference for cleanup
+                        self.main_window_ref = main_window
+            except Exception as e:
+                logger.debug(f"Could not get session file: {e}")
+            
+            # Create HDF5 recorder for LUT storage
+            # If we have a session file, use it; otherwise use the provided output_path
             recorder = HDF5VideoRecorder(
                 self.output_path,
                 frame_shape=test_frame.shape,
                 compression_level=1  # LZF for any incidental main_video dataset (fast)
             )
 
-            # Start recording to create file and metadata groups before saving LUT
-            recorder.start_recording(metadata=metadata)
-            logger.info(f"Started HDF5 file for LUT to {self.output_path}")
+            # Initialize file for LUT-only mode (no recording session created)
+            # This opens/creates the file and sets up basic structure without creating a recording
+            try:
+                if not recorder._create_hdf5_file():
+                    raise Exception("Failed to create/open HDF5 file")
+                
+                # Create /raw_data group if it doesn't exist
+                if 'raw_data' not in recorder.h5_file:
+                    recorder.h5_file.create_group('raw_data')
+                
+                # Create LUT group
+                recorder._create_execution_data_group()
+                
+                # Set flags to allow add_lut_data to work
+                recorder.is_recording = True  # Temporary flag to allow LUT saving
+                
+                logger.info(f"Opened HDF5 file for LUT: {self.output_path}")
+            except Exception as e:
+                logger.error(f"Failed to initialize HDF5 file for LUT: {e}")
+                raise
             
             # Move to start position
             self.progress.emit(0, num_positions, f"Moving to start position: {self.start_um:.0f} µm...")
@@ -349,8 +494,9 @@ class LUTAcquisitionThreadStandalone(QThread):
                 self.frame_captured.emit(i, actual_z_pos)
                 self.progress.emit(i + 1, num_positions, 
                                  f"Captured frame {i+1}/{num_positions} at Z={actual_z_pos:.3f} µm")
-            # Save collected LUT frames into the HDF5 file (fast LZF compression)
-            if recorder and lut_frames:
+            
+            # Only save LUT data if acquisition completed successfully (not stopped)
+            if not self._stop_requested and recorder and lut_frames:
                 try:
                     self.progress.emit(num_positions, num_positions, "Saving LUT frames into HDF5 (max compression)...")
                     metadata.update({'saved_at': datetime.now().isoformat()})
@@ -360,6 +506,9 @@ class LUTAcquisitionThreadStandalone(QThread):
                     self.progress.emit(num_positions, num_positions, "LUT frames saved")
                 except Exception as e:
                     logger.error(f"Failed to save LUT frames: {e}")
+            elif self._stop_requested:
+                logger.info(f"LUT acquisition stopped - discarding {len(lut_frames)} partial frames")
+                self.progress.emit(num_positions, num_positions, "Acquisition stopped - partial data discarded")
 
             # Return Z-stage to 0 position after LUT acquisition
             try:
@@ -385,26 +534,44 @@ class LUTAcquisitionThreadStandalone(QThread):
             self.finished.emit(False, f"Error: {str(e)}")
             
         finally:
+            # If acquisition was stopped, unmark the session flag
+            if self._stop_requested:
+                if hasattr(self, 'main_window_ref') and self.main_window_ref:
+                    self.main_window_ref.session_has_lut = False
+                    logger.info("Cleared session_has_lut flag due to stopped acquisition")
+            
             # Cleanup
             if recorder:
                 try:
-                    self.progress.emit(num_positions, num_positions, "Saving LUT data to HDF5 (compression)...")
-                    recorder.stop_recording()
-                    self.progress.emit(num_positions, num_positions, "LUT data saved successfully")
-                    # Notify parent widget (if present) about the saved LUT file for session reuse
-                    try:
-                        if hasattr(self, 'parent_widget') and getattr(self, 'parent_widget'):
-                            saved_path = str(getattr(recorder, 'file_path', self.output_path))
-                            setattr(self.parent_widget, 'last_lut_file', saved_path)
-                            # Also propagate to camera_widget if available on the parent
-                            try:
-                                pw = self.parent_widget
-                                if hasattr(pw, 'camera_widget') and getattr(pw, 'camera_widget'):
-                                    setattr(pw.camera_widget, 'last_lut_file', saved_path)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
+                    # Only save if acquisition completed successfully
+                    if not self._stop_requested:
+                        self.progress.emit(num_positions, num_positions, "Saving LUT data to HDF5 (compression)...")
+                        # Close HDF5 file properly (don't call stop_recording - we never started a recording)
+                        if hasattr(recorder, 'h5_file') and recorder.h5_file:
+                            recorder.h5_file.flush()
+                            recorder.h5_file.close()
+                            logger.info("HDF5 file closed successfully after LUT save")
+                        recorder.is_recording = False
+                        self.progress.emit(num_positions, num_positions, "LUT data saved successfully")
+                        # Notify parent widget (if present) about the saved LUT file for session reuse
+                        try:
+                            if hasattr(self, 'parent_widget') and getattr(self, 'parent_widget'):
+                                saved_path = str(getattr(recorder, 'file_path', self.output_path))
+                                setattr(self.parent_widget, 'last_lut_file', saved_path)
+                                # Also propagate to camera_widget if available on the parent
+                                try:
+                                    pw = self.parent_widget
+                                    if hasattr(pw, 'camera_widget') and getattr(pw, 'camera_widget'):
+                                        setattr(pw.camera_widget, 'last_lut_file', saved_path)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    else:
+                        # Acquisition was stopped - close file without additional processing
+                        logger.info("Closing HDF5 file (partial LUT already discarded)")
+                        if hasattr(recorder, 'h5_file') and recorder.h5_file:
+                            recorder.h5_file.close()
                 except Exception as e:
                     logger.error(f"Error stopping recorder: {e}")
                     
@@ -587,6 +754,9 @@ class LookupTableWidget(QDialog):
             if getattr(cw, 'hdf5_recorder', None) and getattr(cw, 'is_recording', False):
                 active_recorder = cw.hdf5_recorder
                 active_camera = getattr(cw, 'camera', None)
+            # Also get camera even if not recording (to avoid creating new camera instance)
+            if not active_camera and getattr(cw, 'camera', None):
+                active_camera = cw.camera
 
         if active_recorder and active_camera:
             # Use the recorder attached to the running session so LUT is stored inside
@@ -599,6 +769,23 @@ class LookupTableWidget(QDialog):
                 hdf5_recorder=active_recorder,
                 settle_time_ms=self.settle_spin.value(),
                 camera_widget=getattr(self, 'camera_widget', None)
+            )
+        elif active_camera:
+            # Have camera but no recorder - use existing camera with standalone file
+            default_dir = Path.cwd() / "raw_data" / "LUT"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            output_path = default_dir / f"lut_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
+
+            # Use thread that takes existing camera (don't create new camera)
+            self.acquisition_thread = LUTAcquisitionThread(
+                start_um=start,
+                end_um=end,
+                step_nm=self.step_spin.value(),
+                camera=active_camera,
+                hdf5_recorder=None,  # Will create its own file
+                settle_time_ms=self.settle_spin.value(),
+                camera_widget=getattr(self, 'camera_widget', None),
+                output_path=str(output_path)
             )
         else:
             # Standalone mode - create own camera and file (no active recording available)

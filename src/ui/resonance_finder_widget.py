@@ -459,6 +459,7 @@ class ResonanceFinderWidget(QWidget):
         # Current sweep data for saving
         self.current_frequencies = None
         self.current_voltages = None
+        self.current_times = None
         self.sweep_parameters = {}
         
         # Worker thread
@@ -687,6 +688,12 @@ class ResonanceFinderWidget(QWidget):
         self.stop_freq = freq_stop
         self.sweep_time = sweep_time
         
+        # Log sweep start to audit trail
+        self._log_sweep_to_audit_trail('sweep_started', 
+                                      f'Resonance sweep started: {freq_start:.2f}-{freq_stop:.2f} MHz, {amplitude:.2f} Vpp',
+                                      {'start_frequency_mhz': freq_start, 'stop_frequency_mhz': freq_stop, 
+                                       'amplitude_vpp': amplitude, 'sweep_time_s': sweep_time})
+        
         # Start sweep worker (single fixed 5s sweep; sweep_time UI is disabled)
         self.sweep_worker = SweepWorker(
             self.funcgen, self.oscilloscope,
@@ -710,6 +717,11 @@ class ResonanceFinderWidget(QWidget):
             scope_limits: Dict with y_min, y_max, screen_time from scope settings, or None for auto
         """
         try:
+            # Save previous sweep data to HDF5 if exists (before starting new sweep)
+            if self.current_times is not None and self.current_voltages is not None:
+                logger.info("Saving previous sweep data before starting new sweep...")
+                self._save_sweep_to_hdf5(self.current_times, self.current_voltages)
+            
             # Store sweep parameters for saving
             self.sweep_parameters = {
                 'amplitude_vpp': self.sweep_amp_spinbox.value(),
@@ -722,8 +734,14 @@ class ResonanceFinderWidget(QWidget):
             self._plot_sweep_data(times, voltages, scope_limits)
             logger.info(f"Oscilloscope capture completed: {len(times)} points")
             
-            # Auto-save to HDF5 file
-            self._save_sweep_to_hdf5(times, voltages)
+            # Log sweep completion to audit trail
+            self._log_sweep_to_audit_trail('sweep_completed',
+                                          f'Resonance sweep completed: {len(times)} data points captured',
+                                          {'data_points': len(times), 'sweep_parameters': self.sweep_parameters})
+            
+            # Store the raw data for later saving (when user closes widget after selecting peaks)
+            self.current_times = times
+            self.current_voltages = voltages
         except Exception as e:
             logger.error(f"Plot update failed: {e}")
         finally:
@@ -846,6 +864,11 @@ class ResonanceFinderWidget(QWidget):
         self.point_markers.append(marker)
         self.canvas.draw()
         self._update_frequency_display()
+        
+        # Log frequency selection to audit trail
+        self._log_sweep_to_audit_trail('resonance_frequency_selected',
+                                      f'Potential resonance frequency selected: {x:.3f} MHz',
+                                      {'frequency_mhz': x, 'total_selected': len(self.clicked_frequencies)})
     
     def _update_frequency_display(self):
         """Update the frequency display label."""
@@ -862,22 +885,77 @@ class ResonanceFinderWidget(QWidget):
         
         self.freq_display_label.setText(display_text)
     
+    def _log_sweep_to_audit_trail(self, event_type: str, description: str, metadata: dict):
+        """Log resonance sweep event to HDF5 audit trail."""
+        try:
+            app = QApplication.instance()
+            main_windows = [widget for widget in app.topLevelWidgets() 
+                          if hasattr(widget, 'camera_widget') and widget.camera_widget]
+            
+            if main_windows:
+                main_window = main_windows[0]
+                camera_widget = main_window.camera_widget
+                
+                if hasattr(camera_widget, 'hdf5_recorder') and camera_widget.hdf5_recorder:
+                    recorder = camera_widget.hdf5_recorder
+                    if recorder.is_recording or hasattr(recorder, 'audit_trail'):
+                        recorder.log_hardware_event(event_type, description, metadata)
+                        logger.debug(f"Resonance sweep event logged to audit trail: {event_type}")
+        except Exception as e:
+            logger.debug(f"Could not log sweep event to audit trail: {e}")
+    
     def _save_sweep_to_hdf5(self, times, voltages):
-        """Save sweep data and plot to HDF5 file from measurement settings.
+        """Save sweep data and plot to HDF5 file using session file.
+        
+        Uses session HDF5 file from main window.
         
         Args:
             times: Time values from oscilloscope
             voltages: Voltage values from oscilloscope
         """
         try:
-            # Try to get HDF5 file path from measurement settings first
+            # Get session HDF5 file from main window
             hdf5_file_path = None
             app = QApplication.instance()
             main_windows = [widget for widget in app.topLevelWidgets() 
-                          if hasattr(widget, 'frequency_settings_widget')]
+                          if hasattr(widget, 'get_session_hdf5_file')]
             
             if main_windows:
                 main_window = main_windows[0]
+                hdf5_file_path = main_window.get_session_hdf5_file()
+                if hdf5_file_path:
+                    logger.info(f"Using session HDF5 file for resonance: {hdf5_file_path}")
+                    
+                    # Check if resonance already exists in session - ask user what to do
+                    if main_window.session_has_resonance:
+                        msg_box = QMessageBox(self)
+                        msg_box.setIcon(QMessageBox.Question)
+                        msg_box.setWindowTitle("Resonance Already Exists")
+                        msg_box.setText("The current session already contains resonance data.")
+                        msg_box.setInformativeText("What would you like to do?")
+                        
+                        overwrite_btn = msg_box.addButton("Overwrite", QMessageBox.AcceptRole)
+                        new_session_btn = msg_box.addButton("New Session", QMessageBox.DestructiveRole)
+                        cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+                        msg_box.setDefaultButton(cancel_btn)
+                        
+                        msg_box.exec_()
+                        clicked = msg_box.clickedButton()
+                        
+                        if clicked == cancel_btn:
+                            logger.info("Resonance save cancelled by user")
+                            return
+                        elif clicked == new_session_btn:
+                            # Ask main window to create new session
+                            if hasattr(main_window, '_new_session_file'):
+                                main_window._new_session_file()
+                                # Get the new session file
+                                hdf5_file_path = main_window.get_session_hdf5_file()
+                                logger.info(f"Using new session file: {hdf5_file_path}")
+                        # else: overwrite_btn clicked = Overwrite (continue with current session)
+                    
+                    # Mark that session has resonance data
+                    main_window.mark_session_has_resonance()
                 
                 # Get file path from frequency settings widget
                 if hasattr(main_window, 'frequency_settings_widget') and main_window.frequency_settings_widget:
@@ -920,52 +998,109 @@ class ResonanceFinderWidget(QWidget):
                 hdf5_file_path = str(default_dir / f"resonance_data_{timestamp}.hdf5")
                 logger.info(f"Creating new HDF5 file: {hdf5_file_path}")
             
-            # Convert times to frequencies
-            frequencies = self.start_freq + (self.stop_freq - self.start_freq) * (times / self.sweep_time)
+            # Convert times to frequencies using sweep parameters
+            start_freq = self.sweep_parameters.get('start_frequency_mhz', self.freq_start_spinbox.value())
+            stop_freq = self.sweep_parameters.get('stop_frequency_mhz', self.freq_stop_spinbox.value())
+            sweep_time = self.sweep_parameters.get('sweep_time_s', self.sweep_time_spinbox.value())
+            frequencies = start_freq + (stop_freq - start_freq) * (times / sweep_time)
             
-            # Save plot as PNG in memory buffer
+            # Log current state of clicked frequencies
+            logger.info(f"Saving sweep with {len(self.clicked_frequencies)} clicked frequencies: {self.clicked_frequencies}")
+            
+            # Save plot as PNG in memory buffer (without manual click markers)
+            # Temporarily hide all click markers
+            hidden_markers = []
+            for marker in self.point_markers:
+                marker.set_visible(False)
+                hidden_markers.append(marker)
+            
             buf = io.BytesIO()
             self.figure.savefig(buf, format='png', dpi=150, bbox_inches='tight')
             buf.seek(0)
-            plot_image = np.frombuffer(buf.read(), dtype=np.uint8)
+            plot_png_bytes = buf.read()  # Keep as bytes, not numpy array
             buf.close()
+            
+            # Restore click markers visibility
+            for marker in hidden_markers:
+                marker.set_visible(True)
+            self.canvas.draw()  # Redraw to show markers again
             
             # Save to HDF5 file directly
             with h5py.File(hdf5_file_path, 'a') as hf:
-                # Create execution_log group if it doesn't exist
-                if 'execution_log' not in hf:
-                    exec_group = hf.create_group('execution_log')
+                # Create meta_data group if it doesn't exist
+                if 'meta_data' not in hf:
+                    meta_group = hf.create_group('meta_data')
+                    meta_group.attrs['description'] = b'Metadata and analysis results'
                 else:
-                    exec_group = hf['execution_log']
+                    meta_group = hf['meta_data']
                 
-                # Find next resonance sweep number
-                existing_sweeps = [k for k in exec_group.keys() if k.startswith('resonance_sweep_')]
+                # Create frequency_sweep group if it doesn't exist
+                if 'frequency_sweep' not in meta_group:
+                    sweep_parent = meta_group.create_group('frequency_sweep')
+                    sweep_parent.attrs['description'] = b'Frequency sweep measurements for resonance detection'
+                else:
+                    sweep_parent = meta_group['frequency_sweep']
+                
+                # Find next sweep number
+                existing_sweeps = [k for k in sweep_parent.keys() if k.startswith('sweep_')]
                 sweep_num = len(existing_sweeps) + 1
-                sweep_name = f"resonance_sweep_{sweep_num:03d}"
+                sweep_name = f"sweep_{sweep_num}"
                 
                 # Create sweep group
-                sweep_group = exec_group.create_group(sweep_name)
-                
-                # Save sweep parameters as attributes
+                sweep_group = sweep_parent.create_group(sweep_name)
+                sweep_group.attrs['description'] = f'Frequency sweep {sweep_num}'.encode('utf-8')
                 sweep_group.attrs['amplitude_vpp'] = self.sweep_parameters.get('amplitude_vpp', 0)
                 sweep_group.attrs['start_frequency_mhz'] = self.sweep_parameters.get('start_frequency_mhz', 0)
                 sweep_group.attrs['stop_frequency_mhz'] = self.sweep_parameters.get('stop_frequency_mhz', 0)
                 sweep_group.attrs['sweep_time_s'] = self.sweep_parameters.get('sweep_time_s', 0)
                 sweep_group.attrs['timestamp'] = self.sweep_parameters.get('timestamp', '')
                 
-                # Save waveform data
-                sweep_group.create_dataset('frequencies_mhz', data=frequencies, compression='gzip')
-                sweep_group.create_dataset('voltages_v', data=voltages, compression='gzip')
-                sweep_group.create_dataset('times_s', data=times, compression='gzip')
+                # Create compound dataset for sweep data (time, frequency, voltage)
+                sweep_dtype = np.dtype([
+                    ('time_s', np.float64),
+                    ('frequency_mhz', np.float64),
+                    ('voltage_mv', np.float64)
+                ])
+                sweep_data = np.empty(len(times), dtype=sweep_dtype)
+                sweep_data['time_s'] = times
+                sweep_data['frequency_mhz'] = frequencies
+                sweep_data['voltage_mv'] = voltages * 1000  # Convert V to mV
                 
-                # Save plot image
-                sweep_group.create_dataset('plot_image_png', data=plot_image, compression='gzip')
+                sweep_group.create_dataset('data', data=sweep_data, compression='gzip')
+                sweep_group['data'].attrs['description'] = b'Sweep measurement data: time, frequency, and voltage'
+                sweep_group['data'].attrs['columns'] = b'time_s, frequency_mhz, voltage_mv'
                 
-                # Save selected frequencies if any
+                # Save plot image (without manual click markers) as PNG binary
+                plot_dataset = sweep_group.create_dataset('plot', data=np.void(plot_png_bytes))
+                plot_dataset.attrs['description'] = b'Frequency sweep plot (PNG image)'
+                plot_dataset.attrs['format'] = b'png'
+                plot_dataset.attrs['dpi'] = 150
+                plot_dataset.attrs['note'] = b'Binary PNG data - save to .png file to view'
+                
+                # Save potential resonance frequencies only if any were selected
                 if self.clicked_frequencies:
-                    sweep_group.create_dataset('selected_frequencies_mhz', 
-                                             data=np.array(self.clicked_frequencies), 
-                                             compression='gzip')
+                    # Find corresponding voltages for each clicked frequency using interpolation
+                    clicked_voltages = []
+                    for freq in self.clicked_frequencies:
+                        # Find closest frequency in the data
+                        idx = np.argmin(np.abs(frequencies - freq))
+                        clicked_voltages.append(voltages[idx] * 1000)  # Convert to mV
+                    
+                    freq_dtype = np.dtype([
+                        ('frequency_mhz', np.float64),
+                        ('voltage_mv', np.float64)
+                    ])
+                    freq_data = np.empty(len(self.clicked_frequencies), dtype=freq_dtype)
+                    freq_data['frequency_mhz'] = self.clicked_frequencies
+                    freq_data['voltage_mv'] = clicked_voltages
+                    
+                    potential_freq_dataset = sweep_group.create_dataset('potential_frequencies', data=freq_data, compression='gzip')
+                    potential_freq_dataset.attrs['description'] = b'Manually selected potential resonance frequencies with corresponding voltages'
+                    potential_freq_dataset.attrs['columns'] = b'frequency_mhz, voltage_mv'
+                    potential_freq_dataset.attrs['count'] = len(self.clicked_frequencies)
+                    logger.info(f"  Saved {len(self.clicked_frequencies)} potential frequencies with voltages")
+                else:
+                    logger.info(f"  No potential frequencies selected - table not created")
                 
                 logger.info(f"Saved resonance sweep to HDF5: {sweep_name} in {hdf5_file_path}")
                 logger.info(f"  Data points: {len(frequencies)}, Selected frequencies: {len(self.clicked_frequencies)}")
@@ -981,8 +1116,7 @@ class ResonanceFinderWidget(QWidget):
                 
         except Exception as e:
             logger.error(f"Error saving sweep to HDF5: {e}")
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Save Error", f"Failed to save resonance data:\\n{e}")
+            QMessageBox.warning(self, "Save Error", f"Failed to save resonance data:\n{e}")
     
     def _save_resonance_data_to_hdf5(self):
         """Save resonance data to the current HDF5 recording file."""
@@ -1052,11 +1186,10 @@ class ResonanceFinderWidget(QWidget):
     def closeEvent(self, event):
         """Handle widget close event."""
         try:
-            # Save resonance data to HDF5 file if there's any data to save
-            if (self.data_loaded or self.clicked_frequencies or 
-                self.previous_frequency_lists or self.current_frequencies is not None):
-                logger.info("Saving resonance finder data before closing...")
-                self._save_resonance_data_to_hdf5()
+            # Save sweep data to HDF5 file if there's a completed sweep
+            if self.current_times is not None and self.current_voltages is not None:
+                logger.info("Saving resonance sweep data before closing...")
+                self._save_sweep_to_hdf5(self.current_times, self.current_voltages)
             
             # Stop any running sweep
             if self.sweep_worker and self.sweep_worker.isRunning():

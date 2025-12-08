@@ -60,14 +60,17 @@ class MainWindow(QMainWindow):
         self.keyboard_shortcuts: Optional['KeyboardShortcutManager'] = None
         self.force_path_designer: Optional['ForcePathDesignerWindow'] = None
         
-        # Session management and HDF5 logging
-        self.session_hdf5_file: Optional[str] = None
+        # Session management - ONE HDF5 file per session containing ALL data
+        self.session_hdf5_file: Optional[str] = None  # Current session HDF5 file path
+        self.session_hdf5_recorder: Optional['HDF5VideoRecorder'] = None  # Session recorder instance
+        self.session_has_recording: bool = False  # Track if video recording was made
+        self.session_has_lut: bool = False  # Track if LUT was acquired
+        self.session_has_resonance: bool = False  # Track if resonance sweep was done
         self.measurement_active: bool = False
         self.measurement_start_time: Optional[float] = None
         
-        # LUT acquisition state management
-        self._acquiring_lut: bool = False  # Flag to prevent recording during LUT acquisition
-        self._lut_file_path: Optional[str] = None  # File path where LUT was saved (to reuse for video)
+        # Legacy LUT file path (for compatibility)
+        self._lut_file_path: Optional[str] = None
         
         try:
             self._init_ui()
@@ -91,6 +94,9 @@ class MainWindow(QMainWindow):
             from src.utils.keyboard_shortcuts import KeyboardShortcutManager
             self.keyboard_shortcuts = KeyboardShortcutManager(self)
             
+            # Create session HDF5 file at startup
+            QTimer.singleShot(500, self._create_session_hdf5_file)
+            
             # Delay focus setting to ensure everything is loaded
             QTimer.singleShot(100, self._ensure_main_window_focus)
             
@@ -103,14 +109,153 @@ class MainWindow(QMainWindow):
             logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
 
-    def _create_measurement_hdf5(self) -> bool:
-        """Create HDF5 file when measurement starts - DISABLED.
+    def _create_session_hdf5_file(self) -> bool:
+        """Create session HDF5 file at program startup.
         
-        All data is consolidated into video HDF5 files. Session files are not created.
-        This method is kept for backwards compatibility but does nothing.
+        ONE file per session containing ALL data:
+        - Video recordings
+        - LUT data
+        - Resonance finder sweeps
+        - Force path executions
+        - All metadata
+        
+        Returns:
+            True if file created successfully
         """
-        self.session_hdf5_file = None
-        return True
+        try:
+            from src.utils.hdf5_video_recorder import HDF5VideoRecorder
+            
+            # Get path and filename from GUI (frequency_settings_widget)
+            if self.frequency_settings_widget:
+                # Use the GUI's full file path (path + filename from text fields)
+                self.session_hdf5_file = self.frequency_settings_widget.get_full_file_path()
+            else:
+                # Fallback: use default directory with timestamped filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"session_{timestamp}.hdf5"
+                
+                from src.utils.config_manager import get_config
+                try:
+                    cfg = get_config()
+                    default_dir = Path(cfg.files.data_directory)
+                except Exception:
+                    default_dir = Path.home() / 'Documents' / 'AFS_Data'
+                
+                default_dir.mkdir(parents=True, exist_ok=True)
+                self.session_hdf5_file = str(default_dir / filename)
+            
+            # Create HDF5VideoRecorder instance for session management
+            # Use minimal frame shape (will be updated when recording starts)
+            self.session_hdf5_recorder = HDF5VideoRecorder(
+                file_path=self.session_hdf5_file,
+                frame_shape=(480, 640, 1),  # Placeholder, updated on recording
+                fps=30.0,
+                compression_level=1  # LZF for session management
+            )
+            
+            # Extract just the filename for status bar display
+            session_filename = Path(self.session_hdf5_file).name
+            logger.info(f"Session HDF5 file created: {self.session_hdf5_file}")
+            self.statusBar().showMessage(f"Session started: {session_filename}")
+            
+            # Reset session flags
+            self.session_has_recording = False
+            self.session_has_lut = False
+            self.session_has_resonance = False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create session HDF5 file: {e}")
+            self.session_hdf5_file = None
+            self.session_hdf5_recorder = None
+            return False
+    
+    def _new_session_file(self) -> None:
+        """Create new session HDF5 file, optionally saving current session."""
+        try:
+            # Check if current session has any data
+            has_data = (self.session_has_recording or 
+                       self.session_has_lut or 
+                       self.session_has_resonance)
+            
+            if has_data:
+                # Ask user what to do with current session
+                data_items = []
+                if self.session_has_recording:
+                    data_items.append("Video Recording")
+                if self.session_has_lut:
+                    data_items.append("LUT Data")
+                if self.session_has_resonance:
+                    data_items.append("Resonance Sweep")
+                
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Question)
+                msg_box.setWindowTitle("Start New Session")
+                msg_box.setText("Current session contains:")
+                msg_box.setInformativeText("\\n".join([f"✓ {item}" for item in data_items]) + 
+                                          "\\n\\nSave current session before starting new one?")
+                msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+                msg_box.setDefaultButton(QMessageBox.Yes)
+                reply = msg_box.exec_()
+                
+                if reply == QMessageBox.Cancel:
+                    return
+                elif reply == QMessageBox.Yes:
+                    self._close_session_file()
+            else:
+                # No data in current session, just close it
+                self._close_session_file()
+            
+            # Create new session file
+            self._create_session_hdf5_file()
+            
+        except Exception as e:
+            logger.error(f"Failed to create new session: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to create new session:\\n{e}")
+    
+    def _close_session_file(self) -> None:
+        """Close current session HDF5 file."""
+        try:
+            if self.session_hdf5_recorder:
+                # Check if recording is active
+                if self.session_hdf5_recorder.is_recording:
+                    logger.warning("Cannot close session while recording is active")
+                    QMessageBox.warning(
+                        self,
+                        "Recording Active",
+                        "Please stop recording before closing the session."
+                    )
+                    return
+                
+                # Close the recorder
+                try:
+                    if hasattr(self.session_hdf5_recorder, 'h5_file') and self.session_hdf5_recorder.h5_file:
+                        self.session_hdf5_recorder.h5_file.close()
+                        logger.info(f"Session HDF5 file closed: {self.session_hdf5_file}")
+                except Exception as e:
+                    logger.warning(f"Error closing HDF5 file: {e}")
+                
+                self.session_hdf5_recorder = None
+            
+            # Report what was saved
+            if self.session_hdf5_file:
+                has_data = (self.session_has_recording or 
+                           self.session_has_lut or 
+                           self.session_has_resonance)
+                
+                if has_data:
+                    saved_file = self.session_hdf5_file
+                    self.statusBar().showMessage(f"Session saved: {Path(saved_file).name}")
+                    logger.info(f"Session saved with: Recording={self.session_has_recording}, "
+                              f"LUT={self.session_has_lut}, Resonance={self.session_has_resonance}")
+                else:
+                    logger.info("Session closed (no data saved)")
+            
+            self.session_hdf5_file = None
+            
+        except Exception as e:
+            logger.error(f"Error closing session: {e}")
 
     def _init_ui(self) -> None:
         """Initialize the user interface layout and appearance.
@@ -141,6 +286,9 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("File")
+        self._add_action(file_menu, "New Session", "Ctrl+N", self._new_session_file)
+        self._add_action(file_menu, "Close Session (Save)", "Ctrl+W", self._close_session_file)
+        file_menu.addSeparator()
         self._add_action(file_menu, "Toggle Maximize", "F11", self._toggle_fullscreen)
         file_menu.addSeparator()
         self._add_action(file_menu, "Exit", "Ctrl+Q", self.close)
@@ -457,14 +605,40 @@ class MainWindow(QMainWindow):
             pass  # No camera widget
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Handle application close with proper cleanup."""
-        reply = QMessageBox.question(
-            self,
-            "Confirm Exit",
-            "Are you sure you want to exit?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+        """Handle application close with proper session cleanup."""
+        # Check if session has any data
+        has_data = (self.session_has_recording or 
+                   self.session_has_lut or 
+                   self.session_has_resonance)
+        
+        # Ask user confirmation
+        if has_data:
+            data_items = []
+            if self.session_has_recording:
+                data_items.append("Video Recording")
+            if self.session_has_lut:
+                data_items.append("LUT Data")
+            if self.session_has_resonance:
+                data_items.append("Resonance Sweep")
+            
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Question)
+            msg_box.setWindowTitle("Confirm Exit")
+            msg_box.setText("Current session contains:")
+            msg_box.setInformativeText("\n".join([f"✓ {item}" for item in data_items]) + 
+                                      "\n\nSession will be saved automatically.\n\nExit now?")
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.No)
+            reply = msg_box.exec_()
+        else:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Question)
+            msg_box.setWindowTitle("Confirm Exit")
+            msg_box.setText("Exit application?")
+            msg_box.setInformativeText("No session data to save.")
+            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg_box.setDefaultButton(QMessageBox.No)
+            reply = msg_box.exec_()
         
         if reply == QMessageBox.No:
             event.ignore()
@@ -473,6 +647,10 @@ class MainWindow(QMainWindow):
         logger.info("Application closing - cleaning up")
         
         try:
+            # Close session file (saves automatically if has data)
+            if self.session_hdf5_file:
+                self._close_session_file()
+            
             # Stop any running measurements
             if self.measurement_active:
                 self.stop_measurement_session()
@@ -529,26 +707,6 @@ class MainWindow(QMainWindow):
             
             logger.info("Cleanup completed")
             
-            # Save last HDF5 file path to config if any data was recorded
-            try:
-                last_hdf5_path = None
-                
-                # Check camera widget for active or last recording
-                if hasattr(self, 'camera_widget') and self.camera_widget:
-                    if hasattr(self.camera_widget, 'hdf5_recorder') and self.camera_widget.hdf5_recorder:
-                        if hasattr(self.camera_widget.hdf5_recorder, 'file_path'):
-                            last_hdf5_path = str(self.camera_widget.hdf5_recorder.file_path)
-                
-                # Save to config if we have a path
-                if last_hdf5_path:
-                    from src.utils.config_manager import ConfigManager
-                    config = ConfigManager()
-                    config.files.last_hdf5_file = last_hdf5_path
-                    config.save_config()
-                    logger.info(f"Saved last HDF5 file path: {last_hdf5_path}")
-            except Exception as e:
-                logger.debug(f"Could not save last HDF5 file path: {e}")
-            
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
         
@@ -557,6 +715,35 @@ class MainWindow(QMainWindow):
     def get_frequency_settings(self) -> Optional['MeasurementSettingsWidget']:
         """Get the measurement settings widget."""
         return self.frequency_settings_widget
+    
+    def get_session_hdf5_file(self) -> Optional[str]:
+        """Get the current session HDF5 file path.
+        
+        All widgets should use this file for saving data:
+        - Camera recordings
+        - LUT acquisitions
+        - Resonance finder sweeps
+        - Force path executions
+        
+        Returns:
+            Path to session HDF5 file or None if no session active
+        """
+        return self.session_hdf5_file
+    
+    def mark_session_has_recording(self) -> None:
+        """Mark that the session contains a video recording."""
+        self.session_has_recording = True
+        logger.info("Session marked: contains recording")
+    
+    def mark_session_has_lut(self) -> None:
+        """Mark that the session contains LUT data."""
+        self.session_has_lut = True
+        logger.info("Session marked: contains LUT")
+    
+    def mark_session_has_resonance(self) -> None:
+        """Mark that the session contains resonance sweep data."""
+        self.session_has_resonance = True
+        logger.info("Session marked: contains resonance data")
     
     def get_save_path(self) -> str:
         """Get the configured save path."""
@@ -574,11 +761,20 @@ class MainWindow(QMainWindow):
         """Open LUT widget for manual acquisition before starting recording.
         
         Args:
-            file_path: Path where the recording will be saved
+            file_path: IGNORED - we use session file instead
         """
         # Set flag to prevent any recording attempts during LUT
         self._acquiring_lut = True
-        logger.info(f"Opening LUT widget for file: {file_path}")
+        
+        # Use session file instead of passed file_path
+        session_file = self.get_session_hdf5_file()
+        if not session_file:
+            logger.error("No session file available for LUT")
+            QMessageBox.critical(self, "Error", "Session file not available")
+            self._acquiring_lut = False
+            return
+        
+        logger.info(f"Opening LUT widget for session file: {session_file}")
         
         # CRITICAL: Block recording to prevent any attempts during LUT
         if hasattr(self.acquisition_controls_widget, '_block_recording'):
@@ -587,45 +783,18 @@ class MainWindow(QMainWindow):
         
         try:
             from src.ui.lookup_table_widget import LookupTableWidget
-            from src.utils.hdf5_video_recorder import HDF5VideoRecorder
             
             # Get camera
             camera = getattr(self.camera_widget, 'camera', None)
             if not camera:
                 QMessageBox.critical(self, "Error", "Camera not available.")
+                self._acquiring_lut = False
                 return
             
-            # Get a test frame to determine dimensions
-            test_frame = camera.get_frame(timeout=1.0)
-            if test_frame is None:
-                QMessageBox.critical(self, "Error", "Failed to capture test frame.")
-                return
-            
-            # Create HDF5 recorder
-            hdf5_recorder = HDF5VideoRecorder(
-                file_path,
-                frame_shape=test_frame.shape,
-                fps=20.0,
-                compression_level=9,
-                downscale_factor=2
-            )
-            
-            # Gather metadata from measurement settings
-            metadata = {}
-            if self.frequency_settings_widget:
-                metadata['sample_name'] = self.frequency_settings_widget.get_sample_information()
-                metadata['measurement_notes'] = self.frequency_settings_widget.get_notes()
-                metadata['save_path'] = self.frequency_settings_widget.get_save_path()
-            
-            # Start recording (opens HDF5 file)
-            if not hdf5_recorder.start_recording(metadata=metadata):
-                QMessageBox.critical(self, "Error", "Failed to create HDF5 file.")
-                return
-            
-            logger.info(f"HDF5 file created for LUT: {file_path}")
+            # LUT widget will use session file automatically (get_session_hdf5_file)
+            # No need to pass HDF5 recorder - widget creates it internally
             
             # Make sure camera widget doesn't think it's recording during LUT
-            # Store any existing recorder temporarily
             old_recorder = getattr(self.camera_widget, 'hdf5_recorder', None)
             old_recording_state = getattr(self.camera_widget, 'is_recording', False)
             
@@ -639,10 +808,10 @@ class MainWindow(QMainWindow):
                 was_updating = self.camera_widget.is_updating
                 self.camera_widget.is_updating = False
             
-            # Open LUT widget with camera, recorder, and camera_widget for pausing live view
+            # Open LUT widget - it will get session file via get_session_hdf5_file()
             dialog = LookupTableWidget(
                 camera=camera, 
-                hdf5_recorder=hdf5_recorder, 
+                hdf5_recorder=None,  # Widget creates its own using session file
                 camera_widget=self.camera_widget,
                 parent=self
             )
@@ -664,44 +833,24 @@ class MainWindow(QMainWindow):
                 self.camera_widget.recorded_frames = 0
             logger.info("Camera widget recording state cleared - NOT recording")
             
-            # CRITICAL: Also clear any reference that main_window might have
-            # Remove the old_recorder reference to prevent any confusion
-            old_recorder = None
+            # LUT widget handles file closing internally via its own recorder
+            # Session flags will be set by LUT widget via mark_session_has_lut()
+            logger.info("LUT acquisition complete via session file")
+                
+            # CRITICAL: Reset acquisition controls to idle state - NOT recording
+            if hasattr(self.acquisition_controls_widget, 'is_recording'):
+                self.acquisition_controls_widget.is_recording = False
+            if hasattr(self.acquisition_controls_widget, 'start_btn'):
+                self.acquisition_controls_widget.start_btn.setEnabled(True)
+            if hasattr(self.acquisition_controls_widget, 'stop_btn'):
+                self.acquisition_controls_widget.stop_btn.setEnabled(False)
+            if hasattr(self.acquisition_controls_widget, 'status_display'):
+                self.acquisition_controls_widget.status_display.set_status("Ready")
+            logger.info("Acquisition controls reset to idle state")
             
-            # After LUT widget closes, stop recording to save the file
-            logger.info("Closing HDF5 file after LUT acquisition...")
-            try:
-                hdf5_recorder.stop_recording()
-                logger.info(f"LUT data saved to file: {file_path}")
-                
-                # CRITICAL: Delete the recorder reference to free resources
-                del hdf5_recorder
-                hdf5_recorder = None
-                
-                logger.info("HDF5 recorder cleaned up after LUT")
-                
-                # Store the file path so we can reuse it for video recording
-                # (filename counter will increment otherwise)
-                self._lut_file_path = file_path
-                logger.info(f"Stored LUT file path for reuse: {file_path}")
-                
-                # CRITICAL: Reset acquisition controls to idle state - NOT recording
-                if hasattr(self.acquisition_controls_widget, 'is_recording'):
-                    self.acquisition_controls_widget.is_recording = False
-                if hasattr(self.acquisition_controls_widget, 'start_btn'):
-                    self.acquisition_controls_widget.start_btn.setEnabled(True)
-                if hasattr(self.acquisition_controls_widget, 'stop_btn'):
-                    self.acquisition_controls_widget.stop_btn.setEnabled(False)
-                if hasattr(self.acquisition_controls_widget, 'status_display'):
-                    self.acquisition_controls_widget.status_display.set_status("Ready")
-                logger.info("Acquisition controls reset to idle state")
-                
-                # Inform user they need to press Record again
-                self.statusBar().showMessage("LUT saved. Press Record again to start video recording.")
-                logger.info("LUT acquisition complete - user must manually press Record to start video")
-            except Exception as e:
-                logger.error(f"Error stopping HDF5 recorder: {e}")
-                QMessageBox.warning(self, "Warning", f"Error saving LUT data: {str(e)}")
+            # Inform user they need to press Record again
+            self.statusBar().showMessage("LUT saved to session. Press Record to start video recording.")
+            logger.info("LUT acquisition complete - user must manually press Record to start video")
             
         except Exception as e:
             logger.error(f"Error opening LUT widget for recording: {e}")
@@ -814,7 +963,11 @@ class MainWindow(QMainWindow):
             return False
     
     def _handle_start_recording(self, file_path):
-        """Handle start recording request."""
+        """Handle start recording request.
+        
+        NOTE: file_path parameter is IGNORED - we always use session file.
+        This ensures all data (LUT, recording, resonance) goes to ONE file.
+        """
         # CRITICAL: Block any recording attempts during LUT acquisition
         if hasattr(self, '_acquiring_lut') and self._acquiring_lut:
             logger.warning("Blocking recording attempt - LUT acquisition in progress")
@@ -826,14 +979,17 @@ class MainWindow(QMainWindow):
                 "Camera is not running. Please ensure camera is connected and running.")
             return
         
-        # Each recording gets its own new file
-        # LUT data is stored separately and referenced if needed
-        # os, h5py, and time already imported at module level
+        # Use session file instead of passed file_path
+        session_file = self.get_session_hdf5_file()
+        if not session_file:
+            logger.error("No session file available for recording")
+            self.acquisition_controls_widget.recording_failed("Session file not available")
+            return
         
         file_has_lut = False
         
-        # Check for LUT in the saved LUT file first (if LUT was acquired previously)
-        lut_check_file = self._lut_file_path if hasattr(self, '_lut_file_path') and self._lut_file_path else file_path
+        # Check for LUT in the session file
+        lut_check_file = session_file
         logger.info(f"Checking for LUT data in: {lut_check_file}")
         if self._lut_file_path and self._lut_file_path != file_path:
             logger.info(f"  (LUT acquired in separate file: {self._lut_file_path})")
@@ -923,28 +1079,19 @@ class MainWindow(QMainWindow):
                     metadata['measurement_notes'] = self.frequency_settings_widget.get_notes()
                     metadata['save_path'] = self.frequency_settings_widget.get_save_path()
                 
-                success = self.camera_widget.start_recording(file_path, metadata)
+                # Pass None to use session file (camera_widget will call get_session_hdf5_file())
+                success = self.camera_widget.start_recording(None, metadata)
                 if success:
-                    # Log initial function generator state
-                    if self.measurement_controls_widget and hasattr(self.camera_widget, 'log_initial_function_generator_state'):
-                        try:
-                            frequency = 1.0
-                            amplitude = 1.0
-                            enabled = False
-                            
-                            try:
-                                frequency = float(self.measurement_controls_widget.frequency_edit.text())
-                                amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
-                                enabled = self.measurement_controls_widget.fg_toggle_button.isChecked()
-                            except (ValueError, AttributeError):
-                                pass
-                            
-                            self.camera_widget.log_initial_function_generator_state(frequency, amplitude, enabled)
-                        except Exception as e:
-                            logger.warning(f"Failed to log initial function generator state: {e}")
+                    # Initial function generator state is logged inside camera_widget.start_recording()
+                    # No need to log it here again
                     
                     self.acquisition_controls_widget.recording_started_successfully()
-                    self.statusBar().showMessage(f"HDF5 recording started: {file_path}")
+                    # Use session file for status message
+                    session_file = self.get_session_hdf5_file()
+                    if session_file:
+                        self.statusBar().showMessage(f"Recording to session: {Path(session_file).name}")
+                    else:
+                        self.statusBar().showMessage("Recording started")
                 else:
                     self.acquisition_controls_widget.recording_failed("Failed to start HDF5 recording in camera.")
             else:
@@ -1045,9 +1192,12 @@ class MainWindow(QMainWindow):
             
             if self.measurement_controls_widget:
                 try:
-                    frequency = float(self.measurement_controls_widget.frequency_edit.text())
-                    amplitude = float(self.measurement_controls_widget.amplitude_edit.text())
-                except (ValueError, AttributeError):
+                    # Use the correct method to get current FG status
+                    fg_status = self.measurement_controls_widget.get_function_generator_status()
+                    frequency = fg_status['frequency_mhz']
+                    amplitude = fg_status['amplitude_vpp']
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Could not get FG settings: {e}")
                     pass  # Use defaults
             
             self.camera_widget.log_function_generator_toggle(enabled, frequency, amplitude)

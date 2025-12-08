@@ -63,15 +63,11 @@ class StateRecovery:
             value: Value to save (must be JSON-serializable)
             force: Force immediate save, ignore interval
         """
+        # State recovery disabled - do not save to file
         with self._lock:
             self._state[key] = value
             self._state['timestamp'] = time.time()
-            
-            # Rate-limit saves unless forced
-            current_time = time.time()
-            if force or (current_time - self._last_save_time) > self._save_interval:
-                self._write_to_file()
-                self._last_save_time = current_time
+            # File saving disabled - state kept in memory only for runtime use
     
     def get_state(self, key: str, default: Any = None) -> Any:
         """Get a state value.

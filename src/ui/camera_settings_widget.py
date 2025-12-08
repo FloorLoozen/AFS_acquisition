@@ -258,6 +258,9 @@ class CameraSettingsWidget(QDialog):
                 logger.debug(f"Camera settings applied: {result}")
                 # Update UI to show rounded values
                 self.update_ui_from_settings()
+                
+                # Log to audit trail if HDF5 recorder is available
+                self._log_settings_to_audit_trail(settings)
             except Exception as e:
                 logger.error(f"Failed to apply camera settings: {e}")
         else:
@@ -265,6 +268,33 @@ class CameraSettingsWidget(QDialog):
         
         # Emit signal for other components
         self.settings_applied.emit(settings)
+    
+    def _log_settings_to_audit_trail(self, settings: dict):
+        """Log camera settings change to HDF5 audit trail."""
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            main_windows = [widget for widget in app.topLevelWidgets() 
+                          if hasattr(widget, 'camera_widget') and widget.camera_widget]
+            
+            if main_windows:
+                main_window = main_windows[0]
+                camera_widget = main_window.camera_widget
+                
+                if hasattr(camera_widget, 'hdf5_recorder') and camera_widget.hdf5_recorder:
+                    recorder = camera_widget.hdf5_recorder
+                    if recorder.is_recording:
+                        # Log camera settings change to audit trail
+                        description = (f"Camera settings changed: "
+                                     f"Exposure={settings.get('exposure', 'N/A')}ms, "
+                                     f"Gain={settings.get('gain', 'N/A')}, "
+                                     f"Live FPS={settings.get('live_fps', 'N/A')}, "
+                                     f"Recording FPS={settings.get('recording_fps', 'N/A')}")
+                        
+                        recorder.log_hardware_event('camera_settings_changed', description, settings)
+                        logger.debug("Camera settings logged to audit trail")
+        except Exception as e:
+            logger.debug(f"Could not log camera settings to audit trail: {e}")
     
     def reconnect_camera(self):
         """Reconnect camera through main window."""
