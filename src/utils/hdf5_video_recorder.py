@@ -679,6 +679,10 @@ class HDF5VideoRecorder:
         # Timestamp information
         self.video_dataset.attrs['created_at'] = datetime.now().isoformat()
         
+        # Software version information
+        self.video_dataset.attrs['software_name'] = 'AFS_acquisition'
+        self.video_dataset.attrs['software_version'] = '1.0.0'
+        
         # Format information
         self.video_dataset.attrs['format_version'] = '1.0'
         self.video_dataset.attrs['color_format'] = 'BGR'  # OpenCV default
