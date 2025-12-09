@@ -28,6 +28,10 @@ class StagesWidget(QDialog):
         super().__init__(parent)
         self.setWindowFlags(Qt.Window | Qt.Tool | Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.manager = StageManager.get_instance()
+        
+        # Connect to movement signal for keyboard shortcuts feedback
+        self.manager.movement_started.connect(self._on_external_movement)
+        
         self.is_connected = False
         self.z_is_connected = False
         self._is_moving = False  # Track movement status for status indicator
@@ -393,6 +397,18 @@ class StagesWidget(QDialog):
             self._update_status("XY Ready")
         elif self.z_is_connected:
             self._update_status("Z Ready")
+    
+    def _on_external_movement(self):
+        """Called when stage movement is triggered externally (e.g., keyboard shortcuts)."""
+        # Show blue Moving status when keyboard shortcuts are used
+        self._start_move()
+        # Position will update automatically via timer
+    
+    def _start_move(self):
+        """Called when stage movement is triggered externally (e.g., keyboard shortcuts)."""
+        # Show blue Moving status when keyboard shortcuts are used
+        self._start_move()
+        # Position will update automatically via timer
     
     def _start_move(self):
         """Start a movement - show Moving status for 1 second, then Ready."""

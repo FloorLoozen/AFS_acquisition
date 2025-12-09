@@ -1,9 +1,9 @@
-"""
-XY and Z Stage Manager singleton for AFS Acquisition.
+"""XY and Z Stage Manager singleton for AFS Acquisition.
 Provides global access to the XY and Z stage controllers.
 """
 
 from typing import Optional, Tuple, Dict, Any
+from PyQt5.QtCore import QObject, pyqtSignal
 
 from src.controllers.xy_stage_controller import XYStageController
 from src.controllers.z_stage_controller import ZStageController
@@ -13,17 +13,21 @@ from src.utils.logger import get_logger
 logger = get_logger("stage_manager")
 
 
-class StageManager:
+class StageManager(QObject):
     """
     Singleton manager for XY and Z stage hardware.
     Provides a global access point to the XY and Z stage controllers with helpers
     for relative and absolute movement and shared defaults.
     """
     _instance = None
+    
+    # Signal emitted when a stage movement starts (for UI feedback)
+    movement_started = pyqtSignal()
 
     def __init__(self):
         if StageManager._instance is not None:
             raise Exception("StageManager is a singleton! Use get_instance() instead.")
+        super().__init__()  # Initialize QObject
         # Hardware controllers and state
         self._stage: Optional[XYStageController] = None
         self._z_stage: Optional[ZStageController] = None
@@ -283,6 +287,7 @@ class StageManager:
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move up: XY stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         return self.move_relative(dy=-self._default_step_size)
 
     def move_down(self) -> bool:
@@ -290,6 +295,7 @@ class StageManager:
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move down: XY stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         return self.move_relative(dy=self._default_step_size)
 
     def move_left(self) -> bool:
@@ -297,6 +303,7 @@ class StageManager:
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move left: XY stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         return self.move_relative(dx=-self._default_step_size)
 
     def move_right(self) -> bool:
@@ -304,6 +311,7 @@ class StageManager:
         if not self.is_connected and not self.connect():
             logger.debug("Cannot move right: XY stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         return self.move_relative(dx=self._default_step_size)
     
     # --- Z-stage movement helpers ---
@@ -312,6 +320,7 @@ class StageManager:
         if not self.z_is_connected and not self.connect_z():
             logger.debug("Cannot move Z up: Z stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         try:
             return self._z_stage.move_relative(self._default_z_step_size)
         except Exception as e:
@@ -323,6 +332,7 @@ class StageManager:
         if not self.z_is_connected and not self.connect_z():
             logger.debug("Cannot move Z down: Z stage not connected")
             return False
+        self.movement_started.emit()  # Notify UI about movement
         try:
             return self._z_stage.move_relative(-self._default_z_step_size)
         except Exception as e:

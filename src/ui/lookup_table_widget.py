@@ -244,6 +244,7 @@ class LUTAcquisitionThread(QThread):
             # Return Z-stage to 0 position after LUT acquisition
             try:
                 self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
+                stage_manager.movement_started.emit()  # Notify UI (blue dot in stages widget)
                 stage_manager.move_z_to(0.0)
                 # Wait a bit for stage to settle
                 time.sleep(0.2)
@@ -516,6 +517,7 @@ class LUTAcquisitionThreadStandalone(QThread):
             # Return Z-stage to 0 position after LUT acquisition
             try:
                 self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
+                stage_manager.movement_started.emit()  # Notify UI (blue dot in stages widget)
                 stage_manager.move_z_to(0.0)
                 # Wait a bit for stage to settle
                 time.sleep(0.3)
