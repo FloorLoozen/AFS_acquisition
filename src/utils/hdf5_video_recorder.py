@@ -41,7 +41,7 @@ import gc
 from src.utils.logger import get_logger
 from src.utils.validation import validate_positive_number, validate_frame_shape, validate_file_path
 from src.utils import constants as C
-from src.utils.performance_monitor import get_performance_monitor, profile_performance, track_memory
+from src.utils.performance_monitor import get_performance_monitor
 from src.utils.data_integrity import AuditTrail, add_integrity_metadata, compute_dataset_checksum
 from src.utils.state_recovery import StateRecovery
 
@@ -137,7 +137,7 @@ class HDF5VideoRecorder:
     - Frame-by-frame recording with dynamic dataset growth
     """
     
-    def __init__(self, file_path: Union[str, Path], frame_shape: Tuple[int, int, int], 
+    def __init__(self, file_path: str, frame_shape: Tuple[int, int, int], 
                  fps: float = 30.0, min_fps: float = 25.0, compression_level: int = 1, downscale_factor: int = 1,
                  use_gpu: Optional[bool] = None) -> None:
         """
@@ -245,6 +245,7 @@ class HDF5VideoRecorder:
         self._process_thread = None
         self._stop_writing = threading.Event()
         self._write_lock = threading.RLock()  # Reentrant lock for thread safety
+        self._state_lock = threading.Lock()  # Lock for is_recording and _closed flags
         
         # Optimized frame batching for constant performance
         self._frame_batch = []
@@ -289,6 +290,18 @@ class HDF5VideoRecorder:
         # Data integrity - audit trail (memory only, saved to HDF5)
         self.audit_trail = AuditTrail()
         
+        # Frame drop monitoring
+        self._frame_drop_alert_threshold = 0.01  # 1% drop rate threshold
+        self._last_drop_alert_time = 0
+        self._drop_alert_cooldown = 30.0  # Alert every 30 seconds max
+        self._frame_drop_callback = None  # Callback for frame drop alerts
+        
+        # Hardware health monitoring
+        self._health_monitor_thread = None
+        self._health_check_interval = 10.0  # Check every 10 seconds
+        self._last_health_check = 0
+        self._health_monitor_callback = None  # Callback for hardware issues
+        
         # State recovery
         state_file = os.path.join(os.path.dirname(self.file_path), ".recording_state.json")
         self.state_recovery = StateRecovery(state_file)
@@ -324,6 +337,103 @@ class HDF5VideoRecorder:
                 frames_per_chunk = fps_aligned
         
         return (frames_per_chunk, *frame_shape)
+    
+    def set_frame_drop_callback(self, callback):
+        """Set callback function to alert on frame drops.
+        
+        Args:
+            callback: Function to call with (drop_rate_percent, total_drops, total_captured)
+        """
+        self._frame_drop_callback = callback
+    
+    def set_health_monitor_callback(self, callback):
+        """Set callback function to alert on hardware health issues.
+        
+        Args:
+            callback: Function to call with (issue_type, description)
+        """
+        self._health_monitor_callback = callback
+    
+    def _start_health_monitor(self):
+        """Start background health monitoring thread."""
+        if self._health_monitor_thread is None or not self._health_monitor_thread.is_alive():
+            self._health_monitor_thread = threading.Thread(
+                target=self._health_monitor_thread_func,
+                daemon=True,
+                name="HealthMonitor"
+            )
+            self._health_monitor_thread.start()
+            logger.debug("Health monitoring thread started")
+    
+    def _health_monitor_thread_func(self):
+        """Background thread function for monitoring hardware health and frame drops."""
+        try:
+            while self.is_recording and not self._stop_writing.is_set():
+                # Sleep in smaller intervals to allow faster thread exit
+                sleep_elapsed = 0.0
+                while sleep_elapsed < self._health_check_interval and self.is_recording:
+                    time.sleep(0.5)  # Wake every 0.5s to check recording state
+                    sleep_elapsed += 0.5
+                
+                # Exit early if recording stopped
+                if not self.is_recording or self._stop_writing.is_set():
+                    break
+                
+                # Check disk space
+                try:
+                    import shutil
+                    free_space_gb = shutil.disk_usage(os.path.dirname(str(self.file_path))).free / (1024**3)
+                    
+                    # Alert if less than 1GB free
+                    if free_space_gb < 1.0:
+                        if self._health_monitor_callback:
+                            self._health_monitor_callback("disk_space", f"Low disk space: {free_space_gb:.2f} GB remaining")
+                        logger.warning(f"Low disk space warning: {free_space_gb:.2f} GB")
+                except Exception as e:
+                    logger.debug(f"Error checking disk space: {e}")
+                
+                # Check frame drop rate
+                self._check_frame_drops()
+                
+                # Check write queue health
+                if hasattr(self, '_write_queue'):
+                    queue_usage = self._write_queue.qsize() / self._write_queue.maxsize
+                    if queue_usage > 0.9:  # 90% full
+                        if self._health_monitor_callback:
+                            self._health_monitor_callback("queue_full", f"Write queue {queue_usage*100:.0f}% full - recording may drop frames")
+                        logger.warning(f"Write queue critically full: {queue_usage*100:.0f}%")
+                
+        except Exception as e:
+            logger.error(f"Error in health monitor thread: {e}", exc_info=True)
+    
+    def _check_frame_drops(self):
+        """Check frame drop rate and trigger alert if threshold exceeded."""
+        try:
+            # Get current performance metrics
+            metrics = _performance_monitor.get_metrics()
+            
+            if metrics.frames_captured == 0:
+                return
+            
+            drop_rate = metrics.frames_dropped / metrics.frames_captured
+            
+            # Check if drop rate exceeds threshold
+            if drop_rate > self._frame_drop_alert_threshold:
+                current_time = time.time()
+                
+                # Apply cooldown to prevent alert spam
+                if current_time - self._last_drop_alert_time >= self._drop_alert_cooldown:
+                    drop_rate_percent = drop_rate * 100
+                    
+                    # Trigger callback if registered
+                    if self._frame_drop_callback:
+                        self._frame_drop_callback(drop_rate_percent, metrics.frames_dropped, metrics.frames_captured)
+                    
+                    logger.warning(f"Frame drop alert: {drop_rate_percent:.2f}% ({metrics.frames_dropped}/{metrics.frames_captured} frames)")
+                    self._last_drop_alert_time = current_time
+                    
+        except Exception as e:
+            logger.debug(f"Error checking frame drops: {e}")
     
     def start_recording(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -365,7 +475,16 @@ class HDF5VideoRecorder:
             return False
     
     def _prepare_recording(self) -> bool:
-        """Prepare for recording - check disk space and create directories."""
+        """Prepare for recording - check disk space and create directories.
+        
+        Validates that:
+        - Parent directory exists or can be created
+        - Sufficient disk space is available (minimum 500 MB)
+        - File path is writable
+        
+        Returns:
+            True if preparation successful, False otherwise
+        """
         # Ensure directory exists
         dir_path = os.path.dirname(str(self.file_path))
         if dir_path:
@@ -437,7 +556,21 @@ class HDF5VideoRecorder:
             return False
     
     def _setup_datasets_and_metadata(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Set up video dataset and metadata."""
+        """Set up HDF5 datasets and metadata structure.
+        
+        Creates the following structure:
+        - /raw_data/recordings/frames: Main video dataset with LZF compression
+        - /raw_data/LUT/: Lookup table data (if applicable)
+        - /raw_data/function_generator_timeline/: Function generator state changes
+        - /meta_data/: All metadata including software version, settings, etc.
+        - /audit_trail: Comprehensive operation log
+        
+        Args:
+            metadata: Optional user metadata to store
+            
+        Returns:
+            True if setup successful, False otherwise
+        """
         try:
             # Store metadata for later use
             if metadata:
@@ -532,9 +665,21 @@ class HDF5VideoRecorder:
         self.video_dataset.attrs['description'] = b'Video frames with efficient compression'
     
     def _initialize_recording_state(self):
-        """Initialize recording state and start async processing."""
-        self.is_recording = True
-        self.frame_count = 0
+        """Initialize recording state and start async processing threads.
+        
+        This method:
+        - Sets recording flag and counters
+        - Starts performance monitoring session
+        - Starts health monitoring thread (checks disk space, frame drops)
+        - Starts async writer thread for non-blocking HDF5 I/O
+        - Logs recording start to audit trail
+        
+        Thread Safety:
+            Uses state_lock for thread-safe flag updates
+        """
+        with self._state_lock:
+            self.is_recording = True
+            self.frame_count = 0
         self.start_time = datetime.now()
         
         # Start performance monitoring session
@@ -562,6 +707,12 @@ class HDF5VideoRecorder:
         self._start_async_writer()
         # Start processing thread to downscale frames off the GUI thread
         self._start_process_thread()
+        
+        # Start hardware health monitoring thread
+        self._start_health_monitor()
+        
+        # Reset frame drop alert tracking
+        self._last_drop_alert_time = 0
     
     def _cleanup_failed_start(self):
         """Clean up resources after a failed start attempt."""
@@ -1049,10 +1200,11 @@ class HDF5VideoRecorder:
                 free_space_mb = shutil.disk_usage(os.path.dirname(str(self.file_path))).free / (1024**2)
                 if free_space_mb < 50:  # Less than 50MB - emergency stop
                     logger.error(f"EMERGENCY: Only {free_space_mb:.1f}MB left - stopping recording to prevent system failure")
-                    self._closed = True
+                    with self._state_lock:
+                        self._closed = True
                     return False
-            except Exception:
-                pass  # Don't fail if disk check fails
+            except Exception as e:
+                logger.debug(f"Disk space check failed (non-critical): {e}")
             
             # Check queue capacity before copying frame (memory optimization)
             if self._write_queue.qsize() >= self._write_queue.maxsize * 0.9:
@@ -1776,7 +1928,17 @@ class HDF5VideoRecorder:
 
     
     def _start_async_writer(self):
-        """Start the asynchronous frame writer thread."""
+        """Start the asynchronous frame writer thread.
+        
+        Creates a background thread that:
+        - Reads frames from the write queue
+        - Batches frames for efficient I/O (15 frames/batch)
+        - Writes batches to HDF5 with LZF compression
+        - Handles dataset resizing as needed
+        
+        Thread Safety:
+            Daemon thread that stops when is_recording becomes False
+        """
         if self._write_thread is None or not self._write_thread.is_alive():
             self._stop_writing.clear()
             self._write_thread = threading.Thread(
@@ -1787,7 +1949,14 @@ class HDF5VideoRecorder:
             self._write_thread.start()
 
     def _start_process_thread(self):
-        """Start a thread that processes raw frames (downscaling) into the write queue."""
+        """Start frame processing thread for GPU downscaling.
+        
+        Optional thread that processes raw frames through GPU downscaling
+        before passing to the write queue. Only used when downscale_factor > 1.
+        
+        Thread Safety:
+            Daemon thread that exits when processing queue is drained
+        """
         if self._process_thread is None or not self._process_thread.is_alive():
             self._process_thread = threading.Thread(
                 target=self._process_worker,
@@ -1797,9 +1966,25 @@ class HDF5VideoRecorder:
             self._process_thread.start()
 
     def _process_worker(self):
-        """Worker that downscales frames in batches and enqueues them for writing.
+        """Worker thread that downscales frames in batches and enqueues them for writing.
 
-        This keeps expensive downscaling off the GUI thread.
+        This thread offloads expensive GPU downscaling from the camera/GUI thread.
+        
+        Algorithm:
+        1. Collects raw frames from process queue (max 6 frames/batch)
+        2. Performs GPU/CPU downscaling on entire batch
+        3. Enqueues downscaled frames to write queue
+        4. Continues until stop signal AND process queue empty
+        
+        Performance:
+        - Batch size: 6 frames (0.2s at 30 FPS)
+        - Timeout: 2ms for low latency
+        - Parallel processing via GPU when available
+        
+        Thread Safety:
+        - Reads from _process_queue
+        - Writes to _write_queue (both thread-safe)
+        - Monitors _stop_writing for shutdown
         """
         batch = []
         batch_timeout = 0.002  # 2ms timeout for 60 FPS (was 20ms, too slow)
@@ -1858,7 +2043,28 @@ class HDF5VideoRecorder:
 
     
     def _async_write_worker(self):
-        """Optimized background worker for high-performance batch writing."""
+        """Optimized background worker for high-performance batch writing.
+        
+        This thread is the core of the async recording architecture:
+        
+        Algorithm:
+        1. Collects frames from write queue into batches (15 frames target)
+        2. Waits up to 20ms to fill batch for optimal throughput
+        3. Writes complete batches to HDF5 with LZF compression
+        4. Handles dataset resizing when capacity reached
+        5. Continues until stop signal AND queue empty
+        
+        Performance:
+        - Batch size: 15 frames (0.5 seconds at 30 FPS)
+        - Timeout: 20ms (allows larger batches on fast NVMe)
+        - Write rate: ~2 batches/second (0.5s data each)
+        - File I/O: Amortized over batches for sustained performance
+        
+        Thread Safety:
+        - Uses _write_lock for HDF5 file access
+        - Monitors _stop_writing event for shutdown
+        - Drains queue completely before exiting
+        """
         batch_frames = []
         batch_indices = []
         last_batch_time = time.time()
@@ -2128,21 +2334,37 @@ class HDF5VideoRecorder:
         Stop recording and ensure file is fully closed before returning.
         Robust error handling to prevent crashes.
         
+        Thread Safety:
+            Uses state_lock for thread-safe flag updates.
+            Joins background threads with timeout to prevent hangs.
+        
         Returns:
             True if recording stopped successfully
         """
-        if not self.is_recording or self._closed:
-            logger.warning("No recording in progress")
-            return False
-        
-        try:
+        # Thread-safe check of recording state
+        with self._state_lock:
+            if not self.is_recording or self._closed:
+                logger.warning("No recording in progress")
+                return False
+            
             # Set closed flag to prevent further writes
             self._closed = True
-            
-            logger.debug(f"Stopping HDF5 recording after {self.frame_count} frames...")
-            
             # Stop accepting new frames immediately
             self.is_recording = False
+        
+        try:
+            logger.debug(f"Stopping HDF5 recording after {self.frame_count} frames...")
+            
+            # Stop health monitor thread
+            if self._health_monitor_thread and self._health_monitor_thread.is_alive():
+                logger.debug("Stopping health monitor thread...")
+                # Thread will exit when is_recording becomes False
+                try:
+                    self._health_monitor_thread.join(timeout=2.0)
+                    if self._health_monitor_thread.is_alive():
+                        logger.warning("Health monitor thread did not stop cleanly")
+                except Exception as e:
+                    logger.debug(f"Error joining health monitor thread: {e}")
             
             # Stop async writer and wait for all frames to be written
             try:

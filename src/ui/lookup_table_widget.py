@@ -122,9 +122,11 @@ class LUTAcquisitionThread(QThread):
                     elapsed = time.time() - move_start_time
                     remaining_settle = max(0, self.settle_time_s - elapsed)
                     if remaining_settle > 0:
+                        self.progress.emit(i, num_positions, f"Settling at {z_pos_target:.0f} µm ({i+1}/{num_positions})...")
                         time.sleep(remaining_settle)
                 else:
                     # Move to Z position (first iteration or catch-up)
+                    self.progress.emit(i, num_positions, f"Moving to {z_pos_target:.0f} µm ({i+1}/{num_positions})...")
                     stage_manager.move_z_to(z_pos_target)
                     time.sleep(self.settle_time_s)
                 
@@ -135,6 +137,7 @@ class LUTAcquisitionThread(QThread):
                     actual_z_pos = z_pos_target
                 
                 # Capture frame BEFORE starting movement (stage must be stationary!)
+                self.progress.emit(i, num_positions, f"Capturing at {actual_z_pos:.1f} µm ({i+1}/{num_positions})...")
                 frame = self.camera.get_frame(timeout=1.0)
                 if frame is None:
                     logger.warning(f"Failed to capture frame at Z={actual_z_pos:.0f} µm")

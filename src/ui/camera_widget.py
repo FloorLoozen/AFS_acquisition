@@ -934,6 +934,10 @@ class CameraWidget(QGroupBox):
                 use_gpu=False  # Force CPU path for recording to avoid GPU transfer overhead and latency
             )
             
+            # Register monitoring callbacks
+            self.hdf5_recorder.set_frame_drop_callback(self._on_frame_drop_alert)
+            self.hdf5_recorder.set_health_monitor_callback(self._on_health_alert)
+            
             # Build info message based on actual settings
             resolution_desc = {1: "full resolution", 2: "half resolution", 4: "quarter resolution"}
             res_text = resolution_desc.get(self.recording_settings['downscale_factor'], f"{self.recording_settings['downscale_factor']}x downscale")
@@ -1702,8 +1706,97 @@ class CameraWidget(QGroupBox):
         except Exception as e:
             logger.warning(f"Failed to apply default camera settings: {e}")
     
+    def _on_frame_drop_alert(self, drop_rate_percent, total_drops, total_captured):
+        """Callback for frame drop alerts during recording.
+        
+        Args:
+            drop_rate_percent: Frame drop rate as percentage
+            total_drops: Total number of frames dropped
+            total_captured: Total number of frames captured
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        
+        # Show alert dialog (non-blocking)
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Frame Drop Warning")
+        msg.setText(f"Frame drop rate: {drop_rate_percent:.2f}%")
+        msg.setInformativeText(
+            f"Dropped {total_drops} of {total_captured} frames.\n\n"
+            "Possible causes:\n"
+            "• Disk write speed too slow\n"
+            "• CPU overloaded\n"
+            "• Reduce recording resolution or FPS"
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setModal(False)  # Non-blocking
+        msg.show()
+        
+        logger.warning(f"Frame drop alert: {drop_rate_percent:.2f}% ({total_drops}/{total_captured})")
+    
+    def _on_health_alert(self, issue_type, description):
+        """Callback for hardware health alerts during recording.
+        
+        Args:
+            issue_type: Type of health issue (disk_space, queue_full, etc.)
+            description: Human-readable description of the issue
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        
+        # Show alert dialog (non-blocking)
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Hardware Health Warning")
+        
+        if issue_type == "disk_space":
+            msg.setText("Low Disk Space")
+            msg.setInformativeText(
+                f"{description}\n\n"
+                "Recording may stop soon. Free up disk space immediately."
+            )
+        elif issue_type == "queue_full":
+            msg.setText("Write Queue Full")
+            msg.setInformativeText(
+                f"{description}\n\n"
+                "System cannot write frames fast enough. Consider:\n"
+                "• Reducing recording resolution\n"
+                "• Reducing FPS\n"
+                "• Using faster storage"
+            )
+        else:
+            msg.setText("Hardware Issue Detected")
+            msg.setInformativeText(description)
+        
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setModal(False)  # Non-blocking
+        msg.show()
+        
+        logger.warning(f"Hardware health alert [{issue_type}]: {description}")
+    
     def close(self):
-        """Clean shutdown."""
+        """Clean shutdown of camera widget and resources.
+        
+        Ensures proper cleanup of:
+        - Active recording (if in progress)
+        - Camera connection
+        - Thread pool executors
+        - Background threads
+        """
         if self.is_recording:
             self.stop_recording()
         self.stop_camera()
+        
+        # Shutdown thread pool executors to prevent resource leaks
+        if hasattr(self, 'display_executor') and self.display_executor:
+            try:
+                self.display_executor.shutdown(wait=False)
+                logger.debug("Display executor shut down")
+            except Exception as e:
+                logger.debug(f"Error shutting down display executor: {e}")
+        
+        if hasattr(self, 'recording_executor') and self.recording_executor:
+            try:
+                self.recording_executor.shutdown(wait=False)
+                logger.debug("Recording executor shut down")
+            except Exception as e:
+                logger.debug(f"Error shutting down recording executor: {e}")
