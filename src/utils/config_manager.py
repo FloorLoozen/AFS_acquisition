@@ -59,6 +59,7 @@ class HardwareConfig:
     fg_connection_timeout: float = 5.0
     fg_max_frequency_mhz: float = 25.0
     fg_max_amplitude_vpp: float = 10.0
+    fg_usb_address: str = 'USB0::0xF4EC::0xEE38::SDG1XCA4161219::INSTR'  # Siglent SDG1032X device address
     osc_auto_connect: bool = True
     osc_connection_timeout: float = 5.0
     osc_default_timebase_s: float = 1e-3

@@ -598,13 +598,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.error("Scope returned no waveform data.")
             return 2
 
-        print(f"Captured {waveform.times.size} samples on channel {args.channel}")
+        logger.info(f"Captured {waveform.times.size} samples on channel {args.channel}")
         voltage_min = float(waveform.voltages.min())
         voltage_max = float(waveform.voltages.max())
         voltage_ptp = float(voltage_max - voltage_min)
-        print(
-            f"Time span: {waveform.times[0]:.6e} s → {waveform.times[-1]:.6e} s\n"
-            f"Voltage span: {voltage_min:.3e} V → {voltage_max:.3e} V (Δ={voltage_ptp:.3e} V)"
+        logger.info(
+            f"Time span: {waveform.times[0]:.6e} s \u2192 {waveform.times[-1]:.6e} s\\n"
+            f"Voltage span: {voltage_min:.3e} V \u2192 {voltage_max:.3e} V (\u0394={voltage_ptp:.3e} V)"
         )
 
         if not args.no_plot:

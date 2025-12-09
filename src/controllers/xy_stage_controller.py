@@ -332,6 +332,14 @@ class XYStageController:
 
 # Example usage if this file is run directly
 if __name__ == "__main__":
+    """Test the XY-stage controller with a square movement pattern.
+    
+    This example:
+    - Connects to the XY stage
+    - Moves in a square pattern (100 µm sides)
+    - Uses efficient movement completion detection
+    - Disconnects cleanly
+    """
     # Initialize XY stage controller
     stage = XYStageController()
     if not stage.connect():

@@ -68,8 +68,8 @@ class ZStageController:
             try:
                 z_pos = self.get_position()
                 logger.info(f"Initial Z position: {z_pos:.3f} µm")
-            except Exception as e:
-                logger.warning(f"Could not read initial position: {e}")
+            except Exception as pos_err:
+                logger.warning(f"Could not read initial Z position (non-critical): {pos_err}")
             
             return True
             
@@ -158,7 +158,7 @@ class ZStageController:
                 logger.error(f"Z move failed, code {ret} - {error_msg}")
                 return False
             
-            # Small delay for settling
+            # Allow stage to settle (hardware stabilization time)
             time.sleep(0.05)
             return True
             
@@ -199,8 +199,9 @@ class ZStageController:
         if self.is_connected:
             try:
                 settings['current_z_um'] = self.get_position()
-            except Exception:
-                pass
+            except Exception as pos_err:
+                # Position read may fail if stage is moving or temporarily unavailable
+                logger.debug(f"Could not read current Z position for metadata: {pos_err}")
         
         return settings
 
@@ -215,21 +216,21 @@ if __name__ == "__main__":
     try:
         # Read current Z
         z0 = stage.get_position()
-        print(f"Current Z = {z0:.3f} µm")
+        logger.info(f"Current Z = {z0:.3f} µm")
         
         # Move +10 µm
         target = z0 + 10
-        print(f"Moving to {target:.3f} µm...")
+        logger.info(f"Moving to {target:.3f} µm...")
         stage.move_to(target)
         
         time.sleep(0.2)
         
         # Read again
         z1 = stage.get_position()
-        print(f"New Z = {z1:.3f} µm")
+        logger.info(f"New Z = {z1:.3f} µm")
         
         # Move back
-        print(f"Moving back to {z0:.3f} µm...")
+        logger.info(f"Moving back to {z0:.3f} µm...")
         stage.move_to(z0)
         
     except Exception as e:

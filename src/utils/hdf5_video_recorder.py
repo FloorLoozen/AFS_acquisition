@@ -500,28 +500,29 @@ class HDF5VideoRecorder:
         """Handle insufficient disk space by attempting cleanup."""
         try:
             logger.warning("Attempting emergency cleanup to free disk space...")
-        except OSError:
-            pass
+        except OSError as log_err:
+            # Disk may be full - even logging might fail
+            print(f"WARNING: Disk space critical, logging failed: {log_err}", file=sys.stderr)
         
         if self._emergency_cleanup():
             # Recheck after cleanup
             if self._check_disk_space():
                 try:
                     logger.info("Emergency cleanup successful - proceeding with recording")
-                except OSError:
-                    pass
+                except OSError as log_err:
+                    print(f"INFO: Cleanup successful but logging failed: {log_err}", file=sys.stderr)
                 return True
             else:
                 try:
                     logger.error("Insufficient disk space even after cleanup")
-                except OSError:
-                    pass
+                except OSError as log_err:
+                    print(f"ERROR: Still insufficient disk space: {log_err}", file=sys.stderr)
                 return False
         else:
             try:
                 logger.error("Insufficient disk space and cleanup failed")
-            except OSError:
-                pass
+            except OSError as log_err:
+                print(f"ERROR: Cleanup failed, disk full: {log_err}", file=sys.stderr)
             return False
     
     def _create_hdf5_file(self) -> bool:
@@ -2684,8 +2685,10 @@ class HDF5VideoRecorder:
                     self.stop_recording()
                 else:
                     self.h5_file.close()
-            except Exception as e:
-                pass  # Cleanup error in destructor
+            except Exception as cleanup_err:
+                # Cannot log reliably in destructor - logging system may be shutdown
+                # Suppress exceptions to allow garbage collection to proceed
+                pass
     
     def __enter__(self):
         """Context manager entry."""

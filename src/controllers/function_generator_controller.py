@@ -116,10 +116,14 @@ class FunctionGeneratorController:
                 if self.resource_name in resources:
                     target_resource = self.resource_name
             else:
-                # Hardcoded function generator address (Siglent SDG1032X)
-                hardcoded_fg = 'USB0::0xF4EC::0xEE38::SDG1XCA4161219::INSTR'
-                if hardcoded_fg in resources:
-                    target_resource = hardcoded_fg
+                # Try configured device address first
+                from src.utils.config_manager import get_config
+                config = get_config()
+                preferred_address = config.hardware.fg_usb_address
+                
+                if preferred_address and preferred_address in resources:
+                    target_resource = preferred_address
+                    logger.debug(f"Using configured device address: {preferred_address}")
                 else:
                     # Fallback: Auto-detect Siglent function generator (SDG series)
                     for resource in resources:
@@ -196,10 +200,14 @@ class FunctionGeneratorController:
                 else:
                     raise FunctionGeneratorError(f"Specified resource '{self.resource_name}' not found")
             else:
-                # Hardcoded function generator address (Siglent SDG1032X)
-                hardcoded_fg = 'USB0::0xF4EC::0xEE38::SDG1XCA4161219::INSTR'
-                if hardcoded_fg in resources:
-                    target_resource = hardcoded_fg
+                # Try configured device address first
+                from src.utils.config_manager import get_config
+                config = get_config()
+                preferred_address = config.hardware.fg_usb_address
+                
+                if preferred_address and preferred_address in resources:
+                    target_resource = preferred_address
+                    logger.debug(f"Using configured device address: {preferred_address}")
                 else:
                     # Fallback: Auto-detect Siglent device with multiple patterns
                     for resource in resources:
@@ -266,13 +274,14 @@ class FunctionGeneratorController:
         except Exception as e:
             error_msg = f"Connection failed: {e}"
             logger.error(error_msg)
+            # Clean up failed connection attempt
             if hasattr(self, 'function_generator') and self.function_generator:
                 try:
                     self.function_generator.close()
                 except Exception as close_error:
-                    logger.debug(f"Error closing VISA resource during error recovery: {close_error}")
+                    logger.debug(f"Error closing VISA resource during cleanup: {close_error}")
                 self.function_generator = None
-            # Propagate exception to allow retry logic and callers to handle failure
+            # Propagate exception to allow retry logic
             raise FunctionGeneratorError(error_msg) from e
     
     @property
@@ -327,10 +336,11 @@ class FunctionGeneratorController:
                 last_exception = e
                 logger.warning(f"{operation_name} failed on attempt {attempt + 1}: {e}")
                 
-                # For certain errors, don't retry
+                # Update connection state on communication errors
                 if isinstance(e, (pyvisa.VisaIOError, pyvisa.InvalidSession)):
                     self._connection_state = ConnectionState.ERROR
                     
+                # Don't retry on final attempt
                 if attempt == self.MAX_RETRY_ATTEMPTS - 1:
                     break
         
@@ -431,14 +441,12 @@ class FunctionGeneratorController:
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
-            # Disable sweep mode (in case it was enabled from previous operation)
-            # Siglent uses SWWV for sweep, turn it off by ensuring basic waveform mode
+            # Disable sweep mode if active (basic waveform commands override sweep automatically)
             try:
                 self._send_command(f"{channel_str}:SWWV STATE,OFF")
                 logger.debug(f"Sweep mode disabled for {channel_str}")
             except Exception as e:
-                # If sweep command not supported or fails, log and continue
-                # This is not critical - basic waveform should override sweep anyway
+                # Sweep command may not be supported or already off - not critical
                 logger.debug(f"Could not disable sweep (may not be active): {e}")
             
             # Configure waveform parameters - this overrides sweep mode
@@ -490,14 +498,7 @@ class FunctionGeneratorController:
             return True
         
         try:
-            # Log only significant changes to reduce overhead
-            freq_change = abs(frequency_mhz - (self._last_sine[0] if self._last_sine else 0)) > 0.01
-            amp_change = abs(amplitude - (self._last_sine[1] if self._last_sine else 0)) > 0.01
-            
-            if freq_change or amp_change:
-                pass  # Significant change detected
-            
-            # Fast parameter updates with reduced timeout
+            # Fast parameter updates with reduced timeout for real-time control
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
@@ -560,7 +561,7 @@ class FunctionGeneratorController:
                 return True
                 
             finally:
-                # Always restore original timeout
+                # Restore original timeout for subsequent operations
                 self.function_generator.timeout = original_timeout
             
         except Exception as e:

@@ -318,8 +318,9 @@ class CameraController:
             ret = ueye.is_SetTemperature(self.h_cam, ueye.IS_GET_TEMPERATURE, temperature)
             if ret == ueye.IS_SUCCESS:
                 settings['temperature_celsius'] = temperature.value
-        except Exception:
-            pass  # Temperature not supported on all cameras
+        except Exception as temp_err:
+            # Temperature sensor not available on all camera models
+            logger.debug(f"Temperature reading unavailable: {temp_err}")
         
         return settings
     
@@ -696,10 +697,12 @@ class CameraController:
                             if self._frame_callback:
                                 try:
                                     self._frame_callback()
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                                except Exception as callback_err:
+                                    # Callback failures should not stop capture loop
+                                    logger.debug(f"Frame callback error (non-critical): {callback_err}")
+                        except Exception as notify_err:
+                            # Notification failures should not stop capture
+                            logger.debug(f"Frame notification error (non-critical): {notify_err}")
                     except queue.Full:
                         # Queue is full, drop this frame (true capture drop)
                         with self.stats_lock:

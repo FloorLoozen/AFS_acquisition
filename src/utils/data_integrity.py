@@ -321,8 +321,8 @@ class AuditTrail:
                         if meta_key in audit_obj.attrs:
                             try:
                                 event['metadata'] = json.loads(audit_obj.attrs[meta_key].decode('utf-8'))
-                            except:
-                                pass
+                            except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
+                                logger.debug(f"Could not decode metadata for event {i}: {e}")
                         events.append(event)
                     
                     with self._lock:

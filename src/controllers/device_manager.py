@@ -101,16 +101,18 @@ class DeviceManager:
                 if not self._fg.is_connected:
                     try:
                         self._fg.connect(fast_fail=True)
-                    except (OSError, ConnectionError, TimeoutError):
-                        pass  # Expected during fast_fail reconnect attempts
+                    except (OSError, ConnectionError, TimeoutError) as conn_err:
+                        # Fast-fail reconnects expected to fail frequently during connection recovery
+                        logger.debug(f"FG reconnect attempt in progress: {type(conn_err).__name__}")
                     except Exception as e:
                         logger.debug(f"Unexpected error reconnecting function generator: {e}")
                 
                 if not self._osc.is_connected:
                     try:
                         self._osc.connect(fast_fail=True)
-                    except (OSError, ConnectionError, TimeoutError):
-                        pass  # Expected during fast_fail reconnect attempts
+                    except (OSError, ConnectionError, TimeoutError) as conn_err:
+                        # Fast-fail reconnects expected to fail frequently during connection recovery
+                        logger.debug(f"OSC reconnect attempt in progress: {type(conn_err).__name__}")
                     except Exception as e:
                         logger.debug(f"Unexpected error reconnecting oscilloscope: {e}")
             except Exception as e:
