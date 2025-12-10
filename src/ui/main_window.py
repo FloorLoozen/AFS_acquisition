@@ -1342,6 +1342,44 @@ class MainWindow(QMainWindow):
             logger.warning(f"XY stage initialization failed: {e}")
             return {"connected": False, "message": f"Initialization error: {str(e)}"}
     
+    def _init_z_stage(self):
+        """Initialize Z stage and move to default 50 µm position."""
+        try:
+            from src.controllers.stage_manager import StageManager
+            stage_manager = StageManager.get_instance()
+            
+            # Z stage shares connection with XY stage
+            if stage_manager.is_connected():
+                # Move to default position: 50 µm
+                default_z_position = 50.0
+                stage_manager.move_z_to(default_z_position)
+                logger.info(f"Z stage moved to default position: {default_z_position} µm")
+                return {"connected": True, "message": f"Z stage at {default_z_position} µm"}
+            else:
+                return {"connected": False, "message": "Z stage not available"}
+        except Exception as e:
+            logger.warning(f"Z stage initialization failed: {e}")
+            return {"connected": False, "message": f"Initialization error: {str(e)}"}
+    
+    def _init_z_stage(self):
+        """Initialize Z stage and move to default 50 µm position."""
+        try:
+            from src.controllers.stage_manager import StageManager
+            stage_manager = StageManager.get_instance()
+            
+            # Z stage shares connection with XY stage
+            if stage_manager.is_connected():
+                # Move to default position: 50 µm
+                default_z_position = 50.0
+                stage_manager.move_z_to(default_z_position)
+                logger.info(f"Z stage moved to default position: {default_z_position} µm")
+                return {"connected": True, "message": f"Z stage at {default_z_position} µm"}
+            else:
+                return {"connected": False, "message": "Z stage not available"}
+        except Exception as e:
+            logger.warning(f"Z stage initialization failed: {e}")
+            return {"connected": False, "message": f"Initialization error: {str(e)}"}
+    
     def _init_function_generator(self):
         """Initialize function generator hardware."""
         try:

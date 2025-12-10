@@ -89,6 +89,11 @@ class LUTAcquisitionThread(QThread):
                 self.finished.emit(False, "No camera available")
                 return
             
+            # Pause live view during acquisition to free camera
+            if self.camera_widget and hasattr(self.camera_widget, 'pause_live'):
+                self.camera_widget.pause_live()
+                logger.info("Paused live view for LUT acquisition")
+            
             # Calculate Z positions
             step_um = self.step_nm / 1000.0  # Convert nm to µm
             num_positions = int((self.end_um - self.start_um) / step_um) + 1
@@ -243,18 +248,18 @@ class LUTAcquisitionThread(QThread):
             
             # Return Z-stage to 0 position after LUT acquisition
             try:
-                self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
+                self.progress.emit(num_positions, num_positions, "Returning Z-stage to 50 µm...")
                 stage_manager.movement_started.emit()  # Notify UI (blue dot in stages widget)
-                stage_manager.move_z_to(0.0)
+                stage_manager.move_z_to(50.0)
                 # Wait a bit for stage to settle
                 time.sleep(0.2)
                 # Verify position
                 actual_pos = stage_manager.get_z_position()
-                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.0f} µm)")
-                if abs(actual_pos) > 0.5:
-                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.0f} µm)")
+                logger.info(f"Z-stage returned to 50 µm (actual position: {actual_pos:.0f} µm)")
+                if abs(actual_pos - 50.0) > 1.0:
+                    logger.warning(f"Z-stage may not have fully returned to 50 µm (at {actual_pos:.0f} µm)")
             except Exception as e:
-                logger.warning(f"Failed to return Z-stage to 0: {e}")
+                logger.warning(f"Failed to return Z-stage to 50 µm: {e}")
             
             if self._stop_requested:
                 self.finished.emit(False, "Acquisition stopped by user")
@@ -264,6 +269,16 @@ class LUTAcquisitionThread(QThread):
         except Exception as e:
             logger.error(f"Error during LUT acquisition: {e}", exc_info=True)
             self.finished.emit(False, f"Error: {str(e)}")
+        finally:
+            # Resume live view
+            if self.camera_widget and hasattr(self.camera_widget, 'resume_live'):
+                self.camera_widget.resume_live()
+                logger.info("Resumed live view after LUT acquisition")
+        finally:
+            # Resume live view
+            if self.camera_widget and hasattr(self.camera_widget, 'resume_live'):
+                self.camera_widget.resume_live()
+                logger.info("Resumed live view after LUT acquisition")
 
 
 class LUTAcquisitionThreadStandalone(QThread):
@@ -518,16 +533,16 @@ class LUTAcquisitionThreadStandalone(QThread):
             try:
                 self.progress.emit(num_positions, num_positions, "Returning Z-stage to 0...")
                 stage_manager.movement_started.emit()  # Notify UI (blue dot in stages widget)
-                stage_manager.move_z_to(0.0)
+                stage_manager.move_z_to(50.0)
                 # Wait a bit for stage to settle
                 time.sleep(0.3)
                 # Verify position
                 actual_pos = stage_manager.get_z_position()
-                logger.info(f"Z-stage returned to 0 µm (actual position: {actual_pos:.0f} µm)")
-                if abs(actual_pos) > 0.5:
-                    logger.warning(f"Z-stage may not have fully returned to 0 (at {actual_pos:.0f} µm)")
+                logger.info(f"Z-stage returned to 50 µm (actual position: {actual_pos:.0f} µm)")
+                if abs(actual_pos - 50.0) > 1.0:
+                    logger.warning(f"Z-stage may not have fully returned to 50 µm (at {actual_pos:.0f} µm)")
             except Exception as e:
-                logger.warning(f"Failed to return Z-stage to 0: {e}")
+                logger.warning(f"Failed to return Z-stage to 50 µm: {e}")
             
             if self._stop_requested:
                 self.finished.emit(False, "Acquisition stopped by user")
@@ -645,7 +660,7 @@ class LookupTableWidget(QDialog):
         
         self.start_z_spin = QDoubleSpinBox()
         self.start_z_spin.setRange(0, 100)
-        self.start_z_spin.setValue(0)
+        self.start_z_spin.setValue(40)  # Default start: 40 µm
         self.start_z_spin.setSuffix(" µm")
         self.start_z_spin.setDecimals(0)
         self.start_z_spin.setFixedWidth(spinbox_width)
@@ -659,7 +674,7 @@ class LookupTableWidget(QDialog):
         
         self.end_z_spin = QDoubleSpinBox()
         self.end_z_spin.setRange(0, 100)
-        self.end_z_spin.setValue(100)
+        self.end_z_spin.setValue(70)  # Default end: 70 µm
         self.end_z_spin.setSuffix(" µm")
         self.end_z_spin.setDecimals(0)
         self.end_z_spin.setFixedWidth(spinbox_width)
@@ -674,7 +689,7 @@ class LookupTableWidget(QDialog):
         
         self.step_spin = QSpinBox()
         self.step_spin.setRange(10, 10000)
-        self.step_spin.setValue(100)
+        self.step_spin.setValue(100)  # Default step: 100 nm
         self.step_spin.setSuffix(" nm")
         self.step_spin.setSingleStep(10)
         self.step_spin.setFixedWidth(spinbox_width)
