@@ -537,6 +537,10 @@ class MainWindow(QMainWindow):
                 
                 # Link to main window for measurement logging
                 self.force_path_designer.designer_widget.set_main_window(self)
+                
+                # Connect signals to update FG status during force path execution
+                self.force_path_designer.path_execution_started.connect(self._on_force_path_started)
+                self.force_path_designer.path_execution_stopped.connect(self._on_force_path_stopped)
             
             self.force_path_designer.show()
             self.force_path_designer.raise_()
@@ -550,6 +554,34 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", 
                 f"Failed to open Force Path Designer:\n{e}\n\nCheck the log for details.")
             logger.error(f"Force Path Designer error details:\n{error_details}")
+    
+    def _on_force_path_started(self):
+        """Handle force path execution started - set FG status to busy."""
+        if hasattr(self, 'measurement_controls_widget') and self.measurement_controls_widget:
+            # Set status to executing (blue dot)
+            self.measurement_controls_widget.fg_status_display.set_status("Executing")
+            # Disable FG controls during path execution
+            self.measurement_controls_widget.fg_toggle_button.setEnabled(False)
+            self.measurement_controls_widget.frequency_spinbox.setEnabled(False)
+            self.measurement_controls_widget.amplitude_spinbox.setEnabled(False)
+            logger.debug("Force path execution started - FG controls disabled")
+    
+    def _on_force_path_stopped(self):
+        """Handle force path execution stopped - restore FG status to ready."""
+        if hasattr(self, 'measurement_controls_widget') and self.measurement_controls_widget:
+            # Re-enable FG controls
+            self.measurement_controls_widget.fg_toggle_button.setEnabled(True)
+            self.measurement_controls_widget.frequency_spinbox.setEnabled(True)
+            self.measurement_controls_widget.amplitude_spinbox.setEnabled(True)
+            
+            # Restore normal FG status
+            if hasattr(self, 'device_manager') and self.device_manager:
+                fg_controller = self.device_manager.get_function_generator()
+                if fg_controller and fg_controller.is_connected:
+                    self.measurement_controls_widget.fg_status_display.set_status("Ready")
+                else:
+                    self.measurement_controls_widget.fg_status_display.set_status("Disconnected")
+            logger.debug("Force path execution stopped - FG controls restored")
     
     def _open_about(self):
         """Show about dialog."""
