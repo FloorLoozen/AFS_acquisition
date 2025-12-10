@@ -151,6 +151,13 @@ class FunctionGeneratorController:
             self.function_generator.read_termination = '\n'
             self.function_generator.write_termination = '\n'
             
+            # Clear device buffers and reset to known state
+            try:
+                self.function_generator.clear()
+                time.sleep(0.1)  # Brief pause after clear
+            except Exception:
+                pass  # Clear might not be supported, continue anyway
+            
             # Quick IDN check
             idn = self.function_generator.query("*IDN?").strip()
             
@@ -242,8 +249,12 @@ class FunctionGeneratorController:
             self.function_generator.read_termination = '\n'
             self.function_generator.write_termination = '\n'
             
-            # Brief stabilization delay
-            time.sleep(0.2)
+            # Clear device buffers and reset to known state
+            try:
+                self.function_generator.clear()
+                time.sleep(0.1)  # Brief pause after clear
+            except Exception:
+                pass  # Clear might not be supported, continue anyway
             
             # Verify connection with device identification
             idn = self.function_generator.query("*IDN?").strip()
@@ -504,10 +515,10 @@ class FunctionGeneratorController:
             
             # Temporarily reduce timeout for faster response
             original_timeout = self.function_generator.timeout
-            self.function_generator.timeout = 1000  # 1 second for fast updates
+            self.function_generator.timeout = 300  # 300ms for fast updates
             
             try:
-                # Send commands without individual error checking for speed
+                # Send both commands separately - combined format doesn't work reliably
                 self.function_generator.write(f"{channel_str}:BSWV FRQ,{frequency_hz}")
                 self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
                 
@@ -539,25 +550,17 @@ class FunctionGeneratorController:
         try:
             logger.info("Stopping all function generator outputs")
             
-            # Set short timeout for shutdown commands (fast response)
+            # Set timeout for shutdown commands
             original_timeout = self.function_generator.timeout
-            self.function_generator.timeout = 1000  # 1 second is enough for OFF commands
+            self.function_generator.timeout = 1000  # 1 second for reliable OFF commands
             
             try:
-                # Turn off both channels
+                # Turn off both channels - use proper command sending
                 self._send_command("C1:OUTP OFF")
                 self._send_command("C2:OUTP OFF")
                 
-                # Disable sweep mode on both channels (in case it was enabled)
-                # Siglent uses SWWV for sweep control
-                try:
-                    self._send_command("C1:SWWV STATE,OFF")
-                    self._send_command("C2:SWWV STATE,OFF")
-                except Exception:
-                    # If sweep command not supported, ignore
-                    pass
-                
                 self._output_on = False
+                logger.info("Function generator outputs turned OFF successfully")
                 return True
                 
             finally:
@@ -587,32 +590,31 @@ class FunctionGeneratorController:
             return self.update_parameters_only(amplitude, frequency_mhz, channel)
         
         try:
-            # Enhanced caching
-            current = (round(frequency_mhz, 4), round(amplitude, 3), int(channel))
+            # Enhanced caching with optimized tolerance
+            current = (round(frequency_mhz, 3), round(amplitude, 2), int(channel))
             if self._last_sine == current:
                 return True
             
-            # Batch command approach - send multiple commands in one transaction
+            # Batch command approach - send commands sequentially for reliability
             channel_str = f"C{channel}"
             frequency_hz = frequency_mhz * 1_000_000
             
-            # Combine commands with semicolon separator (SCPI standard)
-            batch_command = f"{channel_str}:BSWV FRQ,{frequency_hz};{channel_str}:BSWV AMP,{amplitude}"
-            
-            # Set very short timeout for maximum speed
+            # Set reasonable timeout for fast updates
             original_timeout = self.function_generator.timeout
-            self.function_generator.timeout = 500  # 0.5 seconds
+            self.function_generator.timeout = 300  # 300ms for fast but reliable updates
             
             try:
-                self.function_generator.write(batch_command)
+                # Send both commands separately - combined format doesn't work reliably
+                self.function_generator.write(f"{channel_str}:BSWV FRQ,{frequency_hz}")
+                self.function_generator.write(f"{channel_str}:BSWV AMP,{amplitude}")
                 self._last_sine = current
                 return True
                 
             finally:
                 self.function_generator.timeout = original_timeout
                 
-        except Exception:
-            # Silently fail for speed - fallback to regular method
+        except Exception as e:
+            # Silently fall back to regular method for speed
             return self.update_parameters_only(amplitude, frequency_mhz, channel)
 
     def sine_frequency_sweep(self, amplitude: float, freq_start: float, freq_end: float, 

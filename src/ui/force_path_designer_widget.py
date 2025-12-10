@@ -8,14 +8,15 @@ from PyQt5.QtWidgets import (
     QMainWindow
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont
-from dataclasses import dataclass
+from PyQt5.QtGui import QFont, QColor
+from dataclasses import dataclass, asdict
 from enum import Enum
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 import time
+import h5py
 
 from src.utils.logger import get_logger
 from src.utils.status_display import StatusDisplay
@@ -52,11 +53,28 @@ class FunctionGeneratorWorker(QThread):
         self.execution_log = execution_log
         self.main_window = main_window  # Reference for HDF5 timeline logging
         self.should_stop = False
+        self.is_paused = False
+        self.pause_start_time = 0.0
+        self.total_pause_time = 0.0
         self.measurement_start_time = time.time()
         
     def stop(self):
         """Request worker to stop."""
         self.should_stop = True
+        
+    def pause(self):
+        """Pause execution."""
+        if not self.is_paused:
+            self.is_paused = True
+            self.pause_start_time = time.perf_counter()
+            logger.info("Path execution paused")
+            
+    def resume(self):
+        """Resume execution."""
+        if self.is_paused:
+            self.total_pause_time += time.perf_counter() - self.pause_start_time
+            self.is_paused = False
+            logger.info("Path execution resumed")
     
     def _initialize_execution(self, processed_points):
         """Initialize function generator output with first point values.
@@ -83,6 +101,9 @@ class FunctionGeneratorWorker(QThread):
         self._last_amp = first_point.amplitude
         self._consecutive_errors = 0
         self._last_status_time = 0.0
+        self._segment_start_freq = first_point.frequency  # Track actual start of each segment
+        self._segment_start_amp = first_point.amplitude
+        self._current_segment_idx = 0
         
         return True
     
@@ -108,6 +129,13 @@ class FunctionGeneratorWorker(QThread):
         if current_idx >= len(processed_points) - 1:
             return None
         
+        # Check if we moved to a new segment - use actual last values as new start
+        if current_idx != self._current_segment_idx:
+            self._segment_start_freq = self._last_freq
+            self._segment_start_amp = self._last_amp
+            self._current_segment_idx = current_idx
+            logger.info(f"New segment {current_idx}: starting from actual values freq={self._last_freq:.3f}MHz, amp={self._last_amp:.2f}Vpp")
+        
         point1 = processed_points[current_idx]
         point2 = processed_points[current_idx + 1]
         
@@ -120,11 +148,12 @@ class FunctionGeneratorWorker(QThread):
         
         # Apply transition type
         if point2.transition == TransitionType.HOLD:
-            frequency = point1.frequency
-            amplitude = point1.amplitude
+            frequency = self._segment_start_freq  # Use actual start values
+            amplitude = self._segment_start_amp
         else:  # LINEAR
-            frequency = point1.frequency + progress * (point2.frequency - point1.frequency)
-            amplitude = point1.amplitude + progress * (point2.amplitude - point1.amplitude)
+            # Interpolate from actual segment start to target end
+            frequency = self._segment_start_freq + progress * (point2.frequency - self._segment_start_freq)
+            amplitude = self._segment_start_amp + progress * (point2.amplitude - self._segment_start_amp)
         
         return frequency, amplitude, current_idx, progress
     
@@ -144,9 +173,10 @@ class FunctionGeneratorWorker(QThread):
             bool: True if successful or no update needed, False if critical error
         """
         # Check if update is needed (delta-based to reduce commands)
+        # Larger tolerances = fewer updates = faster execution without timeouts
         needs_update = (
-            abs(self._last_freq - frequency) > 0.005 or
-            abs(self._last_amp - amplitude) > 0.005
+            abs(self._last_freq - frequency) > 0.02 or   # 20 kHz precision (smoother paths need fewer updates)
+            abs(self._last_amp - amplitude) > 0.08       # 80 mV precision (smoother paths need fewer updates)
         )
         
         if not needs_update:
@@ -294,7 +324,12 @@ class FunctionGeneratorWorker(QThread):
             
             # Main execution loop - only update parameters, keep output ON
             while not self.should_stop:
-                elapsed_time = time.perf_counter() - start_time
+                # Handle pause state - wait while paused
+                if self.is_paused:
+                    self.msleep(50)  # Check pause state every 50ms
+                    continue
+                    
+                elapsed_time = time.perf_counter() - start_time - self.total_pause_time
                 
                 # Check if execution is complete (with small tolerance for timing precision)
                 if elapsed_time >= (total_duration - 0.001):  # 1ms tolerance
@@ -313,12 +348,19 @@ class FunctionGeneratorWorker(QThread):
                 # Update function generator if needed
                 if not self._update_function_generator(frequency, amplitude, elapsed_time,
                                                        current_idx, progress, point1, point2):
+                    # Turn off output before signaling failure
+                    try:
+                        if self.fg_controller and self.fg_controller.is_connected:
+                            self.fg_controller.stop_all_outputs()
+                            logger.info("Output turned OFF after update failure")
+                    except Exception as e:
+                        logger.error(f"Failed to turn off output after error: {e}")
                     self.execution_finished.emit(False)
                     return
                                
                 
-                # Optimized sleep - balanced speed vs USB communication limits
-                self.msleep(20)  # 20ms = 50 Hz update rate (optimal for USB VISA)
+                # Fast update loop for responsive tracking
+                self.msleep(10)  # 10ms = 100 Hz update rate
 
             # Set final point values before completing
             self._finalize_execution(processed_points, total_duration)
@@ -327,10 +369,7 @@ class FunctionGeneratorWorker(QThread):
             actual_duration = time.perf_counter() - execution_start_time
             logger.info(f"=== FORCE PATH EXECUTION COMPLETED ===")
             logger.info(f"Target duration: {total_duration:.3f}s, Actual duration: {actual_duration:.3f}s, Difference: {(actual_duration - total_duration):.3f}s")
-            # CRITICAL: Allow last command to be processed before turning off output
-            # USB VISA commands are asynchronous - device needs time to process
-            logger.info("Waiting 100ms for last command to be processed by device...")
-            self.msleep(100)  # Give device time to process the last parameter update
+            # Fast completion - no delay needed
             self.execution_finished.emit(True)
             
         except Exception as e:
@@ -373,12 +412,12 @@ class FunctionGeneratorWorker(QThread):
                                 final_ok = False
 
                         if final_ok:
-                            logger.info("Final parameters applied, allowing device 50ms to settle")
+                            logger.info("Final parameters applied, allowing device 20ms to settle")
                             # Give device a short moment to apply settings
                             try:
-                                self.msleep(50)
+                                self.msleep(20)  # Reduced from 50ms
                             except Exception:
-                                time.sleep(0.05)
+                                time.sleep(0.02)
                         else:
                             logger.warning("Unable to apply final parameters to function generator")
 
@@ -457,8 +496,9 @@ class ForcePathDesignerWidget(QWidget):
         self._init_ui()
         self._add_default_points()
         
-        # Initialize the graph
+        # Initialize the graph and statistics
         self._update_graph()
+        self._update_statistics()
         
     def _init_ui(self):
         """Initialize the user interface."""
@@ -596,6 +636,11 @@ class ForcePathDesignerWidget(QWidget):
         
         layout.addLayout(table_controls)
         
+        # Path statistics display (minimal, no title)
+        self.stats_text = QLabel("No path defined")
+        self.stats_text.setWordWrap(True)
+        layout.addWidget(self.stats_text)
+        
         # Connect signals
         self.add_point_btn.clicked.connect(self._add_point)
         self.remove_point_btn.clicked.connect(self._remove_point)
@@ -705,6 +750,12 @@ class ForcePathDesignerWidget(QWidget):
         self.execute_path_btn.clicked.connect(self._execute_path)
         layout.addWidget(self.execute_path_btn)
         
+        self.pause_execution_btn = QPushButton("Pause")
+        self.pause_execution_btn.setMinimumWidth(60)
+        self.pause_execution_btn.clicked.connect(self._toggle_pause)
+        self.pause_execution_btn.setEnabled(False)
+        layout.addWidget(self.pause_execution_btn)
+        
         self.stop_execution_btn = QPushButton("Stop")
         self.stop_execution_btn.setMinimumWidth(60)
         self.stop_execution_btn.clicked.connect(self._stop_execution)
@@ -752,6 +803,7 @@ class ForcePathDesignerWidget(QWidget):
         self.path_points.append(new_point)
         self._update_table()
         self._update_graph()
+        self._update_statistics()
         
     def _remove_point(self):
         """Remove selected point from the path."""
@@ -760,6 +812,7 @@ class ForcePathDesignerWidget(QWidget):
             self.path_points.pop(current_row)
             self._update_table()
             self._update_graph()
+            self._update_statistics()
             
     def _clear_path(self):
         """Clear all points from the path."""
@@ -773,6 +826,47 @@ class ForcePathDesignerWidget(QWidget):
             self.path_points.clear()
             self._update_table()
             self._update_graph()
+            self._update_statistics()
+            
+    def _update_statistics(self):
+        """Update path statistics display."""
+        if not self.path_points:
+            self.stats_text.setText("No path defined")
+            return
+            
+        sorted_points = sorted(self.path_points, key=lambda p: p.time)
+        
+        # Calculate statistics
+        total_duration = sorted_points[-1].time if sorted_points else 0
+        num_points = len(sorted_points)
+        
+        frequencies = [p.frequency for p in sorted_points]
+        amplitudes = [p.amplitude for p in sorted_points]
+        
+        avg_freq = sum(frequencies) / len(frequencies)
+        min_freq = min(frequencies)
+        max_freq = max(frequencies)
+        
+        avg_amp = sum(amplitudes) / len(amplitudes)
+        min_amp = min(amplitudes)
+        max_amp = max(amplitudes)
+        
+        # Calculate rate of change (if multiple points)
+        if num_points > 1:
+            freq_changes = [abs(sorted_points[i+1].frequency - sorted_points[i].frequency) 
+                          for i in range(num_points - 1)]
+            amp_changes = [abs(sorted_points[i+1].amplitude - sorted_points[i].amplitude) 
+                         for i in range(num_points - 1)]
+            max_freq_change = max(freq_changes) if freq_changes else 0
+            max_amp_change = max(amp_changes) if amp_changes else 0
+        else:
+            max_freq_change = 0
+            max_amp_change = 0
+        
+        # Format statistics text (minimal, plain text)
+        stats_text = f"Duration: {total_duration:.1f}s ({total_duration/60:.1f} min) | Points: {num_points} | Freq: {min_freq:.2f}-{max_freq:.2f} MHz | Amp: {min_amp:.2f}-{max_amp:.2f} Vpp"
+        
+        self.stats_text.setText(stats_text)
             
     def _update_table(self):
         """Update the table with current path points (optimized for performance)."""
@@ -791,25 +885,71 @@ class ForcePathDesignerWidget(QWidget):
         
         self.path_table.setRowCount(len(self.path_points))
         
+        # Validate path and mark problematic rows
+        validation_errors = self._get_validation_errors()
+        
         # Batch update for better performance
         for row, point in enumerate(self.path_points):
             # Time - show relative duration (time from previous point)
             relative_time = self._get_relative_time(row)
             time_item = QTableWidgetItem(f"{relative_time:.1f}")
             time_item.setData(Qt.UserRole, relative_time)  # Store relative value for editing
+            
+            # Check if this row has validation errors
+            has_error = row in validation_errors
+            if has_error:
+                time_item.setBackground(QColor(255, 200, 200))  # Light red background
+                time_item.setToolTip(validation_errors[row])
+            
             self.path_table.setItem(row, 0, time_item)
             
             # Frequency - 3 decimal places for precision
             freq_item = QTableWidgetItem(f"{point.frequency:.3f}")
+            if has_error:
+                freq_item.setBackground(QColor(255, 200, 200))
+                freq_item.setToolTip(validation_errors[row])
             self.path_table.setItem(row, 1, freq_item)
             
             # Amplitude - 2 decimal places
             amp_item = QTableWidgetItem(f"{point.amplitude:.2f}")
+            if has_error:
+                amp_item.setBackground(QColor(255, 200, 200))
+                amp_item.setToolTip(validation_errors[row])
             self.path_table.setItem(row, 2, amp_item)
             
         # Reconnect signals
         self.path_table.itemChanged.connect(self._on_table_item_changed)
         self.path_table.cellChanged.connect(self._on_cell_changed)
+    
+    def _get_validation_errors(self) -> Dict[int, str]:
+        """Get validation errors for each row.
+        
+        Returns:
+            Dict mapping row index to error message
+        """
+        errors = {}
+        sorted_points = sorted(enumerate(self.path_points), key=lambda x: x[1].time)
+        
+        for i, (original_idx, point) in enumerate(sorted_points):
+            error_msgs = []
+            
+            if point.time < 0:
+                error_msgs.append("Time cannot be negative")
+            if point.frequency <= 0:
+                error_msgs.append("Frequency must be positive")
+            if point.amplitude <= 0:
+                error_msgs.append("Amplitude must be positive")
+                
+            # Check time ordering
+            if i > 0:
+                prev_point = sorted_points[i-1][1]
+                if point.time <= prev_point.time:
+                    error_msgs.append("Time must be greater than previous point")
+                    
+            if error_msgs:
+                errors[original_idx] = " | ".join(error_msgs)
+                
+        return errors
     
     def _get_relative_time(self, point_index: int) -> float:
         """Get relative time for a point (duration from previous point)."""
@@ -951,7 +1091,7 @@ class ForcePathDesignerWidget(QWidget):
                 from PyQt5.QtCore import QTimer
                 self._update_timer = QTimer()
                 self._update_timer.setSingleShot(True)
-                self._update_timer.timeout.connect(self._update_graph)
+                self._update_timer.timeout.connect(self._delayed_update)
             
             self._update_timer.stop()
             self._update_timer.start(50)  # 50ms debounce for smooth performance
@@ -959,6 +1099,11 @@ class ForcePathDesignerWidget(QWidget):
         except (ValueError, TypeError):
             # Invalid input, ignore for now (will be restored by table update)
             pass
+    
+    def _delayed_update(self):
+        """Called after debounce timer to update graph and statistics."""
+        self._update_graph()
+        self._update_statistics()
             
     def _compute_path_hash(self) -> str:
         """Compute a hash of the current path for caching purposes."""
@@ -1269,6 +1414,9 @@ class ForcePathDesignerWidget(QWidget):
         # Save current path design to HDF5
         self._save_path_design_to_hdf5()
         
+        # Log start event to audit trail
+        self._log_start_event()
+        
         # Create and start worker thread
         self.fg_worker = FunctionGeneratorWorker(
             self.function_generator_controller,
@@ -1288,6 +1436,8 @@ class ForcePathDesignerWidget(QWidget):
         
         # Update UI
         self.execute_path_btn.setEnabled(False)
+        self.pause_execution_btn.setEnabled(True)
+        self.pause_execution_btn.setText("Pause")
         self.stop_execution_btn.setEnabled(True)
         self.status_display.set_status("Starting...")
         
@@ -1308,10 +1458,14 @@ class ForcePathDesignerWidget(QWidget):
             self.execution_completed = True
             self.status_display.set_status("Completed")  # Green
             logger.info("Force path execution completed successfully")
+            # Log completion event to audit trail
+            self._log_finish_event(success=True)
         else:
             self.execution_completed = False
             self.status_display.set_status("Error")       # Red
             logger.error("Force path execution failed")
+            # Log failure event to audit trail
+            self._log_finish_event(success=False)
             
         # Clean up execution state
         self._stop_execution()
@@ -1319,6 +1473,10 @@ class ForcePathDesignerWidget(QWidget):
     def _update_live_line(self):
         """Update the vertical line showing current execution position."""
         if not self.is_executing:
+            return
+        
+        # Don't update line position while paused
+        if hasattr(self, 'fg_worker') and self.fg_worker and self.fg_worker.is_paused:
             return
             
         # Calculate current execution time
@@ -1352,6 +1510,30 @@ class ForcePathDesignerWidget(QWidget):
                 # Update canvas
                 self.canvas.draw_idle()
                 
+    def _toggle_pause(self):
+        """Toggle pause/resume of path execution."""
+        if not hasattr(self, 'fg_worker') or not self.fg_worker.isRunning():
+            return
+            
+        if self.fg_worker.is_paused:
+            # Resume execution
+            self.fg_worker.resume()
+            self.pause_execution_btn.setText("Pause")
+            self.status_display.set_status("Executing")
+            logger.info("User resumed path execution")
+            
+            # Log resume event to audit trail
+            self._log_resume_event()
+        else:
+            # Pause execution
+            self.fg_worker.pause()
+            self.pause_execution_btn.setText("Resume")
+            self.status_display.set_status("Paused")
+            logger.info("User paused path execution")
+            
+            # Log pause event to audit trail
+            self._log_pause_event()
+                
     def _stop_execution(self):
         """Stop path execution and turn off function generator output."""
         logger.info("Force path execution: Stop requested")
@@ -1377,33 +1559,41 @@ class ForcePathDesignerWidget(QWidget):
                 logger.debug(f"Could not remove/redraw live line: {e}")
             self.live_line = None
             
-        # SAFETY NET: Turn off function generator output if worker hasn't done it yet
-        # (Worker's finally block should have already done this, but double-check)
-        if hasattr(self, 'function_generator_controller') and self.function_generator_controller and self.function_generator_controller.is_connected:
+        # Double-check output is OFF (already done at start, but be extra safe)
+        if hasattr(self, 'function_generator_controller') and self.function_generator_controller:
             try:
-                logger.info("Safety check: Ensuring function generator output is OFF")
-                self.function_generator_controller.stop_all_outputs()
+                if self.function_generator_controller.is_connected:
+                    logger.info("STOP: Double-checking function generator output is OFF")
+                    self.function_generator_controller.stop_all_outputs()
+                    # Log OFF event to function generator timeline
+                    self._log_fg_off_to_timeline()
             except Exception as e:
-                logger.error(f"Safety check failed (output may already be off): {e}")
+                logger.debug(f"Double-check failed (output likely already off): {e}")
         
         self.is_executing = False
+        
+        # Log stop event to audit trail if manually stopped
+        if not self.execution_completed:
+            self._log_stop_event()
         
         # Save execution results to HDF5
         self._save_execution_to_hdf5()
         
         # Update UI with proper status
         self.execute_path_btn.setEnabled(True)
+        self.pause_execution_btn.setEnabled(False)
+        self.pause_execution_btn.setText("Pause")
         self.stop_execution_btn.setEnabled(False)
         
         # Set status based on completion state and function generator availability
-        if self.execution_completed:
-            self.status_display.set_status("Completed")
-        else:
-            # Check function generator status when execution stops
+        # Only update status if it hasn't been set by _on_execution_finished
+        current_status = self.status_display.text_label.text()
+        if current_status not in ["Completed", "Error"]:
+            # Status hasn't been set by completion handler, set it now
             if not self.function_generator_controller or not self.function_generator_controller.is_connected:
                 self.status_display.set_status("Disconnected")
             else:
-                self.status_display.set_status("Stopped")  # Orange color for user-stopped
+                self.status_display.set_status("Error")  # Red color for user-stopped
         
         completion_status = "Completed" if self.execution_completed else "Stopped"
         logger.info(f"Force path execution {completion_status}")
@@ -1431,48 +1621,141 @@ class ForcePathDesignerWidget(QWidget):
         return processed_points
             
     def _save_path_design_to_hdf5(self):
-        """Save current path design to video HDF5 file (consolidated storage)."""
+        """Save current path design to audit trail and commands group."""
+        logger.info("=== _save_path_design_to_hdf5 called ===")
+        
         if not self.main_window or not self.path_points:
+            logger.warning("Cannot save path design: main_window or path_points missing")
             return
         
-        # Only save during execution if measurement is active and video recording is active
-        if not hasattr(self.main_window, 'measurement_active') or not self.main_window.measurement_active:
-            return
-            
         # Check if camera widget has active HDF5 recorder
         if not hasattr(self.main_window, 'camera_widget') or not self.main_window.camera_widget:
+            logger.warning("Cannot save path design: camera_widget missing")
             return
             
         camera_widget = self.main_window.camera_widget
         if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+            logger.warning("Cannot save path design: hdf5_recorder missing")
             return
             
         hdf5_recorder = camera_widget.hdf5_recorder
         if not hdf5_recorder.is_recording:
+            logger.warning("Cannot save path design: HDF5 not recording - please start recording first")
             return
+        
+        logger.info("HDF5 recording active - proceeding with save")
             
         try:
             # Prepare path data
             times = [point.time for point in self.path_points]
             frequencies = [point.frequency for point in self.path_points]
             amplitudes = [point.amplitude for point in self.path_points]
+            transitions = [point.transition.value for point in self.path_points]
             
-            execution_data = {
-                'path_design_points': len(self.path_points),
-                'path_duration_seconds': max(times) if times else 0.0,
-                'frequency_range': f"{min(frequencies)}-{max(frequencies)} MHz" if frequencies else "None",
-                'amplitude_range': f"{min(amplitudes)}-{max(amplitudes)} Vpp" if amplitudes else "None"
+            # Log to audit trail
+            path_description = f"Force path with {len(self.path_points)} points: " \
+                             f"freq {min(frequencies):.3f}-{max(frequencies):.3f} MHz, " \
+                             f"amp {min(amplitudes):.2f}-{max(amplitudes):.2f} Vpp, " \
+                             f"duration {max(times):.1f}s"
+            
+            path_metadata = {
+                'points': [
+                    {
+                        'time_s': point.time,
+                        'frequency_mhz': point.frequency,
+                        'amplitude_vpp': point.amplitude,
+                        'transition': point.transition.value
+                    }
+                    for point in self.path_points
+                ],
+                'total_points': len(self.path_points),
+                'duration_s': max(times) if times else 0.0,
+                'frequency_range_mhz': [min(frequencies), max(frequencies)] if frequencies else [0, 0],
+                'amplitude_range_vpp': [min(amplitudes), max(amplitudes)] if amplitudes else [0, 0]
             }
             
-            # Log directly to video HDF5 file (consolidated storage)
-            hdf5_recorder.log_execution_data('force_path_design', execution_data)
-            logger.info("Force path design logged to video HDF5 file")
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_design',
+                path_description,
+                path_metadata
+            )
+            logger.info("force_path_design event logged to audit trail")
+            
+            # Also save to /commands/force_path group for structured access
+            logger.info("Calling _save_path_to_commands_group...")
+            self._save_path_to_commands_group(hdf5_recorder, times, frequencies, amplitudes, transitions)
+            
+            logger.info("Force path design saved to: /meta_data/audit_trail + /meta_data/commands/force_path")
             
         except Exception as e:
+            import traceback
             logger.error(f"Error logging force path design: {e}")
+            logger.debug(traceback.format_exc())
+    
+    def _save_path_to_commands_group(self, hdf5_recorder, times, frequencies, amplitudes, transitions):
+        """Save path design to /meta_data/commands/force_path as a single table."""
+        try:
+            if not hdf5_recorder.h5_file:
+                logger.warning("Cannot save commands: HDF5 file not open")
+                return
+                
+            import numpy as np
+            
+            logger.info(f"Saving path to commands group in HDF5 file: {hdf5_recorder.h5_file.filename}")
+            
+            # Get or create /meta_data group
+            if 'meta_data' not in hdf5_recorder.h5_file:
+                meta_group = hdf5_recorder.h5_file.create_group('meta_data')
+                logger.info("Created /meta_data group")
+            else:
+                meta_group = hdf5_recorder.h5_file['meta_data']
+                logger.info("Using existing /meta_data group")
+            
+            # Create or get /meta_data/commands group
+            if 'commands' not in meta_group:
+                commands_group = meta_group.create_group('commands')
+                commands_group.attrs['description'] = b'High-level command sequences and execution plans'
+                logger.info("Created /meta_data/commands group")
+            else:
+                commands_group = meta_group['commands']
+                logger.info("Using existing /meta_data/commands group")
+            
+            # Remove old force_path if exists
+            if 'force_path' in commands_group:
+                del commands_group['force_path']
+                logger.info("Removed old force_path dataset")
+            
+            # Create compound datatype for structured table
+            dt = np.dtype([
+                ('time_s', 'f8'),
+                ('frequency_mhz', 'f8'),
+                ('amplitude_vpp', 'f8'),
+                ('transition', 'U16')  # Unicode string up to 16 chars
+            ])
+            
+            # Create structured array with all path points
+            path_data = np.zeros(len(times), dtype=dt)
+            path_data['time_s'] = times
+            path_data['frequency_mhz'] = frequencies
+            path_data['amplitude_vpp'] = amplitudes
+            path_data['transition'] = transitions
+            
+            # Save as single dataset with attributes
+            dataset = commands_group.create_dataset('force_path', data=path_data, compression='gzip')
+            dataset.attrs['description'] = b'Force path designer execution plan (time progression)'
+            dataset.attrs['point_count'] = len(times)
+            dataset.attrs['duration_s'] = max(times) if times else 0.0
+            dataset.attrs['columns'] = ['time_s', 'frequency_mhz', 'amplitude_vpp', 'transition']
+            
+            logger.info(f"Successfully saved force_path table with {len(times)} points to /meta_data/commands/force_path")
+            
+        except Exception as e:
+            import traceback
+            logger.error(f"Error saving path to commands group: {e}")
+            logger.debug(traceback.format_exc())
             
     def _save_execution_to_hdf5(self):
-        """Log execution results to video HDF5 file (consolidated storage)."""
+        """Log execution results to audit trail."""
         if not self.main_window or not self.measurement_start_time:
             return
             
@@ -1489,10 +1772,12 @@ class ForcePathDesignerWidget(QWidget):
             return
             
         try:
-            execution_data = {
-                'execution_completed': self.execution_completed,
-                'execution_log_entries': len(self.execution_log),
-                'execution_duration_seconds': len(self.execution_log) * 0.02 if self.execution_log else 0  # 50Hz = 20ms intervals
+            status = "completed successfully" if self.execution_completed else "stopped early"
+            
+            execution_metadata = {
+                'completed': self.execution_completed,
+                'log_entries': len(self.execution_log),
+                'duration_s': len(self.execution_log) * 0.02 if self.execution_log else 0
             }
             
             if self.execution_log:
@@ -1500,20 +1785,206 @@ class ForcePathDesignerWidget(QWidget):
                 set_frequencies = [entry['set_frequency_mhz'] for entry in self.execution_log]
                 set_amplitudes = [entry['set_amplitude_vpp'] for entry in self.execution_log]
                 
-                execution_data.update({
-                    'frequency_range_executed': f"{min(set_frequencies)}-{max(set_frequencies)} MHz",
-                    'amplitude_range_executed': f"{min(set_amplitudes)}-{max(set_amplitudes)} Vpp",
-                    'total_execution_steps': len(set_frequencies)
+                execution_metadata.update({
+                    'frequency_range_mhz': [min(set_frequencies), max(set_frequencies)],
+                    'amplitude_range_vpp': [min(set_amplitudes), max(set_amplitudes)],
+                    'total_steps': len(set_frequencies)
                 })
             
-            # Log directly to video HDF5 file (consolidated storage)
-            hdf5_recorder.log_execution_data('force_path_execution', execution_data)
+            # Log to audit trail
+            description = f"Force path execution {status}: {len(self.execution_log)} steps"
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_execution',
+                description,
+                execution_metadata
+            )
             
-            status = "completed" if self.execution_completed else "stopped early"
-            logger.info(f"Force path execution logged to video HDF5 file: {len(self.execution_log)} steps, {status}")
+            logger.info(f"Force path execution logged to audit trail: {len(self.execution_log)} steps, {status}")
             
         except Exception as e:
             logger.error(f"Error logging force path execution: {e}")
+    
+    def _log_start_event(self):
+        """Log force path start event to audit trail."""
+        if not self.main_window or not self.path_points:
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+                return
+                
+            hdf5_recorder = camera_widget.hdf5_recorder
+            if not hdf5_recorder.is_recording:
+                return
+            
+            total_duration = max(point.time for point in self.path_points) if self.path_points else 0
+            
+            start_metadata = {
+                'point_count': len(self.path_points),
+                'total_duration_s': total_duration,
+                'initial_frequency_mhz': self.path_points[0].frequency,
+                'initial_amplitude_vpp': self.path_points[0].amplitude
+            }
+            
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_started',
+                f"Force path execution started: {len(self.path_points)} points, {total_duration:.1f}s duration",
+                start_metadata
+            )
+            
+        except Exception as e:
+            logger.debug(f"Error logging start event: {e}")
+    
+    def _log_pause_event(self):
+        """Log pause event to audit trail."""
+        if not self.main_window:
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+                return
+                
+            hdf5_recorder = camera_widget.hdf5_recorder
+            if not hdf5_recorder.is_recording:
+                return
+            
+            # Calculate elapsed time
+            elapsed_time = time.perf_counter() - self.execution_start_time if hasattr(self, 'execution_start_time') else 0
+            
+            pause_metadata = {
+                'elapsed_time_s': elapsed_time,
+                'execution_steps_before_pause': len(self.execution_log)
+            }
+            
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_paused',
+                f"Force path execution paused at {elapsed_time:.2f}s",
+                pause_metadata
+            )
+            logger.info(f"Logged pause event to audit trail at {elapsed_time:.2f}s")
+            
+        except Exception as e:
+            logger.warning(f"Error logging pause event: {e}")
+    
+    def _log_resume_event(self):
+        """Log resume event to audit trail."""
+        if not self.main_window or not hasattr(self, 'fg_worker'):
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+                return
+                
+            hdf5_recorder = camera_widget.hdf5_recorder
+            if not hdf5_recorder.is_recording:
+                return
+            
+            resume_metadata = {
+                'total_pause_time_s': self.fg_worker.total_pause_time,
+                'execution_steps_before_resume': len(self.execution_log)
+            }
+            
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_resumed',
+                f"Force path execution resumed after {self.fg_worker.total_pause_time:.2f}s pause",
+                resume_metadata
+            )
+            
+        except Exception as e:
+            logger.debug(f"Error logging resume event: {e}")
+    
+    def _log_stop_event(self):
+        """Log manual stop event to audit trail."""
+        if not self.main_window:
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+                return
+                
+            hdf5_recorder = camera_widget.hdf5_recorder
+            if not hdf5_recorder.is_recording:
+                return
+            
+            # Calculate elapsed time
+            elapsed_time = time.perf_counter() - self.execution_start_time if hasattr(self, 'execution_start_time') else 0
+            
+            stop_metadata = {
+                'elapsed_time_s': elapsed_time,
+                'execution_steps_completed': len(self.execution_log),
+                'stopped_by': 'user'
+            }
+            
+            if hasattr(self, 'fg_worker') and self.fg_worker:
+                stop_metadata['total_pause_time_s'] = self.fg_worker.total_pause_time
+            
+            hdf5_recorder.audit_trail.log_event(
+                'force_path_stopped',
+                f"Force path execution manually stopped at {elapsed_time:.2f}s",
+                stop_metadata
+            )
+            
+        except Exception as e:
+            logger.debug(f"Error logging stop event: {e}")
+    
+    def _log_finish_event(self, success):
+        """Log force path finish/completion event to audit trail."""
+        if not self.main_window:
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if not hasattr(camera_widget, 'hdf5_recorder') or not camera_widget.hdf5_recorder:
+                return
+                
+            hdf5_recorder = camera_widget.hdf5_recorder
+            if not hdf5_recorder.is_recording:
+                return
+            
+            # Calculate elapsed time
+            elapsed_time = time.perf_counter() - self.execution_start_time if hasattr(self, 'execution_start_time') else 0
+            
+            finish_metadata = {
+                'success': success,
+                'elapsed_time_s': elapsed_time,
+                'execution_steps_completed': len(self.execution_log)
+            }
+            
+            if hasattr(self, 'fg_worker') and self.fg_worker:
+                finish_metadata['total_pause_time_s'] = self.fg_worker.total_pause_time
+            
+            event_type = 'force_path_completed' if success else 'force_path_failed'
+            description = f"Force path execution {'completed successfully' if success else 'failed'} after {elapsed_time:.2f}s"
+            
+            hdf5_recorder.audit_trail.log_event(
+                event_type,
+                description,
+                finish_metadata
+            )
+            
+        except Exception as e:
+            logger.debug(f"Error logging finish event: {e}")
+    
+    def _log_fg_off_to_timeline(self):
+        """Log function generator OFF to timeline."""
+        if not self.main_window:
+            return
+            
+        try:
+            camera_widget = self.main_window.camera_widget
+            if hasattr(camera_widget, 'log_function_generator_event'):
+                camera_widget.log_function_generator_event(
+                    frequency_mhz=0.0,
+                    amplitude_vpp=0.0,
+                    output_enabled=False,
+                    event_type='force_path_stopped'
+                )
+        except Exception as e:
+            logger.debug(f"Failed to log FG OFF to timeline: {e}")
     
     def _get_unique_filename(self, filename):
         """Generate unique filename by adding _1, _2, etc. if file exists."""
@@ -1800,9 +2271,10 @@ class ForcePathDesignerWidget(QWidget):
         
     def _update_status_display(self):
         """Update status display based on function generator availability."""
-        if not self.function_generator_controller or not self.function_generator_controller.is_connected:
+        if not self.function_generator_controller:
             self.status_display.set_status("Disconnected")
         else:
+            # Always show Ready if we have a controller (assume it will connect or is connected)
             self.status_display.set_status("Ready")
         
     def set_main_window(self, main_window):
@@ -1815,9 +2287,23 @@ class ForcePathDesignerWidget(QWidget):
         return self.path_points.copy()
         
     def closeEvent(self, event):
-        """Handle widget close event."""
+        """Handle widget close event - ALWAYS turn off output."""
+        logger.info("Force Path Designer closing - ensuring output is OFF")
+        
+        # Stop execution if running
         if self.is_executing:
             self._stop_execution()
+        
+        # CRITICAL: Always turn off output when closing, regardless of execution state
+        if hasattr(self, 'function_generator_controller') and self.function_generator_controller:
+            try:
+                if self.function_generator_controller.is_connected:
+                    logger.info("CLOSE: Forcing function generator output OFF")
+                    self.function_generator_controller.stop_all_outputs()
+                    logger.info("CLOSE: Function generator output turned OFF successfully")
+            except Exception as e:
+                logger.error(f"CLOSE: Failed to turn off output: {e}")
+        
         super().closeEvent(event)
 
 

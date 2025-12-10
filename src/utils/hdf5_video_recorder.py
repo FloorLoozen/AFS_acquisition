@@ -1563,11 +1563,8 @@ class HDF5VideoRecorder:
                                           f'Function generator settings changed: {frequency_mhz:.1f} MHz, {amplitude_vpp:.1f} Vpp',
                                           {'frequency_mhz': frequency_mhz, 'amplitude_vpp': amplitude_vpp, 'enabled': output_enabled})
             elif event_type == 'initial_state':
-                # Log initial state
-                state = 'ON' if output_enabled else 'OFF'
-                self.audit_trail.log_event('function_generator_initial_state',
-                                          f'Function generator initial state: {state} @ {frequency_mhz:.1f} MHz, {amplitude_vpp:.1f} Vpp',
-                                          {'frequency_mhz': frequency_mhz, 'amplitude_vpp': amplitude_vpp, 'enabled': output_enabled})
+                # Don't log initial state to audit trail, only to timeline
+                pass
             
             return True
             

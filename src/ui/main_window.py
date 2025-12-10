@@ -523,12 +523,33 @@ class MainWindow(QMainWindow):
     
     def _open_force_path_designer(self):
         """Open Force Path Designer window."""
-        QMessageBox.information(
-            self,
-            "Coming Soon",
-            "Force Path Designer will be implemented in a future version.",
-            QMessageBox.Ok
-        )
+        try:
+            from src.ui.force_path_designer_widget import ForcePathDesignerWindow
+            
+            if self.force_path_designer is None:
+                self.force_path_designer = ForcePathDesignerWindow(self)
+                
+                # Set function generator controller
+                if hasattr(self, 'device_manager') and self.device_manager:
+                    fg_controller = self.device_manager.get_function_generator()
+                    if fg_controller:
+                        self.force_path_designer.set_function_generator_controller(fg_controller)
+                
+                # Link to main window for measurement logging
+                self.force_path_designer.designer_widget.set_main_window(self)
+            
+            self.force_path_designer.show()
+            self.force_path_designer.raise_()
+            self.force_path_designer.activateWindow()
+            logger.info("Opened Force Path Designer")
+            
+        except Exception as e:
+            logger.error(f"Failed to open Force Path Designer: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(self, "Error", 
+                f"Failed to open Force Path Designer:\n{e}\n\nCheck the log for details.")
+            logger.error(f"Force Path Designer error details:\n{error_details}")
     
     def _open_about(self):
         """Show about dialog."""
