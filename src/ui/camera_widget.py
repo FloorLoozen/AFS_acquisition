@@ -186,7 +186,7 @@ class CameraWidget(QGroupBox):
         # Fallback timer for display (uses configured `live_display_fps`)
         self.fallback_timer = QTimer(self)
         self.fallback_timer.timeout.connect(self._process_frame_immediate)
-        self.fallback_timer.setInterval(int(1000.0 / self.live_display_fps))
+        self.fallback_timer.setInterval(int(1000.0 / self.live_display_fps))  # 33ms for 30 FPS
         
         # Pipeline diagnostics
         self._last_capture_ts = 0
@@ -416,7 +416,7 @@ class CameraWidget(QGroupBox):
                     self.update_status("Connected")
                     self.update_button_states()
                     
-                    # Use ONLY timer for consistent 12 FPS - no callbacks
+                    # Start timer for frame updates
                     self.fallback_timer.start()
 
                     self.set_live_mode()  # Auto start live view
@@ -591,9 +591,22 @@ class CameraWidget(QGroupBox):
         
         current_time = time.time()
         
-        # Get latest frame with minimal timeout since we always keep newest frame
-        # Queue always has the freshest frame, no need for long timeout
-        frame_data = self.camera.get_latest_frame(timeout=0.01)
+        # Read directly from camera buffer for lowest latency (bypass queue)
+        if hasattr(self.camera, 'read_buffer_direct'):
+            frame = self.camera.read_buffer_direct()
+            if frame is not None:
+                # Create minimal frame data for display
+                frame_data = type('obj', (object,), {
+                    'frame': frame,
+                    'timestamp': current_time
+                })()
+            else:
+                # Fallback to queue if direct read fails
+                frame_data = self.camera.get_latest_frame(timeout=0.01)
+        else:
+            # Fallback for test pattern or older code
+            frame_data = self.camera.get_latest_frame(timeout=0.01)
+            
         if frame_data is None:
             return
         
@@ -632,23 +645,13 @@ class CameraWidget(QGroupBox):
         if time_since_last < self._min_display_interval and self._last_display_time > 0:
             return  # Skip display update - too soon
 
-        # Update display time and schedule background processing of the frame
+        # Update display time and use direct fast rendering for minimal latency
         self._last_display_time = current_time
         self.last_frame_timestamp = frame_data.timestamp
         self.current_frame_data = frame_data
 
-        # Offload display processing to the display_executor to keep GUI thread responsive
-        try:
-            # Avoid submitting another display task if one is inflight
-            if not self._display_task_inflight:
-                # Use zero-copy when safe, else copy
-                frame_for_display = frame_data.frame if getattr(frame_data.frame, 'flags', None) and frame_data.frame.flags.owndata else np.array(frame_data.frame, copy=True)
-                future = self.display_executor.submit(self._prepare_display_image, frame_for_display)
-                self._display_task_inflight = True
-                future.add_done_callback(self._display_task_done)
-        except Exception:
-            # Fallback to immediate display on error
-            self._fast_update_display(frame_data.frame)
+        # Direct display update (no background thread) for minimal lag at 12 FPS
+        self._fast_update_display(frame_data.frame)
         
         # Track display FPS separately
         if not hasattr(self, '_display_frame_times'):
@@ -1571,25 +1574,25 @@ class CameraWidget(QGroupBox):
                 pass
 
     def _fast_update_display(self, frame: np.ndarray):
-        """Minimal display update - no overlay, just fast rendering."""
+        """Minimal display update optimized for 12 FPS without lag."""
         try:
             if frame is None:
                 return
             
-            # Convert grayscale to RGB for display (in-place when possible)
-            if len(frame.shape) == 2:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-            elif len(frame.shape) == 3 and frame.shape[2] == 1:
-                frame_rgb = cv2.cvtColor(frame.squeeze(), cv2.COLOR_GRAY2RGB)
-            elif len(frame.shape) == 3 and frame.shape[2] == 3:
-                frame_rgb = frame  # Already RGB, no copy
-            else:
-                return
+            # Direct grayscale display - skip RGB conversion for speed
+            if len(frame.shape) == 3 and frame.shape[2] == 1:
+                frame = frame.squeeze()  # Remove single channel dimension
             
-            # Create QImage without copy - use frame buffer directly
-            h, w = frame_rgb.shape[:2]
-            bytes_per_line = 3 * w
-            q_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            if len(frame.shape) == 2:
+                # Grayscale: use Format_Grayscale8 (fastest, no conversion needed)
+                h, w = frame.shape
+                bytes_per_line = w
+                q_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
+            else:
+                # RGB fallback
+                h, w = frame.shape[:2]
+                bytes_per_line = 3 * w
+                q_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             
             # Fast scaling
             display_size = self.display_label.size()

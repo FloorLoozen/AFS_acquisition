@@ -620,6 +620,25 @@ class CameraController:
         except queue.Empty:
             return None
     
+    def read_buffer_direct(self) -> Optional[np.ndarray]:
+        """Read camera buffer directly without queue - lowest latency."""
+        if self.use_test_pattern or not PYUEYE_AVAILABLE or not self.h_cam:
+            return None
+        
+        try:
+            height = int(self.height)
+            width = int(self.width)
+            
+            array = ueye.get_data(
+                self.mem_ptr, width, height,
+                8, width, copy=True
+            )
+            
+            frame = np.frombuffer(array, dtype=np.uint8)
+            return frame.reshape((height, width, 1))
+        except Exception:
+            return None
+    
     def get_frame(self, timeout: float = 0.1) -> Optional[np.ndarray]:
         """
         Get the latest frame as a numpy array (for compatibility).
@@ -637,21 +656,22 @@ class CameraController:
         """Main capture loop running in background thread."""
         
         last_capture_time = 0
-        target_frame_interval = 1.0 / 30.0  # 30 FPS for test pattern mode
         
         while self.running:
             try:
                 current_time = time.time()
                 
-                # Frame rate limiting for test pattern mode only
-                # Hardware mode: camera's is_FreezeVideo already blocks at configured FPS
+                # For test pattern mode only, rate limit to 30 FPS
                 if self.use_test_pattern:
-                    time_since_last_capture = current_time - last_capture_time
-                    if time_since_last_capture < target_frame_interval:
-                        # Sleep for remaining time to maintain 30 FPS
-                        sleep_time = target_frame_interval - time_since_last_capture
-                        time.sleep(sleep_time)
-                        current_time = time.time()  # Update time after sleep
+                    target_interval = 1.0 / 30.0
+                    time_since_last = current_time - last_capture_time
+                    if time_since_last < target_interval:
+                        time.sleep(target_interval - time_since_last)
+                        current_time = time.time()
+                else:
+                    # Hardware mode: sleep to match camera FPS
+                    # Camera at 60 FPS, sleep 16ms to sync
+                    time.sleep(0.016)  # 16ms = 62.5 FPS, slightly faster than camera
                 
                 # Capture frame
                 frame = self._capture_single_frame()
@@ -730,17 +750,11 @@ class CameraController:
             return self._capture_hardware_frame()
     
     def _capture_hardware_frame(self) -> Optional[np.ndarray]:
-        """Capture fresh frame using FreezeVideo - minimal lag, captures on-demand."""
+        """Capture fresh frame using continuous capture mode."""
         if not PYUEYE_AVAILABLE or not self.h_cam:
             return None
         
         try:
-            # In CaptureVideo mode, just copy the current buffer (camera continuously updates it)
-            # This is MUCH faster than FreezeVideo which waits for each frame
-            # IMPORTANT: Add tiny delay to ensure buffer is updated (camera needs ~17ms at 57 FPS)
-            import time
-            time.sleep(0.001)  # 1ms safety margin for buffer update
-            
             height = int(self.height)
             width = int(self.width)
             
