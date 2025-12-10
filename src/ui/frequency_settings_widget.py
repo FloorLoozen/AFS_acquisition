@@ -123,23 +123,22 @@ class MeasurementSettingsWidget(QGroupBox):
         layout.addLayout(row_layout)
     
     def _add_filename_row(self, layout):
-        """Add the filename row with .hdf5 extension label."""
+        """Add the filename row with .hdf5 extension suffix."""
         row_layout = QHBoxLayout()
         
         label = QLabel("Filename:")
         label.setMinimumWidth(150)
         
         self.filename_edit = QLineEdit()
-        self.filename_edit.setText(self.default_filename)
-        self.filename_edit.setPlaceholderText("measurement_file")
+        self.filename_edit.setText(f"{self.default_filename}.hdf5")
+        self.filename_edit.setPlaceholderText("measurement_file.hdf5")
         
-        hdf5_label = QLabel(".hdf5")
-        hdf5_label.setStyleSheet("font-weight: bold; color: #666;")
-        hdf5_label.setFixedWidth(60)
+        spacer = QLabel("")
+        spacer.setFixedWidth(60)
         
         row_layout.addWidget(label)
         row_layout.addWidget(self.filename_edit, 1)
-        row_layout.addWidget(hdf5_label)
+        row_layout.addWidget(spacer)
         
         layout.addLayout(row_layout)
     
@@ -252,9 +251,14 @@ class MeasurementSettingsWidget(QGroupBox):
         
         base_filename = self.filename_edit.text().strip() or self.default_filename
         
+        # Remove all .hdf5 extensions (in case user typed it multiple times)
+        while base_filename.lower().endswith('.hdf5'):
+            base_filename = base_filename[:-5]
+        
+        # Now base_filename has no .hdf5 extension at all
         # Check if file already exists and add numbering
         if self.save_path:
-            # Start with just the date (no _1)
+            # Start with just the name (no _1)
             filename = f"{base_filename}.hdf5"
             full_path = os.path.join(self.save_path, filename)
             
@@ -297,10 +301,11 @@ class MeasurementSettingsWidget(QGroupBox):
         self.set_save_path(path)
 
     def set_filename(self, filename):
-        """Set the filename (without .hdf5 extension)."""
+        """Set the filename (ensures .hdf5 extension is present)."""
         if filename:
-            # Remove .hdf5 extension if provided
-            filename = filename[:-5] if filename.lower().endswith('.hdf5') else filename
+            # Ensure .hdf5 extension is present
+            if not filename.lower().endswith('.hdf5'):
+                filename = f"{filename}.hdf5"
             self.filename_edit.setText(filename)
             logger.info(f"Filename set to: {filename}")
 
