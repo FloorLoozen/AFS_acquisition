@@ -1034,21 +1034,12 @@ class ResonanceFinderWidget(QWidget):
                 else:
                     meta_group = hf['meta_data']
                 
-                # Create frequency_sweep group if it doesn't exist
-                if 'frequency_sweep' not in meta_group:
-                    sweep_parent = meta_group.create_group('frequency_sweep')
-                    sweep_parent.attrs['description'] = b'Frequency sweep measurements for resonance detection'
-                else:
-                    sweep_parent = meta_group['frequency_sweep']
+                # Create or get frequency_sweep group
+                if 'frequency_sweep' in meta_group:
+                    del meta_group['frequency_sweep']
                 
-                # Find next sweep number
-                existing_sweeps = [k for k in sweep_parent.keys() if k.startswith('sweep_')]
-                sweep_num = len(existing_sweeps) + 1
-                sweep_name = f"sweep_{sweep_num}"
-                
-                # Create sweep group
-                sweep_group = sweep_parent.create_group(sweep_name)
-                sweep_group.attrs['description'] = f'Frequency sweep {sweep_num}'.encode('utf-8')
+                sweep_group = meta_group.create_group('frequency_sweep')
+                sweep_group.attrs['description'] = b'Frequency sweep measurement data'
                 sweep_group.attrs['amplitude_vpp'] = self.sweep_parameters.get('amplitude_vpp', 0)
                 sweep_group.attrs['start_frequency_mhz'] = self.sweep_parameters.get('start_frequency_mhz', 0)
                 sweep_group.attrs['stop_frequency_mhz'] = self.sweep_parameters.get('stop_frequency_mhz', 0)
@@ -1066,11 +1057,12 @@ class ResonanceFinderWidget(QWidget):
                 sweep_data['frequency_mhz'] = frequencies
                 sweep_data['voltage_mv'] = voltages * 1000  # Convert V to mV
                 
-                sweep_group.create_dataset('data', data=sweep_data, compression='gzip')
-                sweep_group['data'].attrs['description'] = b'Sweep measurement data: time, frequency, and voltage'
-                sweep_group['data'].attrs['columns'] = b'time_s, frequency_mhz, voltage_mv'
+                # Save data table inside frequency_sweep group
+                data_dataset = sweep_group.create_dataset('data', data=sweep_data, compression='gzip')
+                data_dataset.attrs['description'] = b'Sweep measurement data: time, frequency, and voltage'
+                data_dataset.attrs['columns'] = b'time_s, frequency_mhz, voltage_mv'
                 
-                # Save plot image (without manual click markers) as PNG binary
+                # Save plot image inside frequency_sweep group
                 plot_dataset = sweep_group.create_dataset('plot', data=np.void(plot_png_bytes))
                 plot_dataset.attrs['description'] = b'Frequency sweep plot (PNG image)'
                 plot_dataset.attrs['format'] = b'png'
@@ -1102,7 +1094,7 @@ class ResonanceFinderWidget(QWidget):
                 else:
                     logger.info(f"  No potential frequencies selected - table not created")
                 
-                logger.info(f"Saved resonance sweep to HDF5: {sweep_name} in {hdf5_file_path}")
+                logger.info(f"Saved resonance sweep to HDF5: /meta_data/frequency_sweep/ in {hdf5_file_path}")
                 logger.info(f"  Data points: {len(frequencies)}, Selected frequencies: {len(self.clicked_frequencies)}")
             
             # Update config with this file path

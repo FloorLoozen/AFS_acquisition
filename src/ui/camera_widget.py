@@ -981,6 +981,22 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.warning(f"Failed to save stage settings: {e}")
             
+            # Add function generator info if available
+            try:
+                if hasattr(self.parent(), 'function_generator_controller'):
+                    fg_controller = self.parent().function_generator_controller
+                    self.hdf5_recorder.add_function_generator_info(fg_controller)
+            except Exception as e:
+                logger.warning(f"Failed to save function generator info: {e}")
+            
+            # Add oscilloscope info if available
+            try:
+                if hasattr(self.parent(), 'oscilloscope_controller'):
+                    osc_controller = self.parent().oscilloscope_controller
+                    self.hdf5_recorder.add_oscilloscope_info(osc_controller)
+            except Exception as e:
+                logger.warning(f"Failed to save oscilloscope info: {e}")
+            
             # Add recording metadata and regeneration info
             try:
                 self.hdf5_recorder.add_recording_metadata(recording_metadata)

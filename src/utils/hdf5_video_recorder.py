@@ -603,7 +603,7 @@ class HDF5VideoRecorder:
             return False
     
     def _create_video_dataset(self):
-        """Create the main video dataset directly under /raw_data/recordings/ (no intermediate subfolders)."""
+        """Create the main video dataset directly under /raw_data/ as recording_frames."""
         # Create /raw_data group if it doesn't exist
         if 'raw_data' not in self.h5_file:
             data_group = self.h5_file.create_group('raw_data')
@@ -611,19 +611,11 @@ class HDF5VideoRecorder:
         else:
             data_group = self.h5_file['raw_data']
         
-        # Create /raw_data/recordings group if it doesn't exist (or use existing)
-        if 'recordings' not in data_group:
-            recordings_group = data_group.create_group('recordings')
-            recordings_group.attrs['description'] = b'Video frames from recording session'
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            recordings_group.attrs['start_time'] = timestamp
-            logger.info(f"Created recordings group with start time: {timestamp}")
-        else:
-            recordings_group = data_group['recordings']
-            logger.info("Using existing recordings group")
-        
-        # Store session group reference (recordings group IS the session group now)
-        self.current_session_group = recordings_group
+        # Store session group reference (raw_data IS the session group now)
+        self.current_session_group = data_group
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data_group.attrs['recording_start_time'] = timestamp
+        logger.info(f"Using raw_data group for recording (start time: {timestamp})")
         
         # USER SPEC: Dataset shape (time, height, width) - NO channel dimension for grayscale
         # Frame shape is (height, width, channels) but dataset should be (time, height, width)
@@ -662,8 +654,9 @@ class HDF5VideoRecorder:
         if self.compression_type == 'gzip' and self.compression_level is not None:
             dataset_kwargs['compression_opts'] = self.compression_level
         
-        self.video_dataset = recordings_group.create_dataset('frames', **dataset_kwargs)
+        self.video_dataset = data_group.create_dataset('recording_frames', **dataset_kwargs)
         self.video_dataset.attrs['description'] = b'Video frames with efficient compression'
+        self.video_dataset.attrs['start_time'] = timestamp
     
     def _initialize_recording_state(self):
         """Initialize recording state and start async processing threads.
@@ -1294,7 +1287,7 @@ class HDF5VideoRecorder:
     
     def add_camera_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add comprehensive camera settings to /meta_data/hardware_settings/camera_settings.
+        Add camera settings to /meta_data/camera_settings.
         
         Args:
             settings: Dictionary of camera settings
@@ -1306,45 +1299,31 @@ class HDF5VideoRecorder:
             return False
             
         try:
-            # Get hardware_settings group
-            if 'hardware_settings' not in self.metadata_group:
-                hardware_group = self.metadata_group.create_group('hardware_settings')
-            else:
-                hardware_group = self.metadata_group['hardware_settings']
+            import numpy as np
             
-            # Create camera settings subgroup
-            camera_group = hardware_group.create_group('camera_settings')
-            camera_group.attrs['description'] = b'All camera configuration parameters'
+            # Remove old camera_settings if exists
+            if 'camera_settings' in self.metadata_group:
+                del self.metadata_group['camera_settings']
+            
+            # Create camera_settings group directly under meta_data
+            camera_group = self.metadata_group.create_group('camera_settings')
+            camera_group.attrs['description'] = b'Camera configuration at recording time'
             camera_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
             
-            settings_count = 0
-            # Add camera settings as group attributes
+            # Store settings as attributes
             for key, value in settings.items():
                 if value is not None:
                     try:
-                        # Handle different data types appropriately
                         if isinstance(value, str):
                             camera_group.attrs[key] = value.encode('utf-8')
                         elif isinstance(value, bytes):
                             camera_group.attrs[key] = value.decode('utf-8', errors='ignore').encode('utf-8')
                         elif isinstance(value, (int, float, bool)):
                             camera_group.attrs[key] = value
-                        elif value is None:
-                            camera_group.attrs[key] = 'None'.encode('utf-8')
                         else:
-                            # Convert other types to string
                             camera_group.attrs[key] = str(value).encode('utf-8')
-                        
-                        settings_count += 1
                     except Exception as e:
-                        # Log individual setting errors but continue
                         logger.warning(f"Failed to save camera setting '{key}': {e}")
-                        # Save error info
-                        error_attr_name = f"{key}_error"
-                        camera_group.attrs[error_attr_name] = str(e).encode('utf-8')
-            
-            # Add summary metadata
-            camera_group.attrs['total_parameters'] = settings_count
             
             self.camera_settings_saved = True
             return True
@@ -1355,51 +1334,50 @@ class HDF5VideoRecorder:
     
     def add_stage_settings(self, settings: Dict[str, Any]) -> bool:
         """
-        Add XY stage settings to /meta_data/hardware_settings/stage_settings.
+        Add stage settings (currently skipped - positions not needed for reproducibility).
         
         Args:
-            settings: Dictionary of stage settings
+            settings: Dictionary of stage settings from StageManager
             
         Returns:
-            True if settings saved successfully
+            True (no-op, kept for compatibility)
         """
-        if not self.is_recording or not hasattr(self, 'metadata_group') or not self.metadata_group or self.stage_settings_saved:
-            return False
+        # Stage positions are not saved - not useful for experiment reproducibility
+        # Hardware manifest in hardware_config group lists the stage models used
+        self.stage_settings_saved = True
+        return True
+    
+    def add_function_generator_info(self, fg_controller) -> bool:
+        """
+        Add function generator info (currently skipped - initial state in timeline).
+        
+        Args:
+            fg_controller: Function generator controller instance
             
-        try:
-            # Get hardware_settings group
-            if 'hardware_settings' not in self.metadata_group:
-                hardware_group = self.metadata_group.create_group('hardware_settings')
-            else:
-                hardware_group = self.metadata_group['hardware_settings']
+        Returns:
+            True (no-op, kept for compatibility)
+        """
+        # FG initial state is logged in function_generator_timeline
+        # Hardware manifest in hardware_config group lists the FG model used
+        return True
+    
+    def add_oscilloscope_info(self, osc_controller) -> bool:
+        """
+        Add oscilloscope info (currently skipped - connection info not critical).
+        
+        Args:
+            osc_controller: Oscilloscope controller instance
             
-            # Create stage settings subgroup
-            stage_group = hardware_group.create_group('stage_settings')
-            stage_group.attrs['description'] = b'XY stage configuration and position'
-            stage_group.attrs['saved_at'] = datetime.now().isoformat().encode('utf-8')
-            
-            # Add stage settings as group attributes
-            for key, value in settings.items():
-                if value is not None:
-                    if isinstance(value, str):
-                        stage_group.attrs[key] = value.encode('utf-8')
-                    elif isinstance(value, (int, float, bool)):
-                        stage_group.attrs[key] = value
-                    else:
-                        stage_group.attrs[key] = str(value).encode('utf-8')
-            
-            stage_group.attrs['total_parameters'] = len(settings)
-            
-            self.stage_settings_saved = True
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to save XY stage settings: {e}")
-            return False
+        Returns:
+            True (no-op, kept for compatibility)
+        """
+        # Oscilloscope connection info not saved
+        # Hardware manifest in hardware_config group lists the oscilloscope model used
+        return True
 
     def add_recording_metadata(self, metadata: Dict[str, Any]) -> bool:
         """
-        Add user recording metadata to /meta_data/recording_info.
+        Add user recording metadata to /meta_data/ as attributes.
         
         Args:
             metadata: Dictionary of recording metadata
@@ -1411,13 +1389,8 @@ class HDF5VideoRecorder:
             return False
             
         try:
-            # Get recording_info group (already created in _create_metadata_group)
-            if 'recording_info' not in self.metadata_group:
-                recording_group = self.metadata_group.create_group('recording_info')
-                recording_group.attrs['description'] = b'Recording timestamps and session information'
-                recording_group.attrs['created_at'] = datetime.now().isoformat().encode('utf-8')
-            else:
-                recording_group = self.metadata_group['recording_info']
+            # Add metadata directly to meta_data group as attributes
+            recording_group = self.metadata_group
             
             # Add user metadata
             for key, value in metadata.items():
@@ -1677,31 +1650,29 @@ class HDF5VideoRecorder:
                 self.metadata_group = self.h5_file['meta_data']
                 logger.info("Metadata group already exists, reusing it")
             
-            # Create or get hardware_settings subgroup
-            if 'hardware_settings' not in self.metadata_group:
-                hardware_group = self.metadata_group.create_group('hardware_settings')
-                hardware_group.attrs['description'] = b'Camera and stage hardware configuration'
+            # Create hardware_config group with hardware manifest
+            if 'hardware_config' not in self.metadata_group:
+                hw_group = self.metadata_group.create_group('hardware_config')
+                hw_group.attrs['description'] = b'Hardware products used in this experiment'
+                hw_group.attrs['camera'] = b'IDS uEye UI-3240CP-M-GL Rev.2'
+                hw_group.attrs['xy_stage'] = b'Mad City Labs MicroDrive'
+                hw_group.attrs['z_stage'] = b'Mad City Labs NanoDrive'
+                hw_group.attrs['function_generator'] = b'Siglent SDG1032X'
+                hw_group.attrs['oscilloscope'] = b'Siglent SDS804X HD'
             
-            # Create or get recording_info subgroup
-            if 'recording_info' not in self.metadata_group:
-                recording_group = self.metadata_group.create_group('recording_info')
-                recording_group.attrs['description'] = b'Recording session metadata and timestamps'
-            else:
-                recording_group = self.metadata_group['recording_info']
-            
-            # Update recording info with current session data
-            recording_group.attrs['recording_started'] = datetime.now().isoformat().encode('utf-8')
-            recording_group.attrs['compression_type'] = (self.compression_type or 'none').encode('utf-8')
+            # Store recording info directly as attributes on meta_data group
+            self.metadata_group.attrs['recording_started'] = datetime.now().isoformat().encode('utf-8')
+            self.metadata_group.attrs['compression_type'] = (self.compression_type or 'none').encode('utf-8')
             if self.compression_level is not None:  # Only save if not None (LZF has no level)
-                recording_group.attrs['compression_level'] = self.compression_level
-            recording_group.attrs['downscale_factor'] = self.downscale_factor
-            recording_group.attrs['target_fps'] = self.fps
-            recording_group.attrs['min_fps'] = self.min_fps
-            recording_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
-            recording_group.attrs['original_frame_shape'] = str(self.original_frame_shape).encode('utf-8')
+                self.metadata_group.attrs['compression_level'] = self.compression_level
+            self.metadata_group.attrs['downscale_factor'] = self.downscale_factor
+            self.metadata_group.attrs['target_fps'] = self.fps
+            self.metadata_group.attrs['min_fps'] = self.min_fps
+            self.metadata_group.attrs['frame_shape'] = str(self.frame_shape).encode('utf-8')
+            self.metadata_group.attrs['original_frame_shape'] = str(self.original_frame_shape).encode('utf-8')
             
-            # Store reference for later use
-            self.recording_info_group = recording_group
+            # Store reference for later use (use meta_data group itself)
+            self.recording_info_group = self.metadata_group
             
             
         except Exception as e:

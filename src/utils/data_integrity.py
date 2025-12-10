@@ -244,7 +244,7 @@ class AuditTrail:
             return self.events.copy()
     
     def save_to_hdf5(self, hdf5_file: h5py.File):
-        """Save audit trail to HDF5 file as structured table under meta_data/audit_trail."""
+        """Save audit trail to HDF5 file as structured dataset directly under meta_data."""
         try:
             with self._lock:
                 if not self.events:
@@ -261,11 +261,6 @@ class AuditTrail:
                 if 'audit_trail' in meta_group:
                     del meta_group['audit_trail']
                 
-                # Create audit trail group
-                audit_group = meta_group.create_group('audit_trail')
-                audit_group.attrs['description'] = b'Audit trail of all operations'
-                audit_group.attrs['event_count'] = len(self.events)
-                
                 # Define compound datatype for audit events
                 import numpy as np
                 event_dtype = np.dtype([
@@ -281,15 +276,17 @@ class AuditTrail:
                     event_data[i]['event_type'] = event['event_type'].encode('utf-8')
                     event_data[i]['description'] = event['description'][:200].encode('utf-8')
                 
-                # Create dataset
-                audit_group.create_dataset('events', data=event_data, compression='gzip', compression_opts=4)
+                # Create dataset directly in meta_data (no intermediate group)
+                dataset = meta_group.create_dataset('audit_trail', data=event_data, compression='gzip', compression_opts=4)
+                dataset.attrs['description'] = b'Audit trail of all operations'
+                dataset.attrs['event_count'] = len(self.events)
                 
-                # Save metadata for each event as separate datasets (if they exist)
+                # Save metadata for each event as attributes (if they exist)
                 for i, event in enumerate(self.events):
                     if event.get('metadata'):
                         meta_str = json.dumps(event['metadata'])
                         if len(meta_str) < 1000:  # Only save small metadata
-                            audit_group.attrs[f'event_{i}_metadata'] = meta_str.encode('utf-8')
+                            dataset.attrs[f'event_{i}_metadata'] = meta_str.encode('utf-8')
                 
                 logger.info(f"Saved {len(self.events)} audit events to HDF5 meta_data/audit_trail")
         
@@ -301,12 +298,15 @@ class AuditTrail:
         try:
             import numpy as np
             
-            # Check new structured format (meta_data/audit_trail group)
+            # Check new structured format (meta_data/audit_trail dataset)
             if 'meta_data' in hdf5_file and 'audit_trail' in hdf5_file['meta_data']:
                 audit_obj = hdf5_file['meta_data/audit_trail']
                 
-                # New structured format (group with events dataset)
-                if isinstance(audit_obj, h5py.Group) and 'events' in audit_obj:
+                # New structured format (direct dataset)
+                if isinstance(audit_obj, h5py.Dataset):
+                    event_data = audit_obj[()]
+                # Legacy format (group with events dataset)
+                elif isinstance(audit_obj, h5py.Group) and 'events' in audit_obj:
                     event_data = audit_obj['events'][()]
                     events = []
                     for i, row in enumerate(event_data):

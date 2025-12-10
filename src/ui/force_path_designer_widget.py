@@ -1711,19 +1711,10 @@ class ForcePathDesignerWidget(QWidget):
                 meta_group = hdf5_recorder.h5_file['meta_data']
                 logger.info("Using existing /meta_data group")
             
-            # Create or get /meta_data/commands group
-            if 'commands' not in meta_group:
-                commands_group = meta_group.create_group('commands')
-                commands_group.attrs['description'] = b'High-level command sequences and execution plans'
-                logger.info("Created /meta_data/commands group")
-            else:
-                commands_group = meta_group['commands']
-                logger.info("Using existing /meta_data/commands group")
-            
-            # Remove old force_path if exists
-            if 'force_path' in commands_group:
-                del commands_group['force_path']
-                logger.info("Removed old force_path dataset")
+            # Remove old force_path_commands if exists
+            if 'force_path_commands' in meta_group:
+                del meta_group['force_path_commands']
+                logger.info("Removed old force_path_commands dataset")
             
             # Create compound datatype for structured table
             dt = np.dtype([
@@ -1740,14 +1731,14 @@ class ForcePathDesignerWidget(QWidget):
             path_data['amplitude_vpp'] = amplitudes
             path_data['transition'] = transitions
             
-            # Save as single dataset with attributes
-            dataset = commands_group.create_dataset('force_path', data=path_data, compression='gzip')
+            # Save as single dataset directly in meta_data (no intermediate group)
+            dataset = meta_group.create_dataset('force_path_commands', data=path_data, compression='gzip')
             dataset.attrs['description'] = b'Force path designer execution plan (time progression)'
             dataset.attrs['point_count'] = len(times)
             dataset.attrs['duration_s'] = max(times) if times else 0.0
             dataset.attrs['columns'] = ['time_s', 'frequency_mhz', 'amplitude_vpp', 'transition']
             
-            logger.info(f"Successfully saved force_path table with {len(times)} points to /meta_data/commands/force_path")
+            logger.info(f"Successfully saved force_path_commands table with {len(times)} points to /meta_data/force_path_commands")
             
         except Exception as e:
             import traceback
@@ -1970,18 +1961,19 @@ class ForcePathDesignerWidget(QWidget):
             logger.debug(f"Error logging finish event: {e}")
     
     def _log_fg_off_to_timeline(self):
-        """Log function generator OFF to timeline."""
+        """Log function generator OFF to timeline (hardware state change only)."""
         if not self.main_window:
             return
             
         try:
             camera_widget = self.main_window.camera_widget
             if hasattr(camera_widget, 'log_function_generator_event'):
+                # Log to timeline only (hardware state change), not audit trail
+                # event_type will default to appropriate timeline event
                 camera_widget.log_function_generator_event(
                     frequency_mhz=0.0,
                     amplitude_vpp=0.0,
-                    output_enabled=False,
-                    event_type='force_path_stopped'
+                    output_enabled=False
                 )
         except Exception as e:
             logger.debug(f"Failed to log FG OFF to timeline: {e}")
