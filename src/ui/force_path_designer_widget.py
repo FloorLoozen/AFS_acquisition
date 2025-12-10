@@ -903,15 +903,15 @@ class ForcePathDesignerWidget(QWidget):
             
             self.path_table.setItem(row, 0, time_item)
             
-            # Frequency - 3 decimal places for precision
-            freq_item = QTableWidgetItem(f"{point.frequency:.3f}")
+            # Frequency - 1 decimal place
+            freq_item = QTableWidgetItem(f"{point.frequency:.1f}")
             if has_error:
                 freq_item.setBackground(QColor(255, 200, 200))
                 freq_item.setToolTip(validation_errors[row])
             self.path_table.setItem(row, 1, freq_item)
             
-            # Amplitude - 2 decimal places
-            amp_item = QTableWidgetItem(f"{point.amplitude:.2f}")
+            # Amplitude - 1 decimal place
+            amp_item = QTableWidgetItem(f"{point.amplitude:.1f}")
             if has_error:
                 amp_item.setBackground(QColor(255, 200, 200))
                 amp_item.setToolTip(validation_errors[row])
@@ -1035,13 +1035,17 @@ class ForcePathDesignerWidget(QWidget):
                 old_freq = self.path_points[row].frequency
                 new_freq = float(item.text())
                 self.path_points[row].frequency = new_freq
-                logger.debug(f"Frequency updated for point {row}: {old_freq:.3f}MHz -> {new_freq:.3f}MHz")
+                # Reformat to 1 decimal place
+                item.setText(f"{new_freq:.1f}")
+                logger.debug(f"Frequency updated for point {row}: {old_freq:.1f}MHz -> {new_freq:.1f}MHz")
                 
             elif col == 2:  # Amplitude
                 old_amp = self.path_points[row].amplitude
                 new_amp = float(item.text())
                 self.path_points[row].amplitude = new_amp
-                logger.debug(f"Amplitude updated for point {row}: {old_amp:.2f}Vpp -> {new_amp:.2f}Vpp")
+                # Reformat to 1 decimal place
+                item.setText(f"{new_amp:.1f}")
+                logger.debug(f"Amplitude updated for point {row}: {old_amp:.1f}Vpp -> {new_amp:.1f}Vpp")
                 
             # Auto-update transitions for this and subsequent points
             self._update_transitions()
@@ -1077,11 +1081,15 @@ class ForcePathDesignerWidget(QWidget):
                 value = float(item.text()) if item.text() else 14.0
                 # Clamp frequency to reasonable range (10-20 MHz)
                 point.frequency = max(10.0, min(20.0, value))
+                # Reformat to 1 decimal place
+                item.setText(f"{point.frequency:.1f}")
             elif col == 2:  # Amplitude
                 # Parse value with better error handling
                 value = float(item.text()) if item.text() else 4.0
                 # Clamp amplitude to reasonable range (0.5-5.0 V)
                 point.amplitude = max(0.5, min(5.0, value))
+                # Reformat to 1 decimal place
+                item.setText(f"{point.amplitude:.1f}")
                 
             # Batch updates for performance
             self._update_transitions()
