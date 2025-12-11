@@ -992,7 +992,7 @@ class ResonanceFinderWidget(QWidget):
             # If still no file, create a new one
             if not hdf5_file_path:
                 # datetime and Path already imported at module level
-                default_dir = Path("C:/Users/AFS/Documents/Floor/Software/AFS_acquisition/data")
+                default_dir = Path("C:/Users/AFS/Documents/Data")
                 default_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 hdf5_file_path = str(default_dir / f"resonance_data_{timestamp}.hdf5")

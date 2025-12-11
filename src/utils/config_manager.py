@@ -87,12 +87,12 @@ class FilesConfig:
         if not self.default_save_path:
             import os
             from pathlib import Path
-            # Use Documents folder as default
+            # Use C:\Users\AFS\Documents\Data as default
             try:
-                self.default_save_path = str(Path.home() / 'Documents')
+                self.default_save_path = str(Path.home() / 'Documents' / 'Data')
             except Exception:
                 # Fallback to environment variable
-                self.default_save_path = os.environ.get('USERPROFILE', 'C:\\Users\\Public') + '\\Documents'
+                self.default_save_path = os.environ.get('USERPROFILE', 'C:\\Users\\Public') + '\\Documents\\Data'
     auto_backup: bool = True
     backup_count: int = 5
     temp_directory: str = "temp"
