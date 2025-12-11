@@ -347,7 +347,7 @@ class SweepWorker(QThread):
                         
                         scope_y_min = voffset_volts  # Fixed at offset
                         data_above = actual_voltage_max - voffset_volts
-                        scope_y_max = actual_voltage_max + data_above * 0.25  # 25% margin above data max
+                        scope_y_max = actual_voltage_max + data_above * 0.10  # 10% margin above data max
                         
                         logger.info(f"Y-axis: offset={voffset_volts*1000:.1f}mV, data_max={actual_voltage_max*1000:.1f}mV, y_max={scope_y_max*1000:.1f}mV")
                         
@@ -809,7 +809,7 @@ class ResonanceFinderWidget(QWidget):
             data_max = voltages.max()
             data_range = data_max - offset
             y_min = offset
-            y_max = data_max + data_range * 0.5
+            y_max = data_max + data_range * 0.15
             logger.info(f"Plot Y-axis: Auto-scaled: offset={y_min*1000:.1f}mV, data_max={data_max*1000:.1f}mV, y_max={y_max*1000:.1f}mV")
         
         self.ax.set_ylim(y_min, y_max)
