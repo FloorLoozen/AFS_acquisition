@@ -324,20 +324,14 @@ class LUTAcquisitionThreadStandalone(QThread):
                 self.finished.emit(False, "Failed to start camera capture")
                 return
             
-            # Configure camera for LUT acquisition (same settings as recording)
-            # Use full resolution MONO8 format to match recording data
-            self.progress.emit(0, 100, "Configuring camera for LUT acquisition...")
+            # Use current camera settings for LUT acquisition (user-configured)
+            self.progress.emit(0, 100, "Preparing LUT acquisition...")
             try:
-                lut_camera_settings = {
-                    'exposure_ms': 5.0,  # 5ms exposure (same as recording)
-                    'gain_master': 2,     # Gain 2 (same as recording)
-                    'fps': 30.0           # 30 FPS (same as recording)
-                }
-                camera.apply_settings(lut_camera_settings)
-                logger.info("Applied LUT camera settings: exposure=5ms, gain=2, fps=30 (matching recording format)")
-                time.sleep(0.3)  # Wait for camera to stabilize
+                # Keep user's camera settings - don't override
+                logger.info("LUT will use current camera settings (user-configured)")
+                time.sleep(0.1)  # Brief stabilization
             except Exception as e:
-                logger.warning(f"Failed to apply LUT camera settings: {e}")
+                logger.warning(f"Error during LUT preparation: {e}")
             
             # Get a test frame to determine dimensions
             test_frame = camera.get_frame(timeout=1.0)

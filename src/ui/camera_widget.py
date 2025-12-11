@@ -565,19 +565,19 @@ class CameraWidget(QGroupBox):
             logger.info("Live view resumed - timer restarted")
             
             try:
-                # Flush stale frames and restore camera settings
+                # Flush stale frames but keep user's camera settings
                 flushed = self._flush_camera_buffer()
                 if flushed > 0:
                     logger.info(f"Flushed {flushed} stale frames from camera buffer")
                 
-                self._apply_default_camera_settings()
-                logger.info("Camera settings restored after resume")
+                # Don't apply default settings - keep user's configured settings
+                logger.info("Resumed with current camera settings (user-configured)")
                 
                 # Brief wait for camera stabilization
                 import time
                 time.sleep(0.1)
             except Exception as e:
-                logger.warning(f"Failed to restore camera settings on resume: {e}")
+                logger.warning(f"Failed to flush camera buffer on resume: {e}")
 
     def _camera_frame_arrived(self):
         """Called from camera capture thread when a new frame is queued.
@@ -1030,36 +1030,22 @@ class CameraWidget(QGroupBox):
             except Exception as e:
                 logger.warning(f"Failed to increase timer frequency: {e}")
             
-            # Apply recording-optimized camera settings and flush stale frames
+            # Flush stale frames before recording (keep user's camera settings)
             try:
-                if self.camera and hasattr(self.camera, 'apply_settings'):
-                    # Flush stale frames before applying new settings
+                if self.camera:
+                    # Flush stale frames before recording
                     flushed = self._flush_camera_buffer()
                     if flushed > 0:
                         logger.info(f"Flushed {flushed} stale frames before recording")
                     
-                    # Apply recording-optimized settings
-                    recording_camera_settings = {
-                        'exposure_ms': 5.0,  # 5ms exposure for good brightness
-                        'gain_master': 2,     # Gain 2 for balanced image
-                        'fps': TARGET_FPS     # 30 FPS for recording
-                    }
-                    res = self.camera.apply_settings(recording_camera_settings)
-                    logger.info(f"Applied recording camera settings: exposure=5ms, gain=2, fps={TARGET_FPS}")
+                    # Keep user's current camera settings - don't override
+                    logger.info("Recording will use current camera settings (user-configured)")
                     
-                    # Wait for camera hardware to stabilize with new settings
+                    # Brief wait for camera buffer to stabilize
                     import time
-                    time.sleep(0.3)
-                    
-                    # Flush transitional frames captured during settings change
-                    flushed = self._flush_camera_buffer()
-                    if flushed > 0:
-                        logger.info(f"Flushed {flushed} transitional frames after settings change")
-                    
-                    if not res.get('fps', False):
-                        logger.warning(f"Camera refused to set {TARGET_FPS} FPS")
+                    time.sleep(0.1)
             except Exception as e:
-                logger.warning(f"Could not set camera settings for recording: {e}")
+                logger.warning(f"Could not flush camera buffer: {e}")
 
             # Set recording state
             self.is_recording = True
