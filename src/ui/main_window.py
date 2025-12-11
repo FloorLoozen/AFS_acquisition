@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QSizePolicy, QApplication, QMenuBar, QMenu
 )
 from PyQt5.QtCore import QTimer
-from PyQt5.QtGui import QCloseEvent
+from PyQt5.QtGui import QCloseEvent, QIcon
 
 from src.utils.logger import get_logger
 from src.controllers.device_manager import DeviceManager
@@ -264,6 +264,21 @@ class MainWindow(QMainWindow):
         layout, and ensures proper focus for keyboard shortcuts.
         """
         self.setWindowTitle("AFS Acquisition v1.0.0")
+        
+        # Set window icon (upper left corner)
+        icon_paths = [
+            r"C:\Users\AFS\Documents\Software\Icons\acquistion.png",  # Standalone exe location
+            Path(__file__).parent.parent.parent / "AFS_icon.png",  # Development location
+            Path(__file__).parent.parent.parent / "AFS_icon.ico",  # ICO fallback
+        ]
+        
+        for icon_path in icon_paths:
+            if Path(icon_path).exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+                logger.debug(f"Window icon set from: {icon_path}")
+                break
+        else:
+            logger.warning("Could not find application icon")
 
         self._create_menu_bar()
         self._create_central_layout()

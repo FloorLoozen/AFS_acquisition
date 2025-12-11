@@ -86,23 +86,59 @@ def get_logger(name=None):
     console.addFilter(SmartFilter())
     logger.addHandler(console)
     
-    # File handler
+    # File handler - only create log file when error occurs
+    # Store log directory path for error handler
     try:
-        # Exe-compatible log directory resolution
         if getattr(sys, 'frozen', False):
             # Running as exe - use exe directory
-            log_dir = os.path.join(os.path.dirname(sys.executable), 'logs')
+            logger._log_dir = os.path.join(os.path.dirname(sys.executable), 'logs')
         else:
             # Running as script - use project directory
-            log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"afs_{datetime.now():%Y%m%d_%H%M%S}.log")
-        
-        file = logging.FileHandler(log_file)
-        file.setLevel(logging.DEBUG)
-        file.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] [%(module)s] %(message)s', '%H:%M:%S'))
-        logger.addHandler(file)
+            logger._log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
     except Exception:
-        pass  # File logging optional
+        logger._log_dir = None
+    
+    # Add custom error handler that creates log file on first error
+    original_error = logger.error
+    original_critical = logger.critical
+    original_exception = logger.exception
+    
+    def error_with_file(*args, **kwargs):
+        _ensure_file_handler(logger)
+        original_error(*args, **kwargs)
+    
+    def critical_with_file(*args, **kwargs):
+        _ensure_file_handler(logger)
+        original_critical(*args, **kwargs)
+    
+    def exception_with_file(*args, **kwargs):
+        _ensure_file_handler(logger)
+        original_exception(*args, **kwargs)
+    
+    logger.error = error_with_file
+    logger.critical = critical_with_file
+    logger.exception = exception_with_file
     
     return logger
+
+
+def _ensure_file_handler(logger):
+    """Create file handler when first error occurs."""
+    # Check if file handler already exists
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            return
+    
+    # Create file handler
+    try:
+        if hasattr(logger, '_log_dir') and logger._log_dir:
+            os.makedirs(logger._log_dir, exist_ok=True)
+            log_file = os.path.join(logger._log_dir, f"afs_error_{datetime.now():%Y%m%d_%H%M%S}.log")
+            
+            file = logging.FileHandler(log_file)
+            file.setLevel(logging.DEBUG)
+            file.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] [%(module)s] %(message)s', '%H:%M:%S'))
+            logger.addHandler(file)
+            logger.info(f"Error log file created: {log_file}")
+    except Exception:
+        pass  # File logging optional

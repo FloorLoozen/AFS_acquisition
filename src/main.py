@@ -43,8 +43,10 @@ def main():
     
     from src.utils.logger import get_logger
     from src.utils.config_manager import get_config
-    from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtCore import Qt, QLocale
+    from PyQt5.QtWidgets import QApplication, QSplashScreen
+    from PyQt5.QtCore import Qt, QLocale, QRect
+    from PyQt5.QtGui import QPixmap, QPainter, QPen, QFont, QColor, QPainterPath
+    from pathlib import Path
     
     logger = get_logger("main")
     logger.info(f"Starting AFS Acquisition v{__version__}")
@@ -60,6 +62,60 @@ def main():
     app.setApplicationName("AFS Acquisition")
     app.setApplicationVersion(__version__)
     
+    # Custom splash screen class with outlined text
+    class CustomSplashScreen(QSplashScreen):
+        def __init__(self, pixmap):
+            super().__init__(pixmap, Qt.WindowStaysOnTopHint)
+            self.message = ""
+            
+        def showMessage(self, message, alignment=Qt.AlignCenter, color=QColor("#004667")):
+            self.message = message
+            self.repaint()
+            
+        def drawContents(self, painter):
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Set font
+            font = QFont()
+            font.setPointSize(32)
+            font.setBold(True)
+            painter.setFont(font)
+            
+            # Create text path for outlined text
+            path = QPainterPath()
+            rect = self.rect()
+            path.addText(rect.center().x() - 80, rect.center().y() + 15, font, self.message)
+            
+            # Draw outline (light blue)
+            painter.setPen(QPen(QColor("#A6CAEC"), 6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+            
+            # Draw inner text (dark blue)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#004667"))
+            painter.drawPath(path)
+    
+    # Show splash screen with loading icon
+    splash = None
+    loading_icon_paths = [
+        r"C:\Users\AFS\Documents\Software\Icons\acquistion_loading.png",  # Standalone exe location
+        Path(project_root) / "AFS_loading.png",  # Development location
+    ]
+    
+    for icon_path in loading_icon_paths:
+        if Path(icon_path).exists():
+            pixmap = QPixmap(str(icon_path))
+            # Scale icon to smaller splash screen size
+            pixmap = pixmap.scaled(250, 250, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint)  # Use regular QSplashScreen, no text needed
+            splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+            splash.show()
+            # No showMessage call - text is already in the image
+            app.processEvents()
+            logger.debug(f"Splash screen shown with icon from: {icon_path}")
+            break
+    
     # Load configuration
     config = get_config()
     
@@ -67,11 +123,18 @@ def main():
     try:
         from src.ui.main_window import MainWindow
         window = MainWindow()
+        
+        # Close splash screen before showing main window
+        if splash:
+            splash.finish(window)
+        
         window.showMaximized()
     except Exception as e:
         logger.critical(f"Failed to create main window: {e}")
         import traceback
         logger.critical(traceback.format_exc())
+        if splash:
+            splash.close()
         return 1
     
     # Run application event loop
