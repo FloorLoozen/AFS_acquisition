@@ -1682,14 +1682,15 @@ class ForcePathDesignerWidget(QWidget):
                 'amplitude_range_vpp': [min(amplitudes), max(amplitudes)] if amplitudes else [0, 0]
             }
             
-            hdf5_recorder.audit_trail.log_event(
-                'force_path_design',
-                path_description,
-                path_metadata
-            )
-            logger.info("force_path_design event logged to audit trail")
+            # Don't log force_path_design to audit trail (only save to /commands/force_path group)
+            # hdf5_recorder.audit_trail.log_event(
+            #     'force_path_design',
+            #     path_description,
+            #     path_metadata
+            # )
+            # logger.info("force_path_design event logged to audit trail")
             
-            # Also save to /commands/force_path group for structured access
+            # Save to /commands/force_path group for structured access
             logger.info("Calling _save_path_to_commands_group...")
             self._save_path_to_commands_group(hdf5_recorder, times, frequencies, amplitudes, transitions)
             
