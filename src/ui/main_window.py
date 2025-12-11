@@ -295,11 +295,11 @@ class MainWindow(QMainWindow):
         
         # Tools menu
         tools_menu = menubar.addMenu("Tools")
-        self._add_action(tools_menu, "Camera Settings", None, self._open_camera_settings)
-        self._add_action(tools_menu, "Stage Controller", None, self._open_stage_controls)
-        self._add_action(tools_menu, "Resonance Finder", None, self._open_resonance_finder)
-        self._add_action(tools_menu, "Lookup Table Generator", None, self._open_lookup_table_generator)
-        self._add_action(tools_menu, "Force Path Designer", None, self._open_force_path_designer)
+        self._add_action(tools_menu, "Camera Settings", "F2", self._open_camera_settings)
+        self._add_action(tools_menu, "Stage Controller", "F3", self._open_stage_controls)
+        self._add_action(tools_menu, "Resonance Finder", "F4", self._open_resonance_finder)
+        self._add_action(tools_menu, "Lookup Table Generator", "F5", self._open_lookup_table_generator)
+        self._add_action(tools_menu, "Force Path Designer", "F6", self._open_force_path_designer)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
