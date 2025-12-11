@@ -31,11 +31,9 @@ Scientific instrument control and data acquisition system for high-speed camera 
 **Positioning Stages:**
 - **XY Stage:** Mad City Labs Nano-Drive
   - Travel Range: ±12.5 mm (25 mm total)
-  - Resolution: Nanometer-scale positioning
   - Interface: USB
 - **Z Stage:** Mad City Labs Nano-Drive
-  - Travel Range: 0 - 200 µm
-  - Resolution: Nanometer-scale positioning
+  - Travel Range: 0 - 100 µm
   - Interface: USB
 - **Control:** Madlib.dll (Windows DLL API)
 
@@ -213,7 +211,54 @@ All controls show color-coded status for instant feedback:
 
 All data is saved in HDF5 hierarchical format with comprehensive metadata.
 
-### File Structure
+### Repository Structure
+
+```
+AFS_acquisition/
+├── src/
+│   ├── __init__.py
+│   ├── main.py                        # Application entry point
+│   ├── controllers/
+│   │   ├── camera_controller.py       # IDS uEye camera control
+│   │   ├── device_manager.py          # Hardware initialization
+│   │   ├── function_generator_controller.py
+│   │   ├── oscilloscope_controller.py
+│   │   ├── stage_manager.py           # XY/Z stage coordination
+│   │   ├── xy_stage_controller.py
+│   │   └── z_stage_controller.py
+│   ├── ui/
+│   │   ├── acquisition_controls_widget.py
+│   │   ├── camera_settings_widget.py
+│   │   ├── camera_widget.py           # Live video display
+│   │   ├── force_path_designer_widget.py
+│   │   ├── frequency_settings_widget.py
+│   │   ├── hardware_status_dialog.py
+│   │   ├── lookup_table_widget.py
+│   │   ├── main_window.py             # Main application window
+│   │   ├── measurement_controls_widget.py
+│   │   ├── resonance_finder_widget.py
+│   │   └── stages_widget.py
+│   └── utils/
+│       ├── config_manager.py          # Configuration management
+│       ├── constants.py               # System constants
+│       ├── data_integrity.py          # Checksum validation
+│       ├── exceptions.py              # Custom exceptions
+│       ├── hdf5_video_recorder.py     # HDF5 recording engine
+│       ├── keyboard_shortcuts.py      # Hotkey management
+│       ├── logger.py                  # Error-only logging
+│       ├── performance_monitor.py     # Performance tracking
+│       ├── state_recovery.py          # State persistence
+│       ├── status_display.py          # Status indicators
+│       ├── validation.py              # Input validation
+│       └── visa_helper.py             # VISA/SCPI utilities
+├── build_exe.py                       # PyInstaller build script
+├── build_exe.bat                      # Build wrapper
+├── requirements.txt                   # Python dependencies
+├── README.md                          # This file
+└── CHANGELOG.md                       # Version history
+```
+
+### HDF5 Data File Structure
 
 ```
 measurement_YYYYMMDD_HHMMSS.hdf5
