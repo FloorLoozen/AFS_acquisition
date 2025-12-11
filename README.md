@@ -263,26 +263,16 @@ AFS_acquisition/
 ```
 measurement_YYYYMMDD_HHMMSS.hdf5
 ├── raw_data/
-│   ├── main_video                     # Video frames (n_frames, height, width, 1)
-│   ├── function_generator_timeline    # FG parameters over time
+│   ├── recording_frames               # Main video dataset (n_frames, height, width)
+│   ├── function_generator_timeline    # FG timeline (time, frequency, amplitude, transition)
 │   └── LUT/                           # Lookup table calibration data
-│       ├── frames                     # Diffraction patterns
-│       └── z_positions                # Corresponding Z positions
-├── meta_data/
-│   ├── hardware_settings/
-│   │   ├── camera_settings           # Exposure, gain, FPS, format
-│   │   ├── stage_settings            # XY/Z positions
-│   │   └── function_generator_settings
-│   ├── recording_info                # Timestamp, duration, frame count
-│   ├── performance_metrics           # FPS, compression stats
-│   └── audit_trail                   # Data integrity log
-└── execution_log/
-    ├── force_path_execution_XXX      # Measurement sequences
-    └── resonance_sweep_XXX           # Frequency sweep results
-        ├── frequencies_mhz
-        ├── voltages_v
-        ├── selected_frequencies_mhz
-        └── plot_image_png            # Saved plot
+│       ├── frames                     # Diffraction patterns at different Z positions
+│       └── z_positions                # Corresponding Z positions in micrometers
+└── meta_data/
+    ├── camera_settings                # Camera configuration (exposure, gain, FPS, etc.)
+    ├── hardware_config                # Hardware manifest (stage models, devices)
+    ├── force_path_execution           # Force path measurement data (if executed)
+    └── quality_metrics                # Frame quality metrics (drops, captured, written)
 ```
 
 ### Video Encoding
