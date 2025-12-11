@@ -86,3 +86,7 @@ temp/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+# Build-generated icon files
+AFS_icon.ico
+AFS_icon.png
+AFS_loading.png

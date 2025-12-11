@@ -5,18 +5,43 @@ All notable changes to the AFS Acquisition project will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2025-12-11
 
-### Added
-- CHANGELOG.md to track future changes
+### Initial Release
 
-### Changed
-- Nothing yet
+**Scientific instrument control and data acquisition system for high-speed camera recording with synchronized hardware control.**
 
-### Fixed
-- Nothing yet
+#### Core Features
+- High-speed camera recording (IDS uEye, up to 57 FPS)
+- Real-time video display and recording
+- HDF5 data storage with comprehensive metadata
+- Hardware-accelerated video processing (OpenCL support)
 
-## [1.0.0] - 2025-12-05
+#### Hardware Control
+- XY/Z positioning stages (Mad City Labs Nano-Drive)
+- Function generator control (Siglent SDG1032X)
+- Oscilloscope integration (Siglent SDS804X HD)
+- VISA/SCPI instrument communication
+
+#### Data Management
+- Real-time LZF compression during recording
+- Post-processing GZIP compression
+- Automated lookup table (LUT) generation
+- Resonance frequency sweep and analysis
+- Force path designer for automated measurements
+
+#### User Interface
+- PyQt5-based GUI with real-time visualization
+- Keyboard shortcuts for quick access
+- Status indicators for all hardware
+- Configurable camera settings (exposure, gain, FPS)
+
+#### System Features
+- Error-only logging (logs created only when errors occur)
+- Executable build support with PyInstaller
+- Custom splash screen with application icons
+- Default save location: `C:\Users\AFS\Documents\Data`
+- Automatic hardware detection and connection
 
 ### Added
 - Initial release of AFS Acquisition system
