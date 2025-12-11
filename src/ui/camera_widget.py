@@ -529,8 +529,11 @@ class CameraWidget(QGroupBox):
         """Pause live view to save processing power (e.g., during LUT acquisition)."""
         if self.is_live:
             self.is_live = False
+            # Stop the timer to completely halt display updates
+            if hasattr(self, 'fallback_timer') and self.fallback_timer.isActive():
+                self.fallback_timer.stop()
             self.update_status("Paused (background task)")
-            logger.info("Live view paused to save processing power")
+            logger.info("Live view paused - timer stopped")
     
     def _flush_camera_buffer(self):
         """Flush stale frames from camera buffer.
@@ -555,8 +558,11 @@ class CameraWidget(QGroupBox):
         """Resume live view after pausing (e.g., after LUT acquisition)."""
         if not self.is_live and self.is_running:
             self.is_live = True
+            # Restart the timer
+            if hasattr(self, 'fallback_timer') and not self.fallback_timer.isActive():
+                self.fallback_timer.start()
             self.update_status("Live")
-            logger.info("Live view resumed")
+            logger.info("Live view resumed - timer restarted")
             
             try:
                 # Flush stale frames and restore camera settings

@@ -274,11 +274,6 @@ class LUTAcquisitionThread(QThread):
             if self.camera_widget and hasattr(self.camera_widget, 'resume_live'):
                 self.camera_widget.resume_live()
                 logger.info("Resumed live view after LUT acquisition")
-        finally:
-            # Resume live view
-            if self.camera_widget and hasattr(self.camera_widget, 'resume_live'):
-                self.camera_widget.resume_live()
-                logger.info("Resumed live view after LUT acquisition")
 
 
 class LUTAcquisitionThreadStandalone(QThread):
@@ -660,7 +655,7 @@ class LookupTableWidget(QDialog):
         
         self.start_z_spin = QDoubleSpinBox()
         self.start_z_spin.setRange(0, 100)
-        self.start_z_spin.setValue(40)  # Default start: 40 µm
+        self.start_z_spin.setValue(45)  # Default start: 45 µm
         self.start_z_spin.setSuffix(" µm")
         self.start_z_spin.setDecimals(0)
         self.start_z_spin.setFixedWidth(spinbox_width)
@@ -674,7 +669,7 @@ class LookupTableWidget(QDialog):
         
         self.end_z_spin = QDoubleSpinBox()
         self.end_z_spin.setRange(0, 100)
-        self.end_z_spin.setValue(70)  # Default end: 70 µm
+        self.end_z_spin.setValue(75)  # Default end: 75 µm
         self.end_z_spin.setSuffix(" µm")
         self.end_z_spin.setDecimals(0)
         self.end_z_spin.setFixedWidth(spinbox_width)
