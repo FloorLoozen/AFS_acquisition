@@ -55,20 +55,36 @@ Scientific instrument control and data acquisition system for high-speed camera 
 
 ## Quick Start
 
+### Option 1: Run Executable (Recommended)
+```bash
+# Download or build AFS_acquisition.exe
+# Double-click to run - no Python installation needed
+```
+
+### Option 2: Run from Source
 ```bash
 # Clone repository
 git clone https://github.com/FloorLoozen/AFS_acquisition.git
 cd AFS_acquisition
-
-# Setup virtual environment
-python -m venv .venv
-.venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
 # Launch application
 python src/main.py
+```
+
+### Building Executable
+```bash
+# Install dependencies
+pip install -r requirements.txt
+pip install pyinstaller pillow
+
+# Build exe
+python build_exe.py
+
+# Executable will be created at:
+# C:\Users\AFS\Documents\Software\AFS_acquisition.exe
 ```
 
 ## How to Use
@@ -293,10 +309,14 @@ python compress_recordings.py recordings/
 - **Write Speed:** >100 MB/s sustained (SSD required)
 
 **Logging System:**
-- **Production Mode:** Major events only (hardware connect, recording, sweeps)
-- **Debug Mode:** Detailed technical diagnostics available
-- **Log Rotation:** Automatic file management
+- **Error-Only Mode:** Log files created only when errors occur
+- **Log Location:** `logs/afs_error_YYYYMMDD_HHMMSS.log` (in executable directory)
+- **Normal Operation:** No log files created
 - **Performance Impact:** <1% CPU overhead
+
+**Default Save Location:**
+- **HDF5 Files:** `C:\Users\AFS\Documents\Data`
+- **Configurable:** Path can be changed in Measurement Settings
 
 ## Hardware Auto-Detection
 
