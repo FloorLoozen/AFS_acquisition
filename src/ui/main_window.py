@@ -510,7 +510,11 @@ class MainWindow(QMainWindow):
         """Open the lookup table generator dialog."""
         try:
             from src.ui.lookup_table_widget import LookupTableWidget
-            dialog = LookupTableWidget(self)
+            # Pass camera_widget so live view can be paused during LUT acquisition
+            dialog = LookupTableWidget(
+                camera_widget=self.camera_widget,
+                parent=self
+            )
             dialog.exec_()
             logger.info("Opened Lookup Table Generator")
         except Exception as e:

@@ -37,6 +37,7 @@ class LUTAcquisitionThread(QThread):
     progress = pyqtSignal(int, int, str)  # current, total, status message
     finished = pyqtSignal(bool, str)  # success, message
     frame_captured = pyqtSignal(int, float)  # frame_number, z_position
+    resume_live_signal = pyqtSignal()  # Signal to resume live view on main thread
     
     def __init__(self, start_um: float, end_um: float, step_nm: float, 
                  camera, hdf5_recorder, settle_time_ms: int, camera_widget=None, output_path=None):
@@ -270,10 +271,10 @@ class LUTAcquisitionThread(QThread):
             logger.error(f"Error during LUT acquisition: {e}", exc_info=True)
             self.finished.emit(False, f"Error: {str(e)}")
         finally:
-            # Resume live view
-            if self.camera_widget and hasattr(self.camera_widget, 'resume_live'):
-                self.camera_widget.resume_live()
-                logger.info("Resumed live view after LUT acquisition")
+            # Resume live view via signal (thread-safe)
+            if self.camera_widget:
+                self.resume_live_signal.emit()
+                logger.info("Emitted signal to resume live view after LUT acquisition")
 
 
 class LUTAcquisitionThreadStandalone(QThread):
@@ -669,7 +670,7 @@ class LookupTableWidget(QDialog):
         
         self.end_z_spin = QDoubleSpinBox()
         self.end_z_spin.setRange(0, 100)
-        self.end_z_spin.setValue(75)  # Default end: 75 µm
+        self.end_z_spin.setValue(70)  # Default end: 70 µm
         self.end_z_spin.setSuffix(" µm")
         self.end_z_spin.setDecimals(0)
         self.end_z_spin.setFixedWidth(spinbox_width)
@@ -827,6 +828,10 @@ class LookupTableWidget(QDialog):
         self.acquisition_thread.finished.connect(self._on_finished)
         self.acquisition_thread.frame_captured.connect(self._on_frame_captured)
         
+        # Connect resume_live signal if available (thread-safe live view resume)
+        if hasattr(self.acquisition_thread, 'resume_live_signal'):
+            self.acquisition_thread.resume_live_signal.connect(self._on_resume_live)
+        
         # Update UI
         self.is_acquiring = True
         self.start_btn.setEnabled(False)
@@ -854,15 +859,17 @@ class LookupTableWidget(QDialog):
     def _on_frame_captured(self, frame_num: int, z_pos: float):
         """Handle frame captured event."""
         pass  # Minimal mode - no logging
+    
+    def _on_resume_live(self):
+        """Resume live view (called from thread via signal, runs on main thread)."""
+        if hasattr(self, 'camera_widget') and self.camera_widget:
+            if hasattr(self.camera_widget, 'resume_live'):
+                self.camera_widget.resume_live()
+                logger.info("Resumed live view after LUT acquisition")
         
     def _on_finished(self, success: bool, message: str):
         """Handle LUT acquisition completion."""
         if hasattr(self, 'camera_widget') and self.camera_widget:
-            # Resume live view (restores camera settings and flushes buffers)
-            if hasattr(self.camera_widget, 'resume_live'):
-                self.camera_widget.resume_live()
-                logger.info("Resuming live view after LUT acquisition")
-            
             # Restart camera capture to ensure clean state (only if not recording)
             try:
                 camera = getattr(self.camera_widget, 'camera', None)
