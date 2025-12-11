@@ -88,7 +88,13 @@ def get_logger(name=None):
     
     # File handler
     try:
-        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+        # Exe-compatible log directory resolution
+        if getattr(sys, 'frozen', False):
+            # Running as exe - use exe directory
+            log_dir = os.path.join(os.path.dirname(sys.executable), 'logs')
+        else:
+            # Running as script - use project directory
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, f"afs_{datetime.now():%Y%m%d_%H%M%S}.log")
         

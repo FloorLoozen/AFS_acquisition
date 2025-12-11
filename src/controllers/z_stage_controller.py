@@ -30,8 +30,27 @@ class ZStageController:
         -4: "Usage error"
     }
     
-    def __init__(self, dll_path: str = r"C:\Program Files\Mad City Labs\NanoDrive\Labview Executable Examples\Madlib.dll"):
-        """Initialize the Z stage controller with the path to the NanoDrive DLL."""
+    def __init__(self, dll_path: str = None):
+        """Initialize the Z stage controller with the path to the NanoDrive DLL.
+        
+        Args:
+            dll_path: Path to Madlib.dll (auto-detected if None)
+        """
+        # Auto-detect DLL path for exe compatibility
+        if dll_path is None:
+            import os
+            # Try standard installation paths
+            possible_paths = [
+                r"C:\Program Files\Mad City Labs\NanoDrive\Labview Executable Examples\Madlib.dll",
+                r"C:\Program Files (x86)\Mad City Labs\NanoDrive\Labview Executable Examples\Madlib.dll",
+                os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'Mad City Labs', 'NanoDrive', 'Labview Executable Examples', 'Madlib.dll'),
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    dll_path = path
+                    break
+            if dll_path is None:
+                dll_path = r"C:\Program Files\Mad City Labs\NanoDrive\Labview Executable Examples\Madlib.dll"  # Fallback
         self.dll_path = dll_path
         self.nano = None
         self.handle = None

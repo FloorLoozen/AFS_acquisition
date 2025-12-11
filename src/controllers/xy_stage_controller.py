@@ -38,8 +38,27 @@ class XYStageController:
     # Supported XY stage product IDs
     SUPPORTED_STAGE_IDS = {9475, 9472, 9473}
     
-    def __init__(self, dll_path: str = r"C:\Program Files\Mad City Labs\MicroDrive\Labview Executables\MicroDrive.dll"):
-        """Initialize the XY stage controller with the path to the MicroDrive DLL."""
+    def __init__(self, dll_path: str = None):
+        """Initialize the XY stage controller with the path to the MicroDrive DLL.
+        
+        Args:
+            dll_path: Path to MicroDrive.dll (auto-detected if None)
+        """
+        # Auto-detect DLL path for exe compatibility
+        if dll_path is None:
+            import os
+            # Try standard installation paths
+            possible_paths = [
+                r"C:\Program Files\Mad City Labs\MicroDrive\Labview Executables\MicroDrive.dll",
+                r"C:\Program Files (x86)\Mad City Labs\MicroDrive\Labview Executables\MicroDrive.dll",
+                os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'Mad City Labs', 'MicroDrive', 'Labview Executables', 'MicroDrive.dll'),
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    dll_path = path
+                    break
+            if dll_path is None:
+                dll_path = r"C:\Program Files\Mad City Labs\MicroDrive\Labview Executables\MicroDrive.dll"  # Fallback
         self.dll_path = dll_path
         self.micro = None
         

@@ -80,7 +80,19 @@ class LoggingConfig:
 @dataclass
 class FilesConfig:
     """File and path configuration."""
-    default_save_path: str = r"C:\Users\AFS\Documents\Floor\Software\tmp"
+    default_save_path: str = ""  # Will be set dynamically in __post_init__
+    
+    def __post_init__(self):
+        # Set default save path dynamically for exe compatibility
+        if not self.default_save_path:
+            import os
+            from pathlib import Path
+            # Use Documents folder as default
+            try:
+                self.default_save_path = str(Path.home() / 'Documents')
+            except Exception:
+                # Fallback to environment variable
+                self.default_save_path = os.environ.get('USERPROFILE', 'C:\\Users\\Public') + '\\Documents'
     auto_backup: bool = True
     backup_count: int = 5
     temp_directory: str = "temp"
@@ -94,9 +106,19 @@ class ConfigManager:
     """Simple configuration manager."""
     
     def __init__(self, config_dir=None):
-        # Hardcoded for Windows - faster than Path.home()
+        # Exe-compatible config directory resolution
         if config_dir is None:
-            config_dir = os.path.join(os.environ['USERPROFILE'], '.afs_tracking')
+            try:
+                # Try USERPROFILE first (Windows standard)
+                config_dir = os.path.join(os.environ['USERPROFILE'], '.afs_tracking')
+            except KeyError:
+                # Fallback to APPDATA or temp
+                try:
+                    config_dir = os.path.join(os.environ.get('APPDATA', os.environ.get('TEMP', 'C:\\temp')), 'AFS_Acquisition', 'config')
+                except Exception:
+                    # Last resort fallback
+                    from pathlib import Path
+                    config_dir = str(Path.home() / '.afs_tracking')
         self.config_dir = config_dir
         self.config_file = os.path.join(self.config_dir, 'config.json')
         
