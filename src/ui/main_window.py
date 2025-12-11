@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
         Sets up the main window properties, creates the menu bar and central
         layout, and ensures proper focus for keyboard shortcuts.
         """
-        self.setWindowTitle("AFS Acquisition v1.0.0")
+        self.setWindowTitle("Acquisition v1.0.0")
         
         # Set window icon (upper left corner)
         icon_paths = [
